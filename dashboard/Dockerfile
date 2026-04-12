@@ -17,6 +17,9 @@ COPY . .
 EXPOSE 5000
 
 # app:app matches renamed flask entrypoint app.py
-CMD ["gunicorn", "--workers=2", "--bind", "0.0.0.0:5000", "--timeout=120","app:app"]
+CMD ["gunicorn", "--workers=2", "--bind", "0.0.0.0:5000", "--timeout=120",
+     "--limit-request-line", "4096",    # reject requests with excessively long URLs — limits certain injection vectors
+     "--limit-request-fields", "100",   # cap HTTP header count — mitigates header-injection amplification
+     "app:app"]
 # --workers=2. 2 workers so Gunicorn distributes the load better handles requests
 # --timeout=120. If a worker gets a timeout=120, it restarts the worker instead of crashes

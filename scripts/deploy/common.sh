@@ -18,7 +18,7 @@ fi
 source "$ENV_DEPLOY"
 
 # Make sure the required variables were actually set in .env.deploy (in case the file is empty)
-for var in ECR_REGISTRY AWS_REGION; do
+for var in ECR_REGISTRY AWS_REGION FLASK_SECRET_KEY VALIDATION_USER VALIDATION_PASS; do
     if [ -z "${!var:-}" ]; then
         echo "ERROR: $var is not set in .env.deploy"
         exit 1

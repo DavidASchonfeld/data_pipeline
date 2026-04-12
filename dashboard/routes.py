@@ -1,8 +1,12 @@
+import logging
 import pandas as pd
 from flask import Flask
 from sqlalchemy import text
 
 from db import DB_ENGINE
+from security import limiter, require_basic_auth  # rate limiting decorators and basic-auth helper
+
+logger = logging.getLogger(__name__)  # module-level logger — writes to pod stdout (visible in kubectl logs)
 
 
 def register_routes(app: Flask) -> None:
@@ -10,6 +14,7 @@ def register_routes(app: Flask) -> None:
 
     @app.route('/')
     @app.route('/index')
+    @limiter.limit("30 per minute")  # static redirect — cheap but worth capping per IP
     def index():
         # Redirect root to the Dash dashboard
         return (
@@ -17,17 +22,16 @@ def register_routes(app: Flask) -> None:
             '<p>Visit <a href="/dashboard/">the dashboard</a> to see live stock charts.</p>'
         )
 
-    @app.route('/hello')
-    def hello():
-        return "Hello!"
-
     @app.route('/health')
+    @limiter.exempt  # K8s liveness/readiness probes hit this every 5-10s — must never be rate-limited
     def health():
         # Health-check endpoint — useful for Kubernetes liveness probes
         # No DB call needed; fast, reliable signal that pod process is running
         return {"status": "ok"}, 200
 
     @app.route('/validation')
+    @limiter.limit("5 per minute")  # debug endpoint — tight cap; infrequent legitimate use only
+    @require_basic_auth              # blocks unauthenticated requests before any DB query runs
     def validation():
         # Data validation endpoint — shows table schemas, row counts, and freshness
         # Used for monitoring: detect when DAGs fail or data stops flowing
@@ -68,5 +72,17 @@ def register_routes(app: Flask) -> None:
 
             return validation_info, 200
 
-        except Exception as e:
-            return {"status": "error", "message": str(e)}, 500
+        except Exception:
+            # Log the full traceback server-side (visible in kubectl logs) but return a generic message to the client
+            logger.exception("Validation endpoint DB error")  # full stack trace to pod stdout
+            return {"status": "error", "message": "Internal server error"}, 500  # no DB details exposed
+
+    @app.errorhandler(404)
+    def not_found(e):
+        # Return clean JSON — no Flask version or internal route details exposed
+        return {"error": "Not found"}, 404
+
+    @app.errorhandler(500)
+    def server_error(e):
+        logger.exception("Unhandled server error")  # log full details server-side
+        return {"error": "Internal server error"}, 500  # generic message — no stack trace to client

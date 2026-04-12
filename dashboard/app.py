@@ -1,5 +1,6 @@
 import dash
 import flask
+import os
 import threading  # used to run cache pre-warming without blocking app startup
 from dash import dcc, html
 from flask import Flask
@@ -19,8 +20,15 @@ from flask import Flask
 from routes import register_routes
 from callbacks import register_callbacks, register_weather_callbacks  # weather callbacks added for the second Dash app
 from db import prewarm_cache  # imported here to fire pre-warming without going through the callback layer
+from security import init_security  # centralised security — rate limiting, headers, CORS
 
 app = Flask(__name__)
+
+app.config["SECRET_KEY"] = os.environ.get("FLASK_SECRET_KEY", "")  # required for Flask sessions/cookies; loaded from K8s secret
+if not app.config["SECRET_KEY"]:
+    raise RuntimeError("FLASK_SECRET_KEY env var is not set — refusing to start without a secret key")  # fail fast rather than silently run insecure
+
+init_security(app)  # attach rate limiting, security headers, and CORS — must run before routes are registered
 
 # Dash mounted on the Flask server at /dashboard/
 dash_app = dash.Dash(
@@ -47,6 +55,8 @@ dash_app.layout = html.Div(
             href="/weather/",  # points to the weather Dash app mounted below
             style={"color": "#3b82f6", "textDecoration": "none", "fontSize": "14px", "display": "inline-block", "marginBottom": "20px"},
         ),
+
+        html.Br(),  # line break between nav link and ticker selector
 
         # ── Ticker selector ───────────────────────────────────────────────
         html.Label("Select Ticker:", style={"fontWeight": "bold"}),
