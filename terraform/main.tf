@@ -42,10 +42,10 @@ data "aws_ami" "ubuntu_24_04" {
 
 # ── Security Group ────────────────────────────────────────────────────────────
 
-# SSH-only security group — app ports (Airflow, Dashboard, MLflow) are accessed via SSH tunnel, not exposed publicly.
+# SSH + dashboard ingress — port 32147 exposed publicly; all other app ports via SSH tunnel.
 resource "aws_security_group" "pipeline_sg" {
   name        = "pipeline-sg"
-  description = "SSH-only ingress; all app ports accessed via SSH tunnel"
+  description = "SSH + dashboard ingress; all other app ports accessed via SSH tunnel"
 
   ingress {
     description = "SSH from operators current IP only"
@@ -53,6 +53,14 @@ resource "aws_security_group" "pipeline_sg" {
     to_port     = 22
     protocol    = "tcp"
     cidr_blocks = [var.ssh_ingress_cidr]
+  }
+
+  ingress {
+    description = "Dashboard NodePort - public HTTP access to the Dash app"
+    from_port   = 32147
+    to_port     = 32147
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {

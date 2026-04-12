@@ -1,4 +1,4 @@
-# Plain English Guide — How This Project Actually Works
+# Guides — How This Project Works
 
 This guide explains the project in simple, non-technical language. Each part is a self-contained topic you can read on its own.
 

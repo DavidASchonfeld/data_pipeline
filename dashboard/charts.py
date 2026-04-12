@@ -166,3 +166,52 @@ def build_anomaly_table(df: pd.DataFrame):
         children=[header, html.Tbody(rows)],
     )
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+# ── Pipeline health table ─────────────────────────────────────────────────────
+
+def build_health_table(df: pd.DataFrame):
+    """HTML table: Table name, row count, latest record timestamp, age in hours.
+
+    Amber background when age_hours > 25 for Financials/Anomalies (daily DAG),
+    or > 2 for Weather (hourly DAG).
+    Returns html.P placeholder when no data is available.
+    """
+    # Guard: show a friendly message before any pipeline run populates the tables
+    if df.empty:
+        return html.P("No pipeline health data yet — run the pipeline first.")
+
+    header_cols = ["Table", "Row Count", "Latest Record", "Age (hours)"]
+    header = html.Thead(html.Tr([
+        html.Th(c, style={"border": "1px solid #e5e7eb", "padding": "8px", "background": "#f9fafb"})
+        for c in header_cols
+    ]))
+
+    # Compute age relative to current UTC time (tz-naive to match Snowflake TIMESTAMP_NTZ)
+    now = pd.Timestamp.utcnow().tz_localize(None)
+    rows = []
+    for _, row in df.iterrows():
+        latest_ts = pd.to_datetime(row["latest_ts"])  # ensure datetime type for arithmetic
+        age_hours = (now - latest_ts).total_seconds() / 3600 if pd.notna(latest_ts) else None
+
+        # Amber alert threshold differs by table — daily tables allow up to 25h, hourly allows 2h
+        threshold = 2 if row["table_name"] == "Weather" else 25
+        stale = age_hours is not None and age_hours > threshold
+        row_style = {"backgroundColor": "#fffbeb"} if stale else {}  # amber tint for stale rows
+        cell_style = {"border": "1px solid #e5e7eb", "padding": "8px"}
+
+        age_str = f"{age_hours:.1f}" if age_hours is not None else "N/A"
+        ts_str  = latest_ts.strftime("%Y-%m-%d %H:%M") if pd.notna(latest_ts) else "N/A"
+        cells = [
+            html.Td(row["table_name"],              style=cell_style),
+            html.Td(f"{int(row['row_count']):,}",   style=cell_style),  # comma-formatted for readability
+            html.Td(ts_str,                         style=cell_style),
+            html.Td(age_str,                        style=cell_style),
+        ]
+        rows.append(html.Tr(cells, style=row_style))
+
+    return html.Table(
+        style={"borderCollapse": "collapse", "width": "100%"},
+        children=[header, html.Tbody(rows)],
+    )
+# ─────────────────────────────────────────────────────────────────────────────

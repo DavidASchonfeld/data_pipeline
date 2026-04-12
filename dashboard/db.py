@@ -127,6 +127,10 @@ def prewarm_cache(tickers: list) -> None:
         load_weather_data()  # populates the weather cache entry so the weather page loads instantly
     except Exception:
         pass  # non-fatal — same pattern as financials and anomalies above
+    try:
+        load_pipeline_health()  # warms the 1-hour pipeline health cache entry
+    except Exception:
+        pass
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Weather data ─────────────────────────────────────────────────────────────
@@ -203,4 +207,44 @@ def load_anomalies() -> pd.DataFrame:
     except Exception:
         # Table may not exist yet if the DAG hasn't run — return empty frame so the dashboard doesn't crash
         return pd.DataFrame(columns=ANOMALY_COLUMNS)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Pipeline health (freshness + row counts) ──────────────────────────────────
+# Column list defined once so the guard path and real query always return the same schema
+HEALTH_COLUMNS = ["table_name", "row_count", "latest_ts"]
+
+def load_pipeline_health() -> pd.DataFrame:
+    """Return row counts and latest timestamps for the three core tables; empty DataFrame if unavailable.
+
+    Single UNION ALL query — one warehouse activation, result cached 1 hour.
+    """
+    # Guard: all three tables only exist in Snowflake — skip for other backends
+    if DB_BACKEND != "snowflake":
+        return pd.DataFrame(columns=HEALTH_COLUMNS)
+
+    # Return in-memory cache hit to avoid a Snowflake round-trip on every page load
+    cached = _cache_get("pipeline_health")
+    if cached is not None:
+        return cached  # cache hit — return immediately
+
+    # Single UNION ALL covers all three tables in one warehouse activation
+    query = text("""
+        SELECT 'Financials' AS table_name, COUNT(*) AS row_count,
+               MAX(filed_date)::TIMESTAMP_NTZ AS latest_ts
+        FROM PIPELINE_DB.MARTS.FCT_COMPANY_FINANCIALS
+        UNION ALL
+        SELECT 'Weather', COUNT(*), MAX(imported_at)
+        FROM PIPELINE_DB.MARTS.FCT_WEATHER_HOURLY
+        UNION ALL
+        SELECT 'Anomalies', COUNT(*), MAX(detected_at)
+        FROM PIPELINE_DB.ANALYTICS.FCT_ANOMALIES
+    """)
+    try:
+        with DB_ENGINE.connect() as conn:
+            df = pd.read_sql(query, conn)  # execute and load all three rows into a DataFrame
+        _cache_set("pipeline_health", df, CACHE_TTL_FINANCIALS)  # cache 1 hour — matches financials TTL
+        return df
+    except Exception:
+        # Table may not exist yet or Snowflake may be briefly unavailable — return empty frame
+        return pd.DataFrame(columns=HEALTH_COLUMNS)
 # ─────────────────────────────────────────────────────────────────────────────

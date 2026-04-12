@@ -2,8 +2,8 @@ import plotly.graph_objects as go
 from dash import html
 from dash.dependencies import Input, Output
 
-from db import _load_ticker_data, load_anomalies, load_weather_data  # load_weather_data added for the weather page
-from charts import build_revenue_net_income_fig, build_net_income_fig, build_stats_table, build_anomaly_scatter, build_anomaly_table  # anomaly chart builders added
+from db import _load_ticker_data, load_anomalies, load_weather_data, load_pipeline_health  # load_pipeline_health added for the health panel
+from charts import build_revenue_net_income_fig, build_net_income_fig, build_stats_table, build_anomaly_scatter, build_anomaly_table, build_health_table  # build_health_table added for the health panel
 from weather_charts import build_temperature_fig, build_weather_stats_table  # weather chart builders added
 
 
@@ -58,6 +58,20 @@ def register_callbacks(dash_app) -> None:
             empty_fig.add_annotation(text=f"DB error: {e}", showarrow=False, font={"size": 14})
             return empty_fig, html.P(f"Could not load anomaly data: {e}", style={"color": "red"})
         return build_anomaly_scatter(df), build_anomaly_table(df)  # chart + table rendered from the same DataFrame
+
+    # ── Pipeline Health callback ───────────────────────────────────────────────
+    @dash_app.callback(
+        Output("health-table", "children"),       # updates the pipeline health HTML table
+        Input("anomaly-refresh-btn", "n_clicks"), # shares the existing Refresh button — no extra query trigger
+        prevent_initial_call=False,  # populate on page load, not just on button click
+    )
+    def update_health(n_clicks):
+        """Render pipeline health table on page load or when the user clicks Refresh Anomalies."""
+        try:
+            df = load_pipeline_health()  # returns cached result or queries Snowflake
+        except Exception as e:
+            return html.P(f"Could not load pipeline health: {e}", style={"color": "red"})
+        return build_health_table(df)  # renders row counts + freshness table
 
 
 def register_weather_callbacks(weather_dash_app) -> None:

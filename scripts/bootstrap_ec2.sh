@@ -227,7 +227,7 @@ echo "=== Phase E: Installing Airflow via Helm (chart v${AIRFLOW_CHART_VERSION})
 #      (default 60s is too short on t3.large: gunicorn + provider loading takes 60–100s;
 #       pod was killed with SIGTERM/exit 0, making it look like a clean exit rather than a probe kill)
 #   3. triggerer.resources.limits.memory: 512Mi (was 256Mi — OOMKilled at startup during provider load)
-# See Runbook #15 "Known Issues" and PLAIN_ENGLISH_GUIDE.md Bugs 7–9 for full details.
+# See Runbook #15 "Known Issues" and docs/GUIDES.md Part 4–5 for full details.
 ec2_ssh "helm install airflow apache-airflow/airflow \
     -n airflow-my-namespace \
     --version ${AIRFLOW_CHART_VERSION} \
