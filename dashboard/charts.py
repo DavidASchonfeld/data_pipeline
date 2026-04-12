@@ -1,5 +1,6 @@
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.colors as pc   # qualitative palette for per-company distinct colors
 from dash import html
 
 
@@ -80,10 +81,22 @@ def build_stats_table(ticker: str, revenue_df: pd.DataFrame, net_income_df: pd.D
 
 # ── Anomaly detection charts ──────────────────────────────────────────────────
 
-def build_anomaly_scatter(df: pd.DataFrame) -> go.Figure:
-    """Scatter plot of Revenue YoY% vs Net Income YoY%, colored red/blue by anomaly flag.
+def _build_color_map(tickers: list) -> dict:
+    """Maps each ticker to a distinct qualitative color."""
+    # Modulo wraps gracefully if there are ever more than 10 companies
+    palette = pc.qualitative.Plotly
+    return {t: palette[i % len(palette)] for i, t in enumerate(tickers)}
 
-    Two separate traces (anomaly vs normal) so Plotly renders a proper color legend.
+
+def _anomaly_symbols(is_anomaly_col) -> list:
+    """Per-point symbol list: x for anomalies, circle for normal points."""
+    return ["x" if v else "circle" for v in is_anomaly_col]  # shape encodes anomaly status
+
+
+def build_anomaly_scatter(df: pd.DataFrame) -> go.Figure:
+    """Scatter of Revenue YoY% vs Net Income YoY%, dual-encoded: color = company, shape = anomaly status.
+
+    Circle = normal, x = anomaly. Two invisible shape-key traces document the convention in the legend.
     """
     # Guard: return an annotated empty figure before the first DAG run populates the table
     if df.empty:
@@ -91,33 +104,44 @@ def build_anomaly_scatter(df: pd.DataFrame) -> go.Figure:
         fig.add_annotation(text="No data yet", showarrow=False, font={"size": 14})  # placeholder so the chart area isn't blank
         return fig
 
-    # Split into two sub-DataFrames so each gets its own color and legend entry
-    anomalies  = df[df["is_anomaly"] == True]   # noqa: E712 — rows flagged by IsolationForest
-    normals    = df[df["is_anomaly"] == False]   # noqa: E712 — rows within expected range
+    tickers = sorted(df["ticker"].unique())   # sort for deterministic color assignment across refreshes
+    color_map = _build_color_map(tickers)     # one distinct color per company
 
     fig = go.Figure()
 
-    # Normal points plotted first so anomaly markers render on top
-    fig.add_trace(go.Scatter(
-        x=normals["revenue_yoy_pct"],
-        y=normals["net_income_yoy_pct"],
-        mode="markers",
-        name="Normal",
-        marker={"color": "#3b82f6", "size": 8},  # blue — matches existing chart palette
-        hovertext=normals["ticker"] + " " + normals["fiscal_year"].astype(str),  # tooltip shows ticker + year
-        hoverinfo="text+x+y",
-    ))
+    # One trace per company — color encodes identity, symbol per-point encodes anomaly status
+    for ticker in tickers:
+        sub = df[df["ticker"] == ticker].sort_values("is_anomaly")  # normals first so legend swatch shows circle
+        fig.add_trace(go.Scatter(
+            x=sub["revenue_yoy_pct"],
+            y=sub["net_income_yoy_pct"],
+            mode="markers",
+            name=ticker,
+            marker={
+                "color": color_map[ticker],                        # company color
+                "size": 9,
+                "symbol": _anomaly_symbols(sub["is_anomaly"]),     # circle or x per point
+            },
+            customdata=sub[["ticker", "fiscal_year", "anomaly_score"]].values,  # supplies hover fields
+            hovertemplate=(
+                "<b>%{customdata[0]}</b><br>"
+                "FY: %{customdata[1]}<br>"
+                "Score: %{customdata[2]:.3f}<br>"
+                "Rev YoY: %{x:.1f}%<br>"
+                "NI YoY: %{y:.1f}%"
+                "<extra></extra>"                                  # suppresses the trace-name box
+            ),
+        ))
 
-    # Anomaly points in red so they stand out immediately
-    fig.add_trace(go.Scatter(
-        x=anomalies["revenue_yoy_pct"],
-        y=anomalies["net_income_yoy_pct"],
-        mode="markers",
-        name="Anomaly",
-        marker={"color": "#ef4444", "size": 10, "symbol": "x"},  # red X marker for visual salience
-        hovertext=anomalies["ticker"] + " " + anomalies["fiscal_year"].astype(str),
-        hoverinfo="text+x+y",
-    ))
+    # Two invisible shape-key entries so the legend documents circle=normal / x=anomaly
+    for label, sym in [("Normal (○)", "circle"), ("Anomaly (✕)", "x")]:
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None],                                    # no data — legend display only
+            mode="markers",
+            name=label,
+            marker={"symbol": sym, "size": 9, "color": "#888888"},  # neutral grey
+            showlegend=True,
+        ))
 
     fig.update_layout(
         title="Anomaly Detection — YoY Growth",
