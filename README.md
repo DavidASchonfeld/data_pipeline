@@ -1,9 +1,6 @@
 # data_pipeline
 
-> **Status: Steps 1, 2, and 4 Complete**
-> Step 1 ✓ Airflow + MariaDB + Flask/Dash on EC2/K3S — complete.
-> Step 2 ✓ Snowflake · dbt · Kafka streaming — complete.
-> Step 4 ✓ MLflow · IsolationForest anomaly detection · Data Quality dashboard — complete.
+> **Live Dashboard: [http://100.30.3.22:32147/dashboard/](http://100.30.3.22:32147/dashboard/)**
 
 ## Cost
 
@@ -24,7 +21,7 @@ Five Airflow DAGs work together in two pairs plus one monitor:
 2. **Stock consumer** (`dag_stocks_consumer.py`, event-driven) — triggered by the producer; reads the message from Kafka, writes new rows to Snowflake `RAW.COMPANY_FINANCIALS`, runs dbt to build staging views and mart tables, then runs the anomaly detector (`anomaly_detector.py`) under a separate ml-venv, which fits an IsolationForest model on year-over-year financial growth, writes flagged rows to `ANALYTICS.FCT_ANOMALIES`, and logs the run to MLflow.
 3. **Weather producer** (`dag_weather.py`, hourly) — fetches a 7-day hourly forecast from Open-Meteo and publishes it to the `weather-hourly-raw` Kafka topic.
 4. **Weather consumer** (`dag_weather_consumer.py`, event-driven) — triggered by the producer; reads from Kafka, deduplicates against existing Snowflake rows, writes net-new rows to `RAW.WEATHER_HOURLY`, then runs dbt.
-5. **Staleness monitor** (`dag_staleness_check.py`, every 30 min) — checks that both pipelines ran recently and fires a Slack alert if they haven't.
+5. **Staleness monitor** (`dag_staleness_check.py`, every 30 min) — checks that both pipelines ran recently and fires a Slack alert if they haven't. *Intentionally paused in production to avoid unnecessary Snowflake warehouse activations; can be re-enabled on demand.*
 
 Flask + Dash queries Snowflake's `MARTS` schema (the dbt-built tables) and renders an interactive candlestick chart with volume bars and a stats table. A separate "Data Quality" section queries `FCT_ANOMALIES` and displays a scatter chart and detail table of flagged records.
 
@@ -126,7 +123,7 @@ flowchart LR
     Airflow["Apache Airflow\n(LocalExecutor · K3S · EC2)"] -.->|orchestrates| APIs
     Airflow -.->|orchestrates| KF
     Airflow -.->|orchestrates| SF
-    Airflow -.->|staleness monitor| Slack["Slack\n(60-min cooldown)"]
+    Airflow -.->|"staleness monitor\n(configured, inactive)"| Slack["Slack\n(webhook configured)"]
 ```
 
 > Full diagram also at [docs/architecture/ARCHITECTURE_DIAGRAM.md](docs/architecture/ARCHITECTURE_DIAGRAM.md)
@@ -185,7 +182,7 @@ http://<ELASTIC_IP>:32147/dashboard/
 ## Key Features
 
 - **Validation gates** at every ETL stage — extract, transform, load, and serve
-- **Alerting layer** — task failure/retry/recovery callbacks; data staleness monitor (every 30 min) fires a Slack webhook with a 60-minute cooldown so repeated alerts don't flood the channel; configure via `SLACK_WEBHOOK_URL` in your K8s secrets
+- **Alerting layer** — task failure/retry/recovery callbacks; data staleness monitor fires a Slack webhook with a 60-minute cooldown so repeated alerts don't flood the channel. The staleness DAG and webhook infrastructure are fully configured; both are intentionally inactive in production (staleness DAG paused to save Snowflake costs; Slack webhook not connected to an active workspace). Configure via `SLACK_WEBHOOK_URL` in your K8s secrets to activate.
 - **Cost controls** — daily batch gate (write to Snowflake once/day, not every hourly run); weather deduplication (skipping rows that already exist in Snowflake) against existing timestamps; Snowflake XSMALL + auto-suspend 60s; dashboard query cache remembers Snowflake results for 1 hour so the warehouse is queried ~4–5 times/hour regardless of traffic (financials, weather, anomalies, and pipeline health — all cached 1 hour) (see [Dashboard Cache](docs/architecture/DASHBOARD_CACHE.md))
 - **Vacation mode** — set `VACATION_MODE=true` to pause all pipelines without deleting DAGs
 - **Rate limiting** — SEC EDGAR client uses a token-bucket limiter (8 req/sec, thread-safe)
@@ -223,18 +220,6 @@ scikit-learn and mlflow are not installed in the main Airflow image — adding t
 Every time someone loads the dashboard, it needs data from Snowflake. Snowflake charges by how long the warehouse is running, so asking it the same question over and over — once per page load — adds up fast. The cache solves this by remembering the answer. After the first query, the result is stored in memory inside the Flask container. For the next hour, every user who loads the dashboard gets that stored answer instantly, without ever touching Snowflake. After an hour the stored answer expires (since it could be stale), and the next page load fetches a fresh copy and stores that. This keeps Snowflake queries at roughly 4–5 per hour no matter how many people are using the dashboard, instead of one query per user per load.
 
 When the container first starts (after a deploy or restart), the cache is empty. To avoid the first visitor sitting through a slow load, a background process fills the cache immediately on startup — before any user arrives. This "pre-warm" takes about 5–10 seconds and runs in parallel while the web server is already accepting requests. The implementation is a plain Python dictionary; no Redis or external cache service is needed for a single-container deployment. See [docs/architecture/DASHBOARD_CACHE.md](docs/architecture/DASHBOARD_CACHE.md) for technical details.
-
----
-
-## Roadmap
-
-| Step | Status | Description |
-|---|---|---|
-| Step 1 | ✓ Complete | Airflow + MariaDB + Flask/Dash on EC2/K3S |
-| Step 2 | ✓ Complete | Snowflake · dbt · Kafka streaming layer |
-| Step 3 | Planned | Portfolio polish: public dashboard URL, architecture diagram, GitHub Actions CI (dbt test on PR) |
-| Step 4 | ✓ Complete | MLflow anomaly detection — IsolationForest on financial metrics, FCT_ANOMALIES, Data Quality dashboard section |
-| Step 5 | Planned | Terraform (codify EC2 infra as IaC) |
 
 ---
 
