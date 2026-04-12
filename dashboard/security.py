@@ -33,6 +33,12 @@ _CSP = {
     "base-uri":    "'self'",                   # blocks injected <base> tag from hijacking relative URLs
 }
 
+# ── Ticker allowlist ──────────────────────────────────────────────────────────
+# Centralised here so any future security check (logging, blocking) lives in one place.
+# frozenset for O(1) lookup and immutability — must match TICKERS in app.py.
+ALLOWED_TICKERS: frozenset = frozenset({"AAPL", "MSFT", "GOOGL"})
+# ─────────────────────────────────────────────────────────────────────────────
+
 # ── Basic Auth helper ─────────────────────────────────────────────────────────
 def require_basic_auth(f):
     """Decorator: enforce HTTP Basic Auth using VALIDATION_USER/PASS env vars."""

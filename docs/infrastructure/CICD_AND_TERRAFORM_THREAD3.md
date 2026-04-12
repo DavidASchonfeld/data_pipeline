@@ -83,7 +83,7 @@ Renamed the plain-english guide directory and top-level file to use the shorter,
 ### 7. `docs/architecture/failure-modes/airflow-exec-oom-kill.md` — wording fix
 
 Changed line 15 from:
-> "Previous Claude attempts focused on increasing timeouts and CPU requests."
+> "Previous attempts focused on increasing timeouts and CPU requests."
 
 To:
 > "Earlier approaches focused on increasing timeouts and CPU requests."
