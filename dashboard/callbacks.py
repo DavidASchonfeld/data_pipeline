@@ -1,6 +1,9 @@
+import logging
 import plotly.graph_objects as go
 from dash import html
 from dash.dependencies import Input, Output
+
+logger = logging.getLogger(__name__)  # module-level logger — writes to pod stdout (visible in kubectl logs)
 
 from db import _load_ticker_data, load_anomalies, load_weather_data, load_pipeline_health  # load_pipeline_health added for the health panel
 from charts import build_revenue_net_income_fig, build_net_income_fig, build_stats_table, build_anomaly_scatter, build_anomaly_table, build_health_table  # build_health_table added for the health panel
@@ -25,11 +28,11 @@ def register_callbacks(dash_app) -> None:
         """
         try:
             df = _load_ticker_data(ticker)
-        except Exception as e:
-            # Show an error message in the chart area if the DB is unreachable
+        except Exception:
+            logger.exception("Failed to load ticker data for %s", ticker)  # full traceback to pod stdout
             empty_fig = go.Figure()
-            empty_fig.add_annotation(text=f"DB error: {e}", showarrow=False, font={"size": 14})
-            return empty_fig, empty_fig, html.P(f"Could not load data: {e}", style={"color": "red"})
+            empty_fig.add_annotation(text="Data temporarily unavailable", showarrow=False, font={"size": 14})
+            return empty_fig, empty_fig, html.P("Data temporarily unavailable. Please try again later.", style={"color": "red"})
 
         # Split into per-metric DataFrames for separate traces
         revenue_df    = df[df["metric"] == "Revenues"].copy()
@@ -52,11 +55,11 @@ def register_callbacks(dash_app) -> None:
         """Re-render anomaly scatter and table on page load or when the user clicks Refresh."""
         try:
             df = load_anomalies()  # query Snowflake (or return empty frame for non-Snowflake backends)
-        except Exception as e:
-            # Show an error annotation in the chart area if Snowflake is unreachable
+        except Exception:
+            logger.exception("Failed to load anomaly data")  # full traceback to pod stdout
             empty_fig = go.Figure()
-            empty_fig.add_annotation(text=f"DB error: {e}", showarrow=False, font={"size": 14})
-            return empty_fig, html.P(f"Could not load anomaly data: {e}", style={"color": "red"})
+            empty_fig.add_annotation(text="Data temporarily unavailable", showarrow=False, font={"size": 14})
+            return empty_fig, html.P("Data temporarily unavailable. Please try again later.", style={"color": "red"})
         return build_anomaly_scatter(df), build_anomaly_table(df)  # chart + table rendered from the same DataFrame
 
     # ── Pipeline Health callback ───────────────────────────────────────────────
@@ -69,8 +72,9 @@ def register_callbacks(dash_app) -> None:
         """Render pipeline health table on page load or when the user clicks Refresh Anomalies."""
         try:
             df = load_pipeline_health()  # returns cached result or queries Snowflake
-        except Exception as e:
-            return html.P(f"Could not load pipeline health: {e}", style={"color": "red"})
+        except Exception:
+            logger.exception("Failed to load pipeline health")  # full traceback to pod stdout
+            return html.P("Data temporarily unavailable. Please try again later.", style={"color": "red"})
         return build_health_table(df)  # renders row counts + freshness table
 
 
@@ -87,9 +91,9 @@ def register_weather_callbacks(weather_dash_app) -> None:
         """Re-render temperature chart and stats table on page load or when the user clicks Refresh."""
         try:
             df = load_weather_data()  # query Snowflake (or return empty frame for non-Snowflake backends)
-        except Exception as e:
-            # Show an error annotation in the chart area if Snowflake is unreachable
+        except Exception:
+            logger.exception("Failed to load weather data")  # full traceback to pod stdout
             empty_fig = go.Figure()
-            empty_fig.add_annotation(text=f"DB error: {e}", showarrow=False, font={"size": 14})  # error visible in the chart area
-            return empty_fig, html.P(f"Could not load weather data: {e}", style={"color": "red"})
+            empty_fig.add_annotation(text="Data temporarily unavailable", showarrow=False, font={"size": 14})
+            return empty_fig, html.P("Data temporarily unavailable. Please try again later.", style={"color": "red"})
         return build_temperature_fig(df), build_weather_stats_table(df)  # chart + stats rendered from the same DataFrame

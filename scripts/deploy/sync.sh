@@ -86,6 +86,18 @@ step_sync_manifests_secrets() {
         echo 'SNOWFLAKE_ROLE + AIRFLOW_CONN_SNOWFLAKE_DEFAULT patched into both namespaces.'
     "
 
+    echo "=== Step 2c1b: Creating flask-app-secrets K8s secret ==="
+    # Flask requires a secret key for session/cookie security; /validation uses VALIDATION_USER/PASS for HTTP Basic Auth.
+    # --dry-run=client -o yaml | kubectl apply is idempotent: creates the secret if absent, updates it if present.
+    ssh "$EC2_HOST" "
+        kubectl create secret generic flask-app-secrets \
+            -n default \
+            --from-literal=FLASK_SECRET_KEY='${FLASK_SECRET_KEY}' \
+            --from-literal=VALIDATION_USER='${VALIDATION_USER}' \
+            --from-literal=VALIDATION_PASS='${VALIDATION_PASS}' \
+            --dry-run=client -o yaml | kubectl apply -f -
+    "
+
     echo "=== Step 2c2: Syncing dbt profiles secret to EC2 ==="
     # profiles.yml is gitignored (contains dbt connection config referencing Snowflake env vars).
     # scp copies the file to EC2, then kubectl creates or updates the dbt-profiles secret (safe to run multiple times).

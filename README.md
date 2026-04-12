@@ -1,6 +1,6 @@
 # data_pipeline
 
-> **Live Dashboard: [http://100.30.3.22:32147/dashboard/](http://100.30.3.22:32147/dashboard/)**
+> **Live Dashboard: [http://52.70.211.1:32147/dashboard/](http://52.70.211.1:32147/dashboard/)**
 
 ## Cost
 
@@ -228,3 +228,17 @@ When the container first starts (after a deploy or restart), the cache is empty.
 Full docs live in `docs/`. Start at **[docs/INDEX.md](docs/INDEX.md)**.
 
 For a non-technical walkthrough, see **[docs/guides/](docs/guides/)**.
+
+---
+
+## Companion Project: PySpark Financial Analytics
+
+**[github.com/DavidASchonfeld/pyspark-financial-analytics](https://github.com/DavidASchonfeld/pyspark-financial-analytics)**
+
+Both projects pull financial data from the same source — the SEC EDGAR API — but they operate at fundamentally different scales, and that difference drove a deliberate choice of processing framework for each.
+
+This pipeline focuses on a curated set of tickers (AAPL, MSFT, GOOGL). At that scope, Pandas is the right tool: it handles everything comfortably in memory, starts up instantly, and adding distributed infrastructure like Spark would introduce far more overhead than the data volume justifies — it would actually make the pipeline slower, not faster.
+
+The companion project is the counterpart: it queries the full universe of U.S. public companies registered with the SEC — over 10,000 entities, producing hundreds of thousands of filing records. At that scale, loading everything into a single process the way Pandas does stops being practical. The companion project runs on Databricks and uses PySpark to distribute the work across a cluster, which makes grouping, ranking, and computing window functions (like filing frequency patterns and form type sequences) across millions of records fast and efficient.
+
+Same API, same underlying data source — Pandas was the deliberate choice here because this project's scope doesn't need anything more; PySpark was the deliberate choice there because the data volume genuinely warrants it.

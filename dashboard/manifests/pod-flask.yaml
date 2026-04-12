@@ -19,6 +19,8 @@ spec:
         name: db-credentials  # injects DB_USER, DB_PASSWORD, DB_HOST, DB_NAME
     - secretRef:
         name: snowflake-credentials  # injects SNOWFLAKE_ACCOUNT, USER, PASSWORD, DATABASE, SCHEMA, WAREHOUSE
+    - secretRef:
+        name: flask-app-secrets  # injects FLASK_SECRET_KEY, VALIDATION_USER, VALIDATION_PASS — created by deploy.sh Step 2c1b
     env:
     - name: DB_BACKEND
       value: "snowflake"  # activates Snowflake engine in db.py; set to "mariadb" to revert

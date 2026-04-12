@@ -14,3 +14,8 @@ pymysql==1.1.1        # MariaDB/MySQL driver for SQLAlchemy
 # Snowflake dependencies
 snowflake-connector-python==3.10.1
 snowflake-sqlalchemy==1.6.1       # 1.6.x+ required for SQLAlchemy 2.x compatibility
+
+# Security extensions
+flask-limiter==3.5.0    # per-IP rate limiting — prevents Snowflake query flooding
+flask-talisman==1.1.0   # HTTP security headers: CSP, X-Frame-Options, X-Content-Type-Options
+flask-cors==4.0.1       # CORS policy — restricts cross-origin requests to known origins
