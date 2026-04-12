@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)  # module-level logger — writes to pod st
 from db import _load_ticker_data, load_anomalies, load_weather_data, load_pipeline_health  # load_pipeline_health added for the health panel
 from charts import build_revenue_net_income_fig, build_net_income_fig, build_stats_table, build_anomaly_scatter, build_anomaly_table, build_health_table  # build_health_table added for the health panel
 from weather_charts import build_temperature_fig, build_weather_stats_table  # weather chart builders added
+from security import ALLOWED_TICKERS  # import centralised allowlist — avoids duplicating the set here
 
 
 def register_callbacks(dash_app) -> None:
@@ -26,6 +27,10 @@ def register_callbacks(dash_app) -> None:
         any Input component changes. The return values are mapped positionally to the
         Output components defined above — order matters.
         """
+        if ticker not in ALLOWED_TICKERS:                                                              # reject unknown tickers before any DB call — prevents strangers cache-busting Snowflake queries
+            empty_fig = go.Figure()                                                                     # blank figure returned for both chart slots so Dash has a valid object to render
+            empty_fig.add_annotation(text="Invalid ticker", showarrow=False, font={"size": 14})        # surface the rejection reason visually instead of silently showing an empty chart
+            return empty_fig, empty_fig, html.P("Invalid ticker selection.", style={"color": "red"})   # return all three outputs so Dash's positional mapping doesn't raise a mismatch error
         try:
             df = _load_ticker_data(ticker)
         except Exception:
