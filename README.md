@@ -5,6 +5,13 @@
 > Step 2 ✓ Snowflake · dbt · Kafka streaming — complete.
 > Step 4 ✓ MLflow · IsolationForest anomaly detection · Data Quality dashboard — complete.
 
+## Cost
+
+~$70–75/month (EC2 t3.large + 100 GiB EBS gp3 + Elastic IP). Snowflake XSMALL warehouse
+auto-suspends after 60s; dashboard cache keeps warehouse activations to ~4/hour.
+
+---
+
 End-to-end data pipeline that pulls daily stock financials (AAPL, MSFT, GOOGL) from SEC EDGAR and hourly weather data from Open-Meteo, streams them through Apache Kafka, stores them in Snowflake, transforms them with dbt, detects anomalies with an IsolationForest model tracked in MLflow, and serves an interactive Plotly/Dash dashboard — orchestrated by Apache Airflow and hosted on AWS EC2 via K3S Kubernetes.
 
 ---
@@ -91,46 +98,38 @@ With Kafka: the message stays in the topic for 48 hours regardless. The consumer
 
 ## Architecture
 
-```
-Your Mac
-└── ./scripts/deploy.sh → EC2 (rsync DAGs, build image, helm upgrade)
+```mermaid
+flowchart LR
+    subgraph APIs["External APIs"]
+        SEC["SEC EDGAR\n(stocks, daily)"]
+        OMeteo["Open-Meteo\n(weather, hourly)"]
+    end
 
-AWS EC2 t3.large (2 vCPU, 8 GB RAM, 100 GiB EBS)
-└── K3S Kubernetes
-    │
-    ├── Pod: Apache Airflow 3.1.8  (Helm chart, LocalExecutor)
-    │   ├── dag_stocks.py            SEC EDGAR API → Kafka               (daily)
-    │   ├── dag_stocks_consumer.py   Kafka → Snowflake → dbt → anomalies (triggered)
-    │   ├── dag_weather.py           Open-Meteo API → Kafka              (hourly)
-    │   ├── dag_weather_consumer.py  Kafka → Snowflake → dbt             (triggered)
-    │   └── dag_staleness_check.py   freshness monitor                   (every 30 min)
-    │
-    ├── Pod: MLflow  (Deployment, port 5000, artifact root on PVC)
-    │   └── tracks anomaly detection runs — parameters, metrics, model artifacts
-    │
-    ├── Pod: Apache Kafka 4.0  (StatefulSet, KRaft mode, 2Gi PVC)
-    │   ├── stocks-financials-raw   (1 partition, 48h/100MB retention)
-    │   └── weather-hourly-raw      (1 partition, 48h/100MB retention)
-    │
-    ├── Pod: Flask + Dash  (Gunicorn, NodePort 32147)
-    │   ├── /dashboard/   candlestick chart, volume bars, stats table, Data Quality section
-    │   └── /health       Kubernetes liveness probe
-    │
-    ├── Pod: PostgreSQL   (Airflow metadata — not your pipeline data)
-    │
-    └── PersistentVolumes (hostPath on EC2 disk)
-        ├── DAG files     /home/ubuntu/airflow/dags
-        ├── Airflow logs  /home/ubuntu/airflow_logs
-        └── Kafka data    (2Gi PVC via local-path provisioner)
+    subgraph KF["Apache Kafka · K3S"]
+        K1["stocks-financials-raw"]
+        K2["weather-hourly-raw"]
+    end
 
-Snowflake (external cloud warehouse)
-    └── PIPELINE_DB
-        ├── RAW.COMPANY_FINANCIALS      — stock rows written by consumer DAG
-        ├── RAW.WEATHER_HOURLY          — weather rows written by consumer DAG
-        ├── STAGING.*                   — dbt VIEWs (zero storage cost)
-        ├── MARTS.*                     — dbt TABLEs (queried by Flask/Dash)
-        └── ANALYTICS.FCT_ANOMALIES     — anomaly-flagged rows written by anomaly_detector.py
+    subgraph SF["Snowflake · PIPELINE_DB"]
+        RAW["RAW\n(raw ingest)"]
+        STAG["STAGING\n(dbt views)"]
+        MARTS["MARTS\n(dbt tables)"]
+        ANALYTICS["ANALYTICS\nFCT_ANOMALIES"]
+        RAW --> STAG --> MARTS --> ANALYTICS
+    end
+
+    SEC --> K1
+    OMeteo --> K2
+    K1 & K2 --> RAW
+    MARTS & ANALYTICS --> DSH["Flask + Dash\nDashboard :32147"]
+    ANALYTICS --> MLF["MLflow\n(experiment tracking)"]
+    Airflow["Apache Airflow\n(LocalExecutor · K3S · EC2)"] -.->|orchestrates| APIs
+    Airflow -.->|orchestrates| KF
+    Airflow -.->|orchestrates| SF
+    Airflow -.->|staleness monitor| Slack["Slack\n(60-min cooldown)"]
 ```
+
+> Full diagram also at [docs/architecture/ARCHITECTURE_DIAGRAM.md](docs/architecture/ARCHITECTURE_DIAGRAM.md)
 
 ---
 
@@ -149,6 +148,12 @@ Snowflake (external cloud warehouse)
 | Cloud | AWS EC2 t3.large, 100 GiB EBS gp3 (~$70–75/month total) |
 | Stock data | SEC EDGAR XBRL API (free, no API key) — XBRL is the structured XML format the SEC requires companies to use in filings; CIK is the SEC's numeric company ID (e.g. `0000320193` for Apple) |
 | Weather data | Open-Meteo API (free, no API key) |
+
+**Generate and serve dbt docs locally:**
+```bash
+cd airflow/dags/dbt
+dbt docs generate && dbt docs serve
+```
 
 ---
 
@@ -169,13 +174,19 @@ ssh -L 30080:localhost:30080 -L 32147:localhost:32147 ec2-stock
 # Dashboard:   http://localhost:32147/dashboard/
 ```
 
+**Public dashboard (no tunnel required):**
+```
+http://<ELASTIC_IP>:32147/dashboard/
+```
+> Get your Elastic IP: `terraform output elastic_ip` (run from `terraform/`)
+
 ---
 
 ## Key Features
 
 - **Validation gates** at every ETL stage — extract, transform, load, and serve
-- **Alerting layer** — task failure/retry/recovery callbacks; data staleness monitor (30 min); Slack webhook supported
-- **Cost controls** — daily batch gate (write to Snowflake once/day, not every hourly run); weather deduplication (skipping rows that already exist in Snowflake) against existing timestamps; Snowflake XSMALL + auto-suspend 60s; dashboard query cache remembers Snowflake results for 1 hour so the warehouse is queried ~4 times/hour regardless of traffic (see [Dashboard Cache](docs/architecture/DASHBOARD_CACHE.md))
+- **Alerting layer** — task failure/retry/recovery callbacks; data staleness monitor (every 30 min) fires a Slack webhook with a 60-minute cooldown so repeated alerts don't flood the channel; configure via `SLACK_WEBHOOK_URL` in your K8s secrets
+- **Cost controls** — daily batch gate (write to Snowflake once/day, not every hourly run); weather deduplication (skipping rows that already exist in Snowflake) against existing timestamps; Snowflake XSMALL + auto-suspend 60s; dashboard query cache remembers Snowflake results for 1 hour so the warehouse is queried ~4–5 times/hour regardless of traffic (financials, weather, anomalies, and pipeline health — all cached 1 hour) (see [Dashboard Cache](docs/architecture/DASHBOARD_CACHE.md))
 - **Vacation mode** — set `VACATION_MODE=true` to pause all pipelines without deleting DAGs
 - **Rate limiting** — SEC EDGAR client uses a token-bucket limiter (8 req/sec, thread-safe)
 - **Anomaly detection** — IsolationForest model scores each ticker's year-over-year revenue and net income growth; flagged rows written to `ANALYTICS.FCT_ANOMALIES` and visible in the dashboard's "Data Quality" tab
@@ -209,7 +220,7 @@ A fixed threshold (for example, "flag any year-over-year drop greater than 50%")
 scikit-learn and mlflow are not installed in the main Airflow image — adding them would bloat the image and risk version conflicts with Airflow's own dependencies. Instead, the anomaly detector runs as a subprocess under `/opt/ml-venv`, a dedicated Python environment provisioned on the EC2 host. The Airflow task just calls `subprocess.run(["ml-venv/bin/python", "anomaly_detector.py"])` and reads the JSON result from stdout.
 
 **Dashboard query cache: remembering answers instead of asking Snowflake every time**
-Every time someone loads the dashboard, it needs data from Snowflake. Snowflake charges by how long the warehouse is running, so asking it the same question over and over — once per page load — adds up fast. The cache solves this by remembering the answer. After the first query, the result is stored in memory inside the Flask container. For the next hour, every user who loads the dashboard gets that stored answer instantly, without ever touching Snowflake. After an hour the stored answer expires (since it could be stale), and the next page load fetches a fresh copy and stores that. This keeps Snowflake queries at roughly 4 per hour no matter how many people are using the dashboard, instead of one query per user per load.
+Every time someone loads the dashboard, it needs data from Snowflake. Snowflake charges by how long the warehouse is running, so asking it the same question over and over — once per page load — adds up fast. The cache solves this by remembering the answer. After the first query, the result is stored in memory inside the Flask container. For the next hour, every user who loads the dashboard gets that stored answer instantly, without ever touching Snowflake. After an hour the stored answer expires (since it could be stale), and the next page load fetches a fresh copy and stores that. This keeps Snowflake queries at roughly 4–5 per hour no matter how many people are using the dashboard, instead of one query per user per load.
 
 When the container first starts (after a deploy or restart), the cache is empty. To avoid the first visitor sitting through a slow load, a background process fills the cache immediately on startup — before any user arrives. This "pre-warm" takes about 5–10 seconds and runs in parallel while the web server is already accepting requests. The implementation is a plain Python dictionary; no Redis or external cache service is needed for a single-container deployment. See [docs/architecture/DASHBOARD_CACHE.md](docs/architecture/DASHBOARD_CACHE.md) for technical details.
 
@@ -231,4 +242,4 @@ When the container first starts (after a deploy or restart), the cache is empty.
 
 Full docs live in `docs/`. Start at **[docs/INDEX.md](docs/INDEX.md)**.
 
-For a non-technical walkthrough, see **[docs/plain-english/](docs/plain-english/)**.
+For a non-technical walkthrough, see **[docs/guides/](docs/guides/)**.

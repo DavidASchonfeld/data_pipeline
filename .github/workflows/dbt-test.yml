@@ -1,0 +1,25 @@
+name: dbt tests
+on:
+  pull_request:
+    paths:
+      - 'airflow/dags/dbt/**'
+      - '.github/workflows/dbt-test.yml'
+jobs:
+  dbt-test:
+    runs-on: ubuntu-latest
+    env:
+      SNOWFLAKE_ACCOUNT:   ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER:      ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_PASSWORD:  ${{ secrets.SNOWFLAKE_PASSWORD }}
+      SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dbt-snowflake
+        run: pip install dbt-snowflake==1.8.0
+      - name: dbt deps
+        run: dbt deps --project-dir airflow/dags/dbt --profiles-dir .
+      - name: dbt test
+        run: dbt test --project-dir airflow/dags/dbt --profiles-dir . --select tag:stocks tag:weather

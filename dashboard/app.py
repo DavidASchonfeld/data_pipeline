@@ -83,6 +83,12 @@ dash_app.layout = html.Div(
             "IsolationForest model scores each ticker's YoY growth; outliers flagged as anomalies and tracked in MLflow.",
             style={"color": "#6b7280"},
         ),
+        # Pipeline Health panel — row counts + freshness for the three core Snowflake tables
+        dcc.Loading(
+            id="loading-health",
+            type="circle",  # consistent spinner style with the rest of the dashboard
+            children=[html.Div(id="health-table", style={"marginBottom": "20px"})],
+        ),
         html.Button(
             "Refresh Anomalies",
             id="anomaly-refresh-btn",  # id referenced by the update_anomalies callback in callbacks.py

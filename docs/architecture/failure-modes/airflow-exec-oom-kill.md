@@ -12,7 +12,7 @@ Exit code 137 means the process was killed by SIGKILL — not a timeout, not a c
 
 The same failure also existed for `KAFKA_BOOTSTRAP_SERVERS` set in `step_restart_airflow_pods`.
 
-Previous Claude attempts focused on increasing timeouts and CPU requests. Those were unrelated to the actual problem.
+Earlier approaches focused on increasing timeouts and CPU requests. Those were unrelated to the actual problem.
 
 ## Root Cause
 

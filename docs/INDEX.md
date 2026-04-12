@@ -6,7 +6,7 @@ Complete navigation guide for all project documentation.
 
 ## Quick Start
 
-1. **[plain-english/](plain-english/README.md)** — Non-technical guide: where code lives, what pods are, how bugs were fixed
+1. **[guides/](guides/README.md)** — Non-technical guide: where code lives, what pods are, how bugs were fixed
 2. **[README.md](../README.md)** — Project overview, architecture, tech stack
 3. **[OVERVIEW.md](../OVERVIEW.md)** — Local dev setup, production deploy, K8s namespaces
 
@@ -76,21 +76,21 @@ Complete navigation guide for all project documentation.
 
 ---
 
-## Plain English Guide (Non-technical)
+## Guides (Non-technical)
 
-The guide is split into self-contained parts in [plain-english/](plain-english/README.md):
+The guide is split into self-contained parts in [guides/](guides/README.md):
 
 | Part | Topic |
 |------|-------|
-| [01](plain-english/01-where-code-lives.md) | Where your code lives |
-| [02](plain-english/02-pods-and-navigation.md) | Pods and navigation |
-| [03](plain-english/03-files-and-tunnels.md) | File mounts and SSH tunnels |
-| [04](plain-english/04-bugs-config-and-infra.md) | Bug history: config and infrastructure |
-| [05](plain-english/05-bugs-upgrade-and-migration.md) | Bug history: upgrade and migration |
-| [06](plain-english/06-quick-reference.md) | Common tasks quick reference |
-| [07](plain-english/07-alerting.md) | Alerting and notifications |
-| [08](plain-english/08-big-picture-and-sizing.md) | Big picture and EC2 sizing |
-| [09](plain-english/09-dbt-and-roadmap.md) | dbt and Step 2 roadmap |
+| [01](guides/01-where-code-lives.md) | Where your code lives |
+| [02](guides/02-pods-and-navigation.md) | Pods and navigation |
+| [03](guides/03-files-and-tunnels.md) | File mounts and SSH tunnels |
+| [04](guides/04-bugs-config-and-infra.md) | Bug history: config and infrastructure |
+| [05](guides/05-bugs-upgrade-and-migration.md) | Bug history: upgrade and migration |
+| [06](guides/06-quick-reference.md) | Common tasks quick reference |
+| [07](guides/07-alerting.md) | Alerting and notifications |
+| [08](guides/08-big-picture-and-sizing.md) | Big picture and EC2 sizing |
+| [09](guides/09-dbt-and-roadmap.md) | dbt and Step 2 roadmap |
 
 ---
 
@@ -105,4 +105,4 @@ The guide is split into self-contained parts in [plain-english/](plain-english/R
 | "How do PersistentVolumes work?" | [infrastructure/PERSISTENCE.md](infrastructure/PERSISTENCE.md) |
 | "What happened on 2026-03-31?" | [incidents/2026-03-31/](incidents/2026-03-31/) |
 | "How do I set up Snowflake?" | [operations/runbooks/setup-snowflake.md](operations/runbooks/setup-snowflake.md) |
-| "How does alerting work?" | [plain-english/07-alerting.md](plain-english/07-alerting.md) |
+| "How does alerting work?" | [guides/07-alerting.md](guides/07-alerting.md) |
