@@ -2,7 +2,7 @@
 
 Troubleshooting pod crashes, OOMKill, CrashLoopBackOff, Helm upgrade failures, and service routing.
 
-**See also:** [Parent index](../TROUBLESHOOTING.md) | [DEBUGGING.md](../DEBUGGING.md) | [RUNBOOKS.md](../RUNBOOKS.md)
+**See also:** [Parent index](../TROUBLESHOOTING.md) | [Troubleshooting](../TROUBLESHOOTING.md) | [RUNBOOKS.md](../RUNBOOKS.md)
 
 ---
 

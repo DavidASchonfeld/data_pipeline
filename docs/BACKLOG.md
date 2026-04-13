@@ -89,10 +89,31 @@ Do this after Step 2. With MariaDB gone, you have the headroom to run Kafka safe
 
 ## dbt (Step 2b — after Snowflake is working)
 
-- [ ] Install `dbt-snowflake` and initialize a dbt project inside the repo
-- [ ] Move `transform()` logic out of DAGs into dbt models (SQL files)
-- [ ] Change DAG flow to: `extract()` → `load_raw()` → `dbt run` (via BashOperator or `astronomer-cosmos`)
-- [ ] Add dbt tests for data quality (not-null, accepted values, etc.)
+### What Is dbt, and Why Use It?
+
+Right now the pipeline does extraction, transformation, and loading all inside the DAG tasks using Python and Pandas. This works for a few tables, but as the number of tables grows, transformation logic gets buried in Python functions spread across DAG files.
+
+dbt (data build tool) moves all transformation logic into **SQL files** in version control — one file per table, with a clear name and automated tests. The Airflow DAG handles "get the data in." dbt handles "make the data useful."
+
+Each dbt "model" is a `.sql` file:
+```sql
+-- Annual revenue for each company — cleaned and filtered
+SELECT ticker, entity_name, period_end, fiscal_year, value AS revenue_usd, filed_date
+FROM {{ ref('stg_company_financials') }}
+WHERE metric = 'Revenues' AND fiscal_period = 'FY'
+ORDER BY ticker, period_end
+```
+
+The `{{ ref(...) }}` is dbt's dependency system — it knows to run the staging model first, then this one, building a lineage graph automatically. dbt also supports built-in data quality tests (not-null, accepted values) defined in YAML alongside the models.
+
+`astronomer-cosmos` integrates dbt with Airflow by turning each dbt model into its own Airflow task with separate logs.
+
+### Tasks
+
+- [x] Install `dbt-snowflake` and initialize a dbt project inside the repo
+- [x] Move `transform()` logic out of DAGs into dbt models (SQL files)
+- [x] Change DAG flow to: `extract()` → `load_raw()` → `dbt run` (via BashOperator or `astronomer-cosmos`)
+- [x] Add dbt tests for data quality (not-null, accepted values, etc.)
 
 ---
 

@@ -2,7 +2,7 @@
 
 Troubleshooting DAG disappearing after deploy, dynamic start_date problems, filesystem cache staleness, and task failures.
 
-**See also:** [DAG Discovery Issues](airflow-dag-issues.md) | [Parent index](../TROUBLESHOOTING.md) | [DEBUGGING.md](../DEBUGGING.md)
+**See also:** [DAG Discovery Issues](airflow-dag-issues.md) | [Parent index](../TROUBLESHOOTING.md) | [Troubleshooting](../TROUBLESHOOTING.md)
 
 ---
 

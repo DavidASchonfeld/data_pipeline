@@ -5,7 +5,7 @@
 
 ---
 
-This is a production-grade data pipeline that runs continuously on AWS, pulling real financial filings and weather data, processing them through a full streaming architecture, and surfacing the results on a live interactive dashboard — all for about $70 a month.
+This is a data pipeline that runs continuously on AWS, pulling real financial filings and weather data, processing them through a streaming architecture, and surfacing the results on a live interactive dashboard — all for about $70 a month.
 
 The pipeline collects two data streams: official SEC financial filings for AAPL, MSFT, and GOOGL (updated daily) and hourly weather data from Open-Meteo. Each stream flows through Apache Kafka into Snowflake, where dbt transforms the raw data into clean, tested tables. A machine learning model (IsolationForest) scores each company's year-over-year financial trends and flags anomalies — with every model run tracked in MLflow for reproducibility. Apache Airflow orchestrates everything on schedule, running on a single EC2 instance under K3S (lightweight Kubernetes). The EC2 t3.large + 100 GiB EBS gp3 + Elastic IP runs about $70–75/month; a combination of auto-suspend, query caching, and batch gating keeps Snowflake costs minimal.
 
@@ -174,7 +174,7 @@ dbt docs generate && dbt docs serve
 
 The pipeline runs on EC2 in production and can be run locally for development.
 
-**Local dev:** See [OVERVIEW.md](OVERVIEW.md) for full local setup.
+**Local dev:** See [SETUP.md](SETUP.md) for full local setup.
 
 **Production deploy:**
 ```bash
@@ -245,7 +245,7 @@ When the container first starts (after a deploy or restart), the cache is empty.
 
 Full docs live in `docs/`. Start at **[docs/INDEX.md](docs/INDEX.md)**.
 
-The guides directory includes step-by-step walkthroughs of each component — useful if you want to understand any part in more depth: **[docs/guides/](docs/guides/)**.
+Key entry points: [SETUP.md](SETUP.md) (local dev + production deploy), [docs/DEPLOY.md](docs/DEPLOY.md) (deploy script guide), [docs/COSTS.md](docs/COSTS.md) (monthly costs), [docs/VERIFICATION.md](docs/VERIFICATION.md) (post-deploy checklist).
 
 ---
 

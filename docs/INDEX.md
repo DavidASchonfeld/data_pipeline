@@ -1,96 +1,86 @@
-# Documentation Index
+# Documentation
 
-Complete navigation guide for all project documentation.
-
----
-
-## Quick Start
-
-1. **[guides/](guides/README.md)** — Non-technical guide: where code lives, what pods are, how bugs were fixed
-2. **[README.md](../README.md)** — Project overview, architecture, tech stack
-3. **[OVERVIEW.md](../OVERVIEW.md)** — Local dev setup, production deploy, K8s namespaces
+Navigate all project documentation from here. Each link goes to the single source of truth for that topic.
 
 ---
 
-## Planning & Roadmap
+## Start Here
 
 | Document | What it covers |
 |----------|---------------|
-| [BACKLOG.md](BACKLOG.md) | Ordered checklist: t3.large go-live, Snowflake migration, Kafka setup |
+| [README](../README.md) | What this project does, architecture, tech stack, design decisions |
+| [Setup Guide](../SETUP.md) | Local development, production deployment, how code flows from Mac to EC2 to pods |
+| [Deploy Guide](DEPLOY.md) | How `deploy.sh` works, Terraform, and how to restore the project after shutdown |
+| [Costs](COSTS.md) | Monthly cost breakdown per service, cost controls, shutdown and restoration |
 
 ---
 
-## Architecture (How the system works and fails)
+## Verify Everything Works
 
 | Document | What it covers |
 |----------|---------------|
-| [SYSTEM_OVERVIEW.md](architecture/SYSTEM_OVERVIEW.md) | K3s, containerd, pods, services, PVs, ETL data flow, Helm |
-| [FAILURE_MODE_MAP.md](architecture/FAILURE_MODE_MAP.md) | Top failure modes per component, symptoms, root causes, blast radius |
-| [COMPONENT_INTERACTIONS.md](architecture/COMPONENT_INTERACTIONS.md) | Dependency graph, blast radius analysis, cascade failure chains |
-| [DATA_FLOW.md](architecture/DATA_FLOW.md) | Validation gates at each pipeline stage, XCom transport risks |
+| [Verification Checklist](VERIFICATION.md) | 14-step post-deploy validation: pods, Snowflake, Kafka, dbt, pipelines, MLflow, dashboard |
 
 ---
 
-## Operations (Running and maintaining the system)
+## Architecture
 
 | Document | What it covers |
 |----------|---------------|
-| [RUNBOOKS.md](operations/RUNBOOKS.md) | Index of 18 step-by-step playbooks (split into [individual files](operations/runbooks/)) |
-| [PREVENTION_CHECKLIST.md](operations/PREVENTION_CHECKLIST.md) | Pre-deploy, post-deploy, weekly health, DAG authoring checklists |
-| [DEBUGGING.md](operations/DEBUGGING.md) | Systematic debugging approach, diagnostic sequences, common issues |
-| [TROUBLESHOOTING.md](operations/TROUBLESHOOTING.md) | Specific issue solutions: DAG discovery, PV mismatch, staleness, deploy |
+| [System Overview](architecture/SYSTEM_OVERVIEW.md) | K3s, containerd, pods, services, PVs, ETL data flow, Helm |
+| [Data Flow](architecture/DATA_FLOW.md) | Validation gates at each pipeline stage, XCom transport risks |
+| [Component Interactions](architecture/COMPONENT_INTERACTIONS.md) | Dependency graph, blast radius analysis, cascade failure chains |
+| [Failure Mode Map](architecture/FAILURE_MODE_MAP.md) | What can go wrong per component: symptoms, root causes, diagnostic rules |
+| [Dashboard Cache](architecture/DASHBOARD_CACHE.md) | How the query cache works, why it saves Snowflake costs |
+| [Alerting](architecture/ALERTING.md) | Failure alerts, staleness monitoring, Slack webhooks, cooldown system |
 
 ---
 
-## Infrastructure (K3s, AWS, storage)
+## Operations
 
 | Document | What it covers |
 |----------|---------------|
-| [K3S_RISKS.md](infrastructure/K3S_RISKS.md) | Single-node tradeoffs, containerd vs Docker, Helm state, security |
-| [PERSISTENCE.md](infrastructure/PERSISTENCE.md) | PV/PVC deep dive: hostPath risks, filesystem cache, debugging |
-| [EC2_SIZING.md](infrastructure/EC2_SIZING.md) | EC2 instance sizing: RAM table, t3.large verdict, Kafka heap tuning |
-| [ECR_SETUP.md](infrastructure/ECR_SETUP.md) | AWS ECR configuration, image push workflow, authentication |
-| [refactor-ecr-migration.md](infrastructure/refactor-ecr-migration.md) | Why containerd + ECR replaced Docker mode |
+| [Quick Reference](operations/QUICK_REFERENCE.md) | Common commands: deploy, check pods, trigger DAGs, access UIs |
+| [Runbooks](operations/RUNBOOKS.md) | Step-by-step playbooks for 18 operational tasks |
+| [Troubleshooting](operations/TROUBLESHOOTING.md) | Debugging approach, diagnostic sequences, specific issue solutions |
+| [Prevention Checklist](operations/PREVENTION_CHECKLIST.md) | Pre-deploy, post-deploy, weekly health, DAG authoring checklists |
 
 ---
 
-## Reference (Commands, terms, tools)
+## Infrastructure
 
 | Document | What it covers |
 |----------|---------------|
-| [COMMANDS.md](reference/COMMANDS.md) | Shell command explanations: ss, rsync, kubectl, docker |
-| [KUBECTL_COMMANDS.md](reference/KUBECTL_COMMANDS.md) | Kubernetes CLI reference |
-| [GLOSSARY.md](reference/GLOSSARY.md) | Technical terms: SMA, ETL, DAG, PV, PVC, K3S, XCom, etc. |
+| [EC2 Sizing](infrastructure/EC2_SIZING.md) | Instance sizing, RAM breakdown, resource limits, when to resize |
+| [K3S Risks](infrastructure/K3S_RISKS.md) | Single-node tradeoffs, containerd, Helm state, security |
+| [Persistence](infrastructure/PERSISTENCE.md) | PV/PVC deep dive: hostPath risks, filesystem cache, recovery |
+| [ECR Setup](infrastructure/ECR_SETUP.md) | AWS ECR configuration, image push workflow |
 
 ---
 
-## Incidents (Historical record)
+## Incidents
 
 | Document | What it covers |
 |----------|---------------|
-| [CHANGELOG.md](incidents/CHANGELOG.md) | Recent fixes and changes (older entries in [_archive/](incidents/_archive/)) |
-| [2026-04-07 incident](incidents/2026-04-07-airflow-imagepullbackoff-incident.md) | ImagePullBackOff: obsolete images, invalid YAML, resource caching |
-| [2026-04-06 learnings](incidents/2026-04-06-airflow-3x-upgrade-learnings.md) | Airflow 3.x upgrade: 7 root causes, cascade failure, recovery |
-| [2026-03-31/](incidents/2026-03-31/) | Stock DAG disappearance: config drift, processor cache staleness |
-| [2026-03-30/](incidents/2026-03-30/) | Airflow infra fixes: PostgreSQL image, PV path, DB credentials |
+| [Incident Log](incidents/INDEX.md) | All past issues organized by component, with links to individual write-ups |
 
 ---
 
-## Guides (Non-technical)
+## Reference
 
-The guide is split into self-contained parts in [guides/](guides/README.md):
+| Document | What it covers |
+|----------|---------------|
+| [Shell Commands](reference/COMMANDS.md) | What `ss`, `rsync`, `kubectl`, `docker` commands do |
+| [kubectl Commands](reference/KUBECTL_COMMANDS.md) | Kubernetes CLI reference |
+| [Glossary](reference/GLOSSARY.md) | Technical terms: ETL, DAG, PV, PVC, K3S, XCom, etc. |
 
-| Part | Topic |
-|------|-------|
-| [01](guides/01-where-code-lives.md) | Where your code lives |
-| [02](guides/02-pods-and-navigation.md) | Pods and navigation |
-| [03](guides/03-files-and-tunnels.md) | File mounts and SSH tunnels |
-| [04](guides/04-bugs-config-and-infra.md) | Bug history: config and infrastructure |
-| [05](guides/05-bugs-upgrade-and-migration.md) | Bug history: upgrade and migration |
-| [06](guides/06-quick-reference.md) | Common tasks quick reference |
-| [07](guides/07-alerting.md) | Alerting and notifications |
-| [08](guides/08-big-picture-and-sizing.md) | Big picture and EC2 sizing |
-| [09](guides/09-dbt-and-roadmap.md) | dbt and Step 2 roadmap |
+---
+
+## Roadmap
+
+| Document | What it covers |
+|----------|---------------|
+| [Backlog](BACKLOG.md) | Ordered task checklist: what's done, what's next |
 
 ---
 
@@ -98,11 +88,13 @@ The guide is split into self-contained parts in [guides/](guides/README.md):
 
 | Question | Go to |
 |----------|-------|
-| "What is K3S and why do we use it?" | [architecture/SYSTEM_OVERVIEW.md](architecture/SYSTEM_OVERVIEW.md) |
-| "What can go wrong with my pipeline?" | [architecture/FAILURE_MODE_MAP.md](architecture/FAILURE_MODE_MAP.md) |
-| "How do I deploy code changes?" | [operations/runbooks/deploy-and-dag.md](operations/runbooks/deploy-and-dag.md) |
-| "Something broke, how do I debug it?" | [operations/DEBUGGING.md](operations/DEBUGGING.md) |
-| "How do PersistentVolumes work?" | [infrastructure/PERSISTENCE.md](infrastructure/PERSISTENCE.md) |
-| "What happened on 2026-03-31?" | [incidents/2026-03-31/](incidents/2026-03-31/) |
-| "How do I set up Snowflake?" | [operations/runbooks/setup-snowflake.md](operations/runbooks/setup-snowflake.md) |
-| "How does alerting work?" | [guides/07-alerting.md](guides/07-alerting.md) |
+| How do I deploy code changes? | [DEPLOY.md](DEPLOY.md) |
+| How much does this cost per month? | [COSTS.md](COSTS.md) |
+| How do I verify everything works after a deploy? | [VERIFICATION.md](VERIFICATION.md) |
+| Something broke — how do I debug it? | [operations/TROUBLESHOOTING.md](operations/TROUBLESHOOTING.md) |
+| What can go wrong with my pipeline? | [architecture/FAILURE_MODE_MAP.md](architecture/FAILURE_MODE_MAP.md) |
+| What happened in the past? (incident history) | [incidents/INDEX.md](incidents/INDEX.md) |
+| How do I set up Snowflake? | [operations/runbooks/setup-snowflake.md](operations/runbooks/setup-snowflake.md) |
+| How does alerting work? | [architecture/ALERTING.md](architecture/ALERTING.md) |
+| How do PersistentVolumes work? | [infrastructure/PERSISTENCE.md](infrastructure/PERSISTENCE.md) |
+| What does a term mean? | [reference/GLOSSARY.md](reference/GLOSSARY.md) |

@@ -27,7 +27,7 @@ K3s writes its kubeconfig owned by `root` (mode 600). The `kubectl` binary on th
 
 **Problem:** The `transform` task in `Stock_Market_Pipeline` was silently OOM-killed ("Up for Retry") with no Python traceback — only 3 DAG-parsing lines appeared in the log. Root cause: `extract()` was returning the full raw SEC EDGAR `companyfacts` response for 3 tickers (~10–15 MB each, ~45 MB total) directly through Airflow XCom. MariaDB's XCom table stores values as `MEDIUMBLOB` (16 MB max), and the worker pod was OOM-killed during deserialization before any task code could run.
 
-**Fix:** Changed `extract()` to write the raw payload to the PVC (`/opt/airflow/out/raw_{run_id}.json`) and return only the file path string through XCom. `transform()` now reads the file at task startup, then deletes it on completion. This is the canonical Airflow pattern for large inter-task data — XCom carries metadata (the path), not the blob.
+**Fix:** Changed `extract()` to write the raw payload to the PVC (`/opt/airflow/out/raw_{run_id}.json`) and return only the file path string through XCom. `transform()` now reads the file at task startup, then deletes it on completion. This is the standard Airflow pattern for large inter-task data — XCom carries metadata (the path), not the blob.
 
 **Files changed:** `airflow/dags/dag_stocks.py`
 
@@ -454,9 +454,9 @@ Phase I initiated: old AL2023 instances in us-west-2 and us-east-1 stopped (not 
 
 **Why**:
 - Alpha Vantage free tier (25 calls/day) caused rate-limit errors
-- Finnhub and other stock price APIs restrict public display on free tiers (blocking portfolio projects)
+- Finnhub and other stock price APIs restrict public display on free tiers
 - SEC EDGAR is U.S. government public domain data — no API key, no daily limit, no display restrictions
-- Parsing XBRL filings is more impressive for a Data Engineer portfolio than simple OHLCV prices
+- Parsing XBRL filings is more technically interesting than simple OHLCV prices
 
 **Files Created**:
 - `airflow/dags/edgar_client.py` — SEC EDGAR API client with `RateLimiter` class (token-bucket, 8 req/sec), CIK resolution with caching, XBRL response parsing

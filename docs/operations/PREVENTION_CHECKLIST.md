@@ -103,7 +103,7 @@ Helm upgrades are the highest-risk operation — they can change multiple resour
 
 ### Before Upgrade
 
-- [ ] **`_PIP_ADDITIONAL_REQUIREMENTS` includes `pymysql`** — Check `values.yaml` top-level `env:` block. A full `helm delete` + reinstall starts with a clean Python environment; without this, `load()` fails with `ModuleNotFoundError: No module named 'pymysql'` (see [DEBUGGING.md section N](DEBUGGING.md#n-load-task-fails-with-modulenotfounderror-no-module-named-pymysql))
+- [ ] **`_PIP_ADDITIONAL_REQUIREMENTS` includes `pymysql`** — Check `values.yaml` top-level `env:` block. A full `helm delete` + reinstall starts with a clean Python environment; without this, `load()` fails with `ModuleNotFoundError: No module named 'pymysql'` (see [Troubleshooting](TROUBLESHOOTING.md))
   ```bash
   grep -A2 "_PIP_ADDITIONAL_REQUIREMENTS" airflow/helm/values.yaml
   ```

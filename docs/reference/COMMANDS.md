@@ -132,7 +132,7 @@ ssh -i key.pem ubuntu@ec2-ip "kubectl get pods -n airflow"
 scp -i key.pem ubuntu@ec2-ip:/remote/file.txt ./local/
 ```
 
-**Note:** If SSH times out, check your EC2 security group. Your IP might have changed since last setup. See [EC2 SSH IP Restriction](../OVERVIEW.md#ec2-ssh-access).
+**Note:** If SSH times out, check your EC2 security group. Your IP might have changed since last setup. See the [Setup Guide](../../SETUP.md) for SSH configuration.
 
 ---
 
@@ -282,4 +282,4 @@ These commands are essential for:
 - **Access:** `ssh`, `kubectl exec`
 - **File transfer:** `rsync`, `scp`
 
-For more context on why you use these commands, see [DEBUGGING.md](DEBUGGING.md).
+For more context on why you use these commands, see [Troubleshooting](../operations/TROUBLESHOOTING.md).

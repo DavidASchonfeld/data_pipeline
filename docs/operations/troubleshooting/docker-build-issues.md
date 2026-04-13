@@ -2,7 +2,7 @@
 
 Troubleshooting Docker build failures, BuildKit, and ECR push problems during deployment.
 
-**See also:** [Deploy Issues](deploy-issues.md) | [Parent index](../TROUBLESHOOTING.md) | [DEBUGGING.md](../DEBUGGING.md)
+**See also:** [Deploy Issues](deploy-issues.md) | [Parent index](../TROUBLESHOOTING.md) | [Troubleshooting](../TROUBLESHOOTING.md)
 
 ---
 

@@ -1,6 +1,6 @@
 # Diagnostic Sequences, Gotchas & Log Reading
 
-Back to [Debugging Index](../DEBUGGING.md) | [Common Issues (A-F)](common-issues-1.md) | [Common Issues (G-N)](common-issues-2.md)
+Back to [Troubleshooting](../TROUBLESHOOTING.md) | [Common Issues (A-F)](common-issues-1.md) | [Common Issues (G-N)](common-issues-2.md)
 
 ---
 
@@ -112,5 +112,5 @@ Expected healthy state:
 
 - `docs/airflow-fix-2026-03-30.md` — full write-up of the three cascading issues fixed (values.yaml sync, Bitnami image deletion, DB credentials injection)
 - `docs/refactor-ecr-migration.md` — why containerd + ECR replaced the old `--docker` mode
-- `OVERVIEW.md` — full architecture, deploy instructions, production status
+- [Setup Guide](../../../SETUP.md) — architecture, deploy instructions, pod navigation
 - `infra_local.md` — real IPs, credentials, and NodePort values (gitignored)

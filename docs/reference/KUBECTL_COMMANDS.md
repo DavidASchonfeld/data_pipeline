@@ -14,7 +14,7 @@ Before running any kubectl commands on your Mac, establish an SSH tunnel to the 
 # Start SSH tunnel for kubectl and service NodePorts
 # Port 6443: Kubernetes API server (what kubectl talks to)
 # Port 30080: Airflow UI  |  Port 32147: Flask Dashboard
-# Note: ~/.ssh/config includes ServerAliveInterval/KexAlgorithms for ec2-stock (see docs/GUIDES.md Part 6)
+# Note: ~/.ssh/config includes ServerAliveInterval/KexAlgorithms for ec2-stock (see docs/operations/QUICK_REFERENCE.md)
 ssh -N -L 6443:localhost:6443 \
     -L 30080:localhost:30080 \
     -L 32147:localhost:32147 \
@@ -331,6 +331,6 @@ data_pipeline/
 
 ## Related Documentation
 
-- `OVERVIEW.md` — architecture and namespace structure
-- `DEBUGGING.md` — troubleshooting workflow and common issues
+- [Setup Guide](../../SETUP.md) — architecture and namespace structure
+- [Troubleshooting](../operations/TROUBLESHOOTING.md) — troubleshooting workflow and common issues
 - `deploy.sh` — automated deployment (includes manifest syncing)

@@ -1,16 +1,30 @@
 # Troubleshooting Guide
 
-**Quick Navigation**
-- Looking for general debugging approach? See [DEBUGGING.md](DEBUGGING.md)
-- Need command explanations? See [../reference/COMMANDS.md](../reference/COMMANDS.md)
-- Want to understand Airflow or ETL? See [../architecture/SYSTEM_OVERVIEW.md](../architecture/SYSTEM_OVERVIEW.md)
-- Looking for term definitions? See [../reference/GLOSSARY.md](../reference/GLOSSARY.md)
-- Failure mode catalog? See [../architecture/FAILURE_MODE_MAP.md](../architecture/FAILURE_MODE_MAP.md)
-- Prevention checklists? See [PREVENTION_CHECKLIST.md](PREVENTION_CHECKLIST.md)
+Start here when something breaks. This guide covers both the debugging approach (how to think about problems) and specific issue solutions.
+
+**Related docs:**
+- [FAILURE_MODE_MAP.md](../architecture/FAILURE_MODE_MAP.md) — What *can* go wrong, per component
+- [Incident Log](../incidents/INDEX.md) — What *did* go wrong, and how it was fixed
+- [PREVENTION_CHECKLIST.md](PREVENTION_CHECKLIST.md) — Checklists to prevent issues
+- [COMMANDS.md](../reference/COMMANDS.md) — Shell command reference
+- [GLOSSARY.md](../reference/GLOSSARY.md) — Term definitions
 
 ---
 
-## Topic Files
+## Debugging Approach
+
+For a systematic approach to debugging, including mental models and diagnostic sequences:
+
+| Guide | What's inside |
+|-------|---------------|
+| [Approach & Mental Model](debugging/approach.md) | Three-layer traffic path, namespaces, common gotchas |
+| [Diagnostic Sequences](debugging/diagnostic-sequences.md) | Step-by-step diagnostic commands, Airflow 3.x gotchas, log reading, health checks |
+| [Common Issues A-I](debugging/common-issues-1.md) | PermissionError, endpoints `<none>`, ImagePullBackOff, Init:0/1, DAG paused, DB access denied, UI unreachable, empty dashboard, deprecation warnings, CrashLoopBackOff |
+| [Common Issues J-N](debugging/common-issues-2.md) | rsync mkdir failure, weather DAG load errors, OOMKill static assets, 404 UI bug, pymysql missing |
+
+---
+
+## Specific Issue Solutions
 
 | File | Covers |
 |------|--------|
@@ -50,15 +64,12 @@ ssh ec2-stock "kubectl exec -n airflow-my-namespace airflow-scheduler-0 -- \
   airflow dags trigger -e '2026-03-30' 'Stock_Market_Pipeline'"
 ```
 
-### Check Database Tables
+### Check Snowflake Data
 
-```bash
-# From EC2 MariaDB
-ssh ec2-stock "mariadb -u airflow_user -p'[PASSWORD]' -h <MARIADB_PRIVATE_IP> -e 'SHOW TABLES;'"
-
-# From pod (if mariadb-client installed)
-ssh ec2-stock "kubectl exec -n airflow-my-namespace airflow-scheduler-0 -- \
-  mariadb -u airflow_user -p'[PASSWORD]' -h <MARIADB_PRIVATE_IP> -e 'SHOW TABLES;'"
+Run in a Snowflake worksheet:
+```sql
+SELECT COUNT(*) FROM PIPELINE_DB.MARTS.FCT_COMPANY_FINANCIALS;
+SELECT COUNT(*) FROM PIPELINE_DB.MARTS.FCT_WEATHER_HOURLY;
 ```
 
 ---
