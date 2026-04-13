@@ -5,7 +5,7 @@
 step_deploy_kafka() {
     echo "=== Step 2b3: Syncing Kafka manifests to EC2 ==="
     # we use a plain Kubernetes manifest here instead of the old Bitnami Helm chart (simpler, no licensing issues)
-    rsync -avz --progress "$PROJECT_ROOT/kafka/k8s/" "$EC2_HOST:$EC2_HOME/kafka/k8s/"
+    rsync $RSYNC_FLAGS "$PROJECT_ROOT/kafka/k8s/" "$EC2_HOST:$EC2_HOME/kafka/k8s/"
 
     echo "=== Step 2b3a: Pre-pulling Kafka image into K3s containerd ==="
     # Pre-loads the Kafka image before the pod starts, so the rollout doesn't fail the 480s timeout waiting on a slow download.

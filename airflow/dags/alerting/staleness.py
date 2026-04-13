@@ -5,6 +5,7 @@ from shared.config import (
     STALENESS_THRESHOLD_HOURS_WEATHER,
     ALERT_COOLDOWN_MINUTES,
 )
+from shared.snowflake_schema import MARTS_FCT_FINANCIALS, MARTS_FCT_WEATHER  # centralized table names — avoids hardcoded strings
 from alerting.callbacks import _get_writer
 from alerting.notifier import _send_slack_message
 from alerting.cooldown import (
@@ -20,20 +21,18 @@ def check_data_staleness() -> None:
     Query MAX timestamps from both Snowflake MARTS tables and alert if data exceeds
     staleness thresholds. Called by the staleness monitoring DAG.
     """
-    from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook  # deferred: avoids DAG parse overhead
+    from snowflake_client import get_snowflake_cursor  # deferred: shared cursor factory — avoids repeating hook construction
 
     writer = _get_writer()
     writer.log(f"Staleness check started: {datetime.now()}")
 
     # Use the same Snowflake connection the rest of the pipeline uses
-    hook = SnowflakeHook(snowflake_conn_id="snowflake_default")
-    conn = hook.get_conn()
-    cur = conn.cursor()
+    cur = get_snowflake_cursor()  # cursor from shared factory in snowflake_client.py
     alerts = []
 
     try:
         # Check company_financials freshness (filed_date is a string like "2025-03-15" in FCT_COMPANY_FINANCIALS)
-        cur.execute("SELECT MAX(FILED_DATE) FROM PIPELINE_DB.MARTS.FCT_COMPANY_FINANCIALS")
+        cur.execute(f"SELECT MAX(FILED_DATE) FROM {MARTS_FCT_FINANCIALS}")  # table name from shared/snowflake_schema.py
         latest_filed = cur.fetchone()[0]
         staleness_key_stocks = "alert_last_sent:staleness:company_financials"  # cooldown key for this table
 
@@ -72,7 +71,7 @@ def check_data_staleness() -> None:
                 writer.log("  [STALENESS ALERT - suppressed, within cooldown] company_financials (empty)")
 
         # Check weather freshness (imported_at is TIMESTAMP_NTZ in FCT_WEATHER_HOURLY, converted from epoch in staging)
-        cur.execute("SELECT MAX(IMPORTED_AT) FROM PIPELINE_DB.MARTS.FCT_WEATHER_HOURLY")
+        cur.execute(f"SELECT MAX(IMPORTED_AT) FROM {MARTS_FCT_WEATHER}")  # table name from shared/snowflake_schema.py
         latest_imported = cur.fetchone()[0]
         staleness_key_weather = "alert_last_sent:staleness:weather_hourly"  # cooldown key for this table
 
@@ -115,8 +114,7 @@ def check_data_staleness() -> None:
         writer.log(f"  Database error during staleness check: {e}")
         raise
     finally:
-        cur.close()
-        conn.close()
+        cur.close()  # connection is managed by the hook — only the cursor needs explicit close
 
     # Send one Slack message per stale table (only those that passed the cooldown gate)
     for alert_msg in alerts:

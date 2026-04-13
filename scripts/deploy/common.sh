@@ -29,6 +29,7 @@ done
 # ── Shared variables ──────────────────────────────────────────────────────────
 # Note: SSH config for ec2-stock (including .pem key path) lives in ~/.ssh/config
 EC2_HOST="ec2-stock"
+RSYNC_FLAGS="-avz --progress"  # standard flags used by all rsync calls in sub-scripts
 # Home directory for the EC2 SSH user (ubuntu on Ubuntu, ec2-user on Amazon Linux)
 EC2_HOME="/home/ubuntu"
 EC2_DAG_PATH="$EC2_HOME/airflow/dags"
@@ -103,6 +104,41 @@ _print_deploy_summary() {
     echo "  Full log: $DEPLOY_LOGFILE"
     echo "=================================================================="
     echo ""
+}
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── K8s and K3S helpers ───────────────────────────────────────────────────────
+# Pipe a Docker image into K3S containerd on EC2; grep_term is the string used to verify it was imported.
+# Avoids writing a temporary tar file — pipes directly to k3s ctr images import (saves disk space on EC2).
+import_image_to_k3s() {
+    local image_name="$1" grep_term="$2"
+    ssh "$EC2_HOST" "
+        echo 'Importing $image_name into K3S containerd (bypasses Docker image store, which K3S cannot see)...' &&
+        docker save '$image_name' | sudo k3s ctr images import - &&
+        echo 'Verifying image is visible to K3S...' &&
+        sudo k3s ctr images ls | grep '$grep_term'
+    "
+}
+
+# Apply a K8s generic secret idempotently — creates if absent, updates if present.
+# Usage: apply_k8s_secret <namespace> <secret_name> [--from-literal=KEY=VAL ...]
+# Extra args are passed directly to kubectl create secret generic (safe when values have no spaces).
+apply_k8s_secret() {
+    local namespace="$1" secret_name="$2"
+    shift 2  # remaining args are passed through to kubectl create secret
+    ssh "$EC2_HOST" "kubectl create secret generic '$secret_name' -n '$namespace' $* \
+        --dry-run=client -o yaml | kubectl apply -f -"
+}
+
+# Delete a pod by label selector on EC2, wait for it to disappear, then apply a manifest.
+# Useful for plain Pods (not Deployments) that must be deleted before a new spec can be applied.
+restart_pod() {
+    local namespace="$1" manifest="$2" pod_selector="$3"
+    ssh "$EC2_HOST" "
+        kubectl delete pod -l '$pod_selector' -n '$namespace' --ignore-not-found=true &&
+        kubectl wait --for=delete pod -l '$pod_selector' -n '$namespace' --timeout=60s 2>/dev/null || true &&
+        kubectl apply -f '$manifest' -n '$namespace'
+    "
 }
 # ─────────────────────────────────────────────────────────────────────────────
 

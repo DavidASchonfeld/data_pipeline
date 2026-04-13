@@ -1,0 +1,12 @@
+[
+  {"concept": "RevenueFromContractWithCustomerExcludingAssessedTax", "label": "Revenue",              "unit": "USD"},
+  {"concept": "NetIncomeLoss",                                        "label": "Net Income",           "unit": "USD"},
+  {"concept": "EarningsPerShareDiluted",                              "label": "EPS (Diluted)",        "unit": "USD/shares"},
+  {"concept": "Assets",                                               "label": "Total Assets",         "unit": "USD"},
+  {"concept": "Liabilities",                                          "label": "Total Liabilities",    "unit": "USD"},
+  {"concept": "StockholdersEquity",                                   "label": "Stockholders Equity",  "unit": "USD"},
+  {"concept": "OperatingIncomeLoss",                                  "label": "Operating Income",     "unit": "USD"},
+  {"concept": "GrossProfit",                                          "label": "Gross Profit",         "unit": "USD"},
+  {"concept": "CashAndCashEquivalentsAtCarryingValue",                "label": "Cash and Equivalents", "unit": "USD"},
+  {"concept": "ResearchAndDevelopmentExpense",                        "label": "R&D Expense",          "unit": "USD"}
+]

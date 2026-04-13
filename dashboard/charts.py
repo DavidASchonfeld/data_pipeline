@@ -3,6 +3,9 @@ import plotly.graph_objects as go
 import plotly.colors as pc   # qualitative palette for per-company distinct colors
 from dash import html
 
+from theme import CHART_THEME as _CHART_THEME  # shared dark theme — keeps both dashboards in sync
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 def build_revenue_net_income_fig(ticker: str, revenue_df: pd.DataFrame, net_income_df: pd.DataFrame) -> go.Figure:
     """Grouped bar chart: Revenue + Net Income side-by-side per fiscal year.
@@ -15,15 +18,17 @@ def build_revenue_net_income_fig(ticker: str, revenue_df: pd.DataFrame, net_inco
         x=revenue_df["fiscal_year"],
         y=revenue_df["value"] / 1e9,
         name="Revenue",
-        marker_color="#3b82f6",  # blue
+        marker_color="#3b82f6",  # cornflower blue
     ))
     fig.add_trace(go.Bar(
         x=net_income_df["fiscal_year"],
         y=net_income_df["value"] / 1e9,
         name="Net Income",
-        marker_color="#10b981",  # green
+        marker_color="#10b981",  # emerald green
     ))
+    # Spread the shared dark theme first, then override with chart-specific keys
     fig.update_layout(
+        **_CHART_THEME,
         title=f"{ticker} — Annual Revenue & Net Income",
         xaxis_title="Fiscal Year",
         yaxis_title="USD (Billions)",
@@ -41,9 +46,11 @@ def build_net_income_fig(ticker: str, net_income_df: pd.DataFrame) -> go.Figure:
         x=net_income_df["fiscal_year"],
         y=net_income_df["value"] / 1e9,
         name="Net Income",
-        marker_color="#10b981",
+        marker_color="#10b981",  # emerald green
     )])
+    # Apply shared theme then add chart-specific title/axis labels
     fig.update_layout(
+        **_CHART_THEME,
         title=f"{ticker} — Annual Net Income",
         xaxis_title="Fiscal Year",
         yaxis_title="USD (Billions)",
@@ -65,14 +72,14 @@ def build_stats_table(ticker: str, revenue_df: pd.DataFrame, net_income_df: pd.D
     ni_str  = f"${latest_ni['value']/1e9:.2f}B"   if latest_ni  is not None else "N/A"
 
     return html.Table(
-        style={"borderCollapse": "collapse", "width": "100%"},
+        className="dash-table",  # CSS class provides dark background, borders, and layout
         children=[
             # ── Header row ──────────────────────────────────────────────
-            html.Thead(html.Tr([html.Th(c, style={"border": "1px solid #e5e7eb", "padding": "8px", "background": "#f9fafb"})
+            html.Thead(html.Tr([html.Th(c)
                 for c in ["Ticker", "Latest Fiscal Year", "Revenue", "Net Income"]
             ])),
             # ── Data row ────────────────────────────────────────────────
-            html.Tbody(html.Tr([html.Td(v, style={"border": "1px solid #e5e7eb", "padding": "8px"})
+            html.Tbody(html.Tr([html.Td(v)
                 for v in [ticker, latest_year, rev_str, ni_str]
             ])),
         ]
@@ -101,7 +108,12 @@ def build_anomaly_scatter(df: pd.DataFrame) -> go.Figure:
     # Guard: return an annotated empty figure before the first DAG run populates the table
     if df.empty:
         fig = go.Figure()
-        fig.add_annotation(text="No data yet", showarrow=False, font={"size": 14})  # placeholder so the chart area isn't blank
+        # Apply dark theme so the empty state doesn't show a jarring white panel
+        fig.update_layout(**_CHART_THEME)
+        fig.add_annotation(
+            text="No data yet", showarrow=False,
+            font={"size": 14, "color": "#8892a4"},  # cool gray — muted placeholder text
+        )
         return fig
 
     tickers = sorted(df["ticker"].unique())   # sort for deterministic color assignment across refreshes
@@ -139,11 +151,13 @@ def build_anomaly_scatter(df: pd.DataFrame) -> go.Figure:
             x=[None], y=[None],                                    # no data — legend display only
             mode="markers",
             name=label,
-            marker={"symbol": sym, "size": 9, "color": "#888888"},  # neutral grey
+            marker={"symbol": sym, "size": 9, "color": "#8892a4"},  # cool gray — neutral legend swatch
             showlegend=True,
         ))
 
+    # Apply shared dark theme then add chart-specific title/axis labels
     fig.update_layout(
+        **_CHART_THEME,
         title="Anomaly Detection — YoY Growth",
         xaxis_title="Revenue YoY %",   # horizontal axis = revenue year-over-year growth
         yaxis_title="Net Income YoY %",  # vertical axis = net income year-over-year growth
@@ -164,29 +178,27 @@ def build_anomaly_table(df: pd.DataFrame):
     # ── Header ────────────────────────────────────────────────────────────────
     header_cols = ["Ticker", "Fiscal Year", "Revenue YoY%", "Net Income YoY%", "Anomaly", "Score"]
     header = html.Thead(html.Tr([
-        html.Th(c, style={"border": "1px solid #e5e7eb", "padding": "8px", "background": "#f9fafb"})
-        for c in header_cols
+        html.Th(c) for c in header_cols  # CSS .dash-table th handles all header cell styling
     ]))
 
     # ── Body rows ─────────────────────────────────────────────────────────────
     rows = []
     for _, row in df.iterrows():
-        # Highlight anomaly rows with a light red background to draw attention
-        row_style = {"backgroundColor": "#fef2f2"} if row["is_anomaly"] else {}
-        cell_style = {"border": "1px solid #e5e7eb", "padding": "8px"}
+        # CSS class row-anomaly applies translucent red tint; empty string = no override
+        row_class = "row-anomaly" if row["is_anomaly"] else ""
 
         cells = [
-            html.Td(row["ticker"],                                    style=cell_style),
-            html.Td(str(row["fiscal_year"]),                          style=cell_style),
-            html.Td(f"{row['revenue_yoy_pct']:.1f}%",                style=cell_style),  # 1 decimal place for readability
-            html.Td(f"{row['net_income_yoy_pct']:.1f}%",             style=cell_style),
-            html.Td("Yes" if row["is_anomaly"] else "No",            style=cell_style),
-            html.Td(f"{row['anomaly_score']:.3f}",                   style=cell_style),  # 3 decimal places matches MLflow precision
+            html.Td(row["ticker"]),
+            html.Td(str(row["fiscal_year"])),
+            html.Td(f"{row['revenue_yoy_pct']:.1f}%"),   # 1 decimal place for readability
+            html.Td(f"{row['net_income_yoy_pct']:.1f}%"),
+            html.Td("Yes" if row["is_anomaly"] else "No"),
+            html.Td(f"{row['anomaly_score']:.3f}"),       # 3 decimal places matches MLflow precision
         ]
-        rows.append(html.Tr(cells, style=row_style))
+        rows.append(html.Tr(cells, className=row_class))  # className drives conditional row colour
 
     return html.Table(
-        style={"borderCollapse": "collapse", "width": "100%"},
+        className="dash-table",  # CSS class provides dark surface, borders, and alternating stripes
         children=[header, html.Tbody(rows)],
     )
 # ─────────────────────────────────────────────────────────────────────────────
@@ -207,8 +219,7 @@ def build_health_table(df: pd.DataFrame):
 
     header_cols = ["Table", "Row Count", "Latest Record", "Age (hours)"]
     header = html.Thead(html.Tr([
-        html.Th(c, style={"border": "1px solid #e5e7eb", "padding": "8px", "background": "#f9fafb"})
-        for c in header_cols
+        html.Th(c) for c in header_cols  # CSS .dash-table th handles all header cell styling
     ]))
 
     # Compute age relative to current UTC time (tz-naive to match Snowflake TIMESTAMP_NTZ)
@@ -221,21 +232,21 @@ def build_health_table(df: pd.DataFrame):
         # Amber alert threshold differs by table — daily tables allow up to 25h, hourly allows 2h
         threshold = 2 if row["table_name"] == "Weather" else 25
         stale = age_hours is not None and age_hours > threshold
-        row_style = {"backgroundColor": "#fffbeb"} if stale else {}  # amber tint for stale rows
-        cell_style = {"border": "1px solid #e5e7eb", "padding": "8px"}
+        # CSS class row-stale applies translucent amber tint; empty string = no override
+        row_class = "row-stale" if stale else ""
 
         age_str = f"{age_hours:.1f}" if age_hours is not None else "N/A"
         ts_str  = latest_ts.strftime("%Y-%m-%d %H:%M") if pd.notna(latest_ts) else "N/A"
         cells = [
-            html.Td(row["table_name"],              style=cell_style),
-            html.Td(f"{int(row['row_count']):,}",   style=cell_style),  # comma-formatted for readability
-            html.Td(ts_str,                         style=cell_style),
-            html.Td(age_str,                        style=cell_style),
+            html.Td(row["table_name"]),
+            html.Td(f"{int(row['row_count']):,}"),  # comma-formatted for readability
+            html.Td(ts_str),
+            html.Td(age_str),
         ]
-        rows.append(html.Tr(cells, style=row_style))
+        rows.append(html.Tr(cells, className=row_class))  # className drives conditional row colour
 
     return html.Table(
-        style={"borderCollapse": "collapse", "width": "100%"},
+        className="dash-table",  # CSS class provides dark surface, borders, and alternating stripes
         children=[header, html.Tbody(rows)],
     )
 # ─────────────────────────────────────────────────────────────────────────────

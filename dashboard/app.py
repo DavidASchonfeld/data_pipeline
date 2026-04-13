@@ -40,32 +40,32 @@ dash_app = dash.Dash(
 TICKERS = ["AAPL", "MSFT", "GOOGL"]  # must match the tickers loaded by the Airflow DAG
 
 dash_app.layout = html.Div(
-    style={"fontFamily": "Arial, sans-serif", "maxWidth": "1100px", "margin": "0 auto", "padding": "20px"},
+    className="dash-page",  # CSS class handles max-width, centering, and padding
     children=[
 
-        html.H1("Stock Market Analytics Pipeline", style={"color": "#1f2937"}),
+        html.H1("Stock Market Analytics Pipeline"),  # color set globally in theme.css
         html.P(
             "SEC EDGAR financial data pulled daily by Airflow → stored in MariaDB (→ Snowflake in Step 2).",
-            style={"color": "#6b7280"}
+            className="dash-subtitle",  # CSS class applies muted color and bottom margin
         ),
 
-        # Navigation link to the weather dashboard page
-        html.A(
-            "View Weather Dashboard →",
-            href="/weather/",  # points to the weather Dash app mounted below
-            style={"color": "#3b82f6", "textDecoration": "none", "fontSize": "14px", "display": "inline-block", "marginBottom": "20px"},
-        ),
-
-        html.Br(),  # line break between nav link and ticker selector
+        # Navigation link to the weather dashboard — wrapped in a nav div for layout and border
+        html.Div(className="dash-nav", children=[
+            html.A(
+                "View Weather Dashboard →",
+                href="/weather/",  # points to the weather Dash app mounted below
+                className="dash-nav__link",  # CSS class styles this as a pill-button link
+            ),
+        ]),
 
         # ── Ticker selector ───────────────────────────────────────────────
-        html.Label("Select Ticker:", style={"fontWeight": "bold"}),
+        html.Label("Select Ticker:"),  # label styling (uppercase, secondary color) handled by theme.css
         dcc.Dropdown(
             id="ticker-dropdown",
             options=[{"label": t, "value": t} for t in TICKERS],
             value="AAPL",          # default selection
             clearable=False,
-            style={"width": "200px", "marginBottom": "20px"},
+            style={"width": "200px", "marginBottom": "20px"},  # width is component-specific — kept inline
         ),
 
         # dcc.Loading wraps all financials outputs — shows a spinner immediately
@@ -81,29 +81,29 @@ dash_app.layout = html.Div(
                 dcc.Graph(id="volume-chart"),
 
                 # ── Summary stats table ───────────────────────────────────
-                html.Div(id="stats-table", style={"marginTop": "20px"}),
+                html.Div(id="stats-table"),  # marginTop removed — .dash-table CSS handles spacing
             ]
         ),
 
         # ── Data Quality — Anomaly Detection ─────────────────────────────
         html.Hr(),  # visual separator between the financials section and anomaly section
-        html.H2("Data Quality — Anomaly Detection", style={"color": "#1f2937", "marginTop": "30px"}),
+        html.H2("Data Quality — Anomaly Detection"),  # color set globally in theme.css
         html.P(
             # one-sentence description of the model and where results are tracked
             "IsolationForest model scores each ticker's YoY growth; outliers flagged as anomalies and tracked in MLflow.",
-            style={"color": "#6b7280"},
+            className="dash-subtitle",  # CSS class applies muted color
         ),
         # Pipeline Health panel — row counts + freshness for the three core Snowflake tables
         dcc.Loading(
             id="loading-health",
             type="circle",  # consistent spinner style with the rest of the dashboard
-            children=[html.Div(id="health-table", style={"marginBottom": "20px"})],
+            children=[html.Div(id="health-table")],  # marginBottom removed — theme.css handles spacing
         ),
         html.Button(
             "Refresh Anomalies",
             id="anomaly-refresh-btn",  # id referenced by the update_anomalies callback in callbacks.py
             n_clicks=0,
-            style={"marginBottom": "20px"},
+            className="dash-btn",  # CSS class applies dark button styling and hover states
         ),
         # dcc.Loading wraps anomaly outputs — same pattern as financials section above
         dcc.Loading(
@@ -111,7 +111,7 @@ dash_app.layout = html.Div(
             type="circle",  # consistent spinner style across both sections
             children=[
                 dcc.Graph(id="anomaly-scatter"),  # populated by update_anomalies callback — scatter of YoY growth colored by anomaly flag
-                html.Div(id="anomaly-table", style={"marginTop": "20px"}),  # populated by update_anomalies callback — detail table
+                html.Div(id="anomaly-table"),  # populated by update_anomalies callback — detail table
             ]
         ),
     ]
@@ -130,28 +130,30 @@ weather_dash_app = dash.Dash(
 )
 
 weather_dash_app.layout = html.Div(
-    style={"fontFamily": "Arial, sans-serif", "maxWidth": "1100px", "margin": "0 auto", "padding": "20px"},
+    className="dash-page",  # CSS class handles max-width, centering, and padding
     children=[
 
-        html.H1("Weather Analytics Pipeline", style={"color": "#1f2937"}),
+        html.H1("Weather Analytics Pipeline"),  # color set globally in theme.css
         html.P(
             "Open-Meteo hourly forecast data (lat=40°N, lon=40°E) ingested via Airflow → Kafka → Snowflake.",
-            style={"color": "#6b7280"},
+            className="dash-subtitle",  # CSS class applies muted color and bottom margin
         ),
 
-        # Navigation link back to the stocks dashboard
-        html.A(
-            "← View Stocks Dashboard",
-            href="/dashboard/",  # points back to the stocks Dash app
-            style={"color": "#3b82f6", "textDecoration": "none", "fontSize": "14px", "display": "inline-block", "marginBottom": "20px"},
-        ),
+        # Navigation link back to the stocks dashboard — same nav pattern as stocks page
+        html.Div(className="dash-nav", children=[
+            html.A(
+                "← View Stocks Dashboard",
+                href="/dashboard/",  # points back to the stocks Dash app
+                className="dash-nav__link",  # CSS class styles this as a pill-button link
+            ),
+        ]),
 
         # Refresh button triggers the weather callback to reload data from Snowflake
         html.Button(
             "Refresh Weather",
             id="weather-refresh-btn",  # id referenced by update_weather callback in callbacks.py
             n_clicks=0,
-            style={"display": "block", "marginBottom": "20px"},
+            className="dash-btn",  # CSS class applies dark button styling and hover states
         ),
 
         # dcc.Loading wraps both weather outputs — shows a spinner while Snowflake is queried
@@ -160,7 +162,7 @@ weather_dash_app.layout = html.Div(
             type="circle",  # consistent spinner style with the stocks dashboard
             children=[
                 dcc.Graph(id="weather-temp-chart"),  # populated by update_weather callback — 7-day temperature line chart
-                html.Div(id="weather-stats-table", style={"marginTop": "20px"}),  # populated by update_weather callback — current temp + 24h stats
+                html.Div(id="weather-stats-table"),  # populated by update_weather callback — current temp + 24h stats
             ],
         ),
     ],

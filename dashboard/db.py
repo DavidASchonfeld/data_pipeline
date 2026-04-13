@@ -40,6 +40,11 @@ else:
         DB_ENGINE = None  # pymysql not installed locally — queries will return empty frames
 # Fully-qualified Snowflake name avoids session-schema ambiguity (mirrors FCT_ANOMALIES pattern)
 _FINANCIALS_TABLE = "PIPELINE_DB.MARTS.FCT_COMPANY_FINANCIALS" if DB_BACKEND == "snowflake" else "company_financials"
+
+# ── Snowflake table identifiers (centralized to avoid scattered hardcoded strings) ───
+_TBL_FINANCIALS = "PIPELINE_DB.MARTS.FCT_COMPANY_FINANCIALS"  # annual SEC EDGAR mart
+_TBL_WEATHER    = "PIPELINE_DB.MARTS.FCT_WEATHER_HOURLY"      # hourly weather mart
+_TBL_ANOMALIES  = "PIPELINE_DB.ANALYTICS.FCT_ANOMALIES"       # IsolationForest results
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Query cache (cost optimization #2) ───────────────────────────────────────
@@ -57,6 +62,23 @@ def _cache_get(key: str):
 def _cache_set(key: str, value, ttl: int) -> None:
     """Store value with a monotonic expiry timestamp."""
     _QUERY_CACHE[key] = (value, time.monotonic() + ttl)
+
+def _cached_query(key: str, ttl: int, columns: list, query_fn) -> pd.DataFrame:
+    """Run query_fn() and cache the result; return empty DataFrame when not on Snowflake.
+
+    Centralizes the Snowflake guard + cache-check + cache-set pattern that was
+    previously repeated verbatim in load_weather_data, load_anomalies, and load_pipeline_health.
+    query_fn: zero-arg callable that queries Snowflake and returns a DataFrame.
+    columns:  column list used to type the empty guard DataFrame.
+    """
+    if DB_BACKEND != "snowflake":
+        return pd.DataFrame(columns=columns)  # guard: these tables only exist in Snowflake
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached  # cache hit — skip the Snowflake round-trip
+    result = query_fn()  # execute the query now that cache missed
+    _cache_set(key, result, ttl)
+    return result
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -117,20 +139,20 @@ def prewarm_cache(tickers: list) -> None:
     for ticker in tickers:
         try:
             _load_ticker_data(ticker)  # populates the per-ticker financials cache entry
-        except Exception:
-            pass  # non-fatal — spinner will cover the delay if Snowflake is briefly unavailable
+        except Exception as e:
+            print(f"[prewarm_cache] WARNING: failed to warm 'financials:{ticker}': {e}", flush=True)  # log instead of silently swallowing
     try:
         load_anomalies()  # populates the anomalies cache entry
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[prewarm_cache] WARNING: failed to warm 'anomalies': {e}", flush=True)
     try:
         load_weather_data()  # populates the weather cache entry so the weather page loads instantly
-    except Exception:
-        pass  # non-fatal — same pattern as financials and anomalies above
+    except Exception as e:
+        print(f"[prewarm_cache] WARNING: failed to warm 'weather': {e}", flush=True)
     try:
         load_pipeline_health()  # warms the 1-hour pipeline health cache entry
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[prewarm_cache] WARNING: failed to warm 'pipeline_health': {e}", flush=True)
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Weather data ─────────────────────────────────────────────────────────────
@@ -143,30 +165,23 @@ def load_weather_data() -> pd.DataFrame:
     Only runs against Snowflake — FCT_WEATHER_HOURLY does not exist in MariaDB.
     Cached for 15 minutes (CACHE_TTL_WEATHER) because forecast data updates hourly.
     """
-    # Guard: FCT_WEATHER_HOURLY only exists in Snowflake — skip for other backends
-    if DB_BACKEND != "snowflake":
-        return pd.DataFrame(columns=WEATHER_COLUMNS)  # typed empty frame keeps callers from getting None
+    def _query():
+        # Fetch last 7 days of hourly rows ordered chronologically for the line chart
+        # _TBL_WEATHER is a hardcoded constant (not user input), so f-string is safe here
+        query = text(f"""
+            SELECT observation_time, temperature_f, latitude, longitude, elevation, timezone
+            FROM {_TBL_WEATHER}
+            WHERE observation_time >= DATEADD('day', -7, CURRENT_TIMESTAMP())
+            ORDER BY observation_time ASC
+        """)
+        try:
+            with DB_ENGINE.connect() as conn:
+                return pd.read_sql(query, conn)  # execute and load all rows into a DataFrame
+        except Exception:
+            # Table may not have data yet or Snowflake may be briefly unavailable — return empty frame
+            return pd.DataFrame(columns=WEATHER_COLUMNS)
 
-    # Return in-memory cache hit to avoid a Snowflake round-trip on every page load
-    cached = _cache_get("weather")
-    if cached is not None:
-        return cached  # cache hit — return immediately
-
-    # Fetch last 7 days of hourly rows ordered chronologically for the line chart
-    query = text("""
-        SELECT observation_time, temperature_f, latitude, longitude, elevation, timezone
-        FROM PIPELINE_DB.MARTS.FCT_WEATHER_HOURLY
-        WHERE observation_time >= DATEADD('day', -7, CURRENT_TIMESTAMP())
-        ORDER BY observation_time ASC
-    """)
-    try:
-        with DB_ENGINE.connect() as conn:
-            df = pd.read_sql(query, conn)  # execute and load all rows into a DataFrame
-        _cache_set("weather", df, CACHE_TTL_WEATHER)  # cache for 15 min — matches Open-Meteo refresh cadence
-        return df
-    except Exception:
-        # Table may not have data yet or Snowflake may be briefly unavailable — return empty frame
-        return pd.DataFrame(columns=WEATHER_COLUMNS)
+    return _cached_query("weather", CACHE_TTL_WEATHER, WEATHER_COLUMNS, _query)  # 15-min cache — matches Open-Meteo refresh cadence
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Anomaly detection results ─────────────────────────────────────────────────
@@ -183,30 +198,22 @@ def load_anomalies() -> pd.DataFrame:
     Table is created by the first anomaly_detector DAG run, not at deploy time,
     so every code path that can't reach it returns a typed empty DataFrame.
     """
-    # Guard: FCT_ANOMALIES only exists in Snowflake — skip the query entirely for other backends
-    if DB_BACKEND != "snowflake":
-        return pd.DataFrame(columns=ANOMALY_COLUMNS)  # typed empty frame keeps callers from getting None
+    def _query():
+        # _TBL_ANOMALIES is a hardcoded constant (not user input), so f-string is safe here
+        query = text(f"""
+            SELECT ticker, fiscal_year, revenue_yoy_pct, net_income_yoy_pct,
+                   is_anomaly, anomaly_score, detected_at, mlflow_run_id
+            FROM {_TBL_ANOMALIES}
+            ORDER BY is_anomaly DESC, anomaly_score ASC
+        """)
+        try:
+            with DB_ENGINE.connect() as conn:
+                return pd.read_sql(query, conn)  # execute query and load all rows into a DataFrame
+        except Exception:
+            # Table may not exist yet if the DAG hasn't run — return empty frame so the dashboard doesn't crash
+            return pd.DataFrame(columns=ANOMALY_COLUMNS)
 
-    # Check in-memory cache before hitting Snowflake — avoids a round-trip on every page load
-    cached = _cache_get("anomalies")
-    if cached is not None:
-        return cached  # cache hit — return immediately without querying the DB
-
-    # Fully-qualified table name avoids any default-schema ambiguity in Snowflake
-    query = text("""
-        SELECT ticker, fiscal_year, revenue_yoy_pct, net_income_yoy_pct,
-               is_anomaly, anomaly_score, detected_at, mlflow_run_id
-        FROM PIPELINE_DB.ANALYTICS.FCT_ANOMALIES
-        ORDER BY is_anomaly DESC, anomaly_score ASC
-    """)
-    try:
-        with DB_ENGINE.connect() as conn:
-            df = pd.read_sql(query, conn)  # execute query and load all rows into a DataFrame
-        _cache_set("anomalies", df, CACHE_TTL_FINANCIALS)  # cache for 1 hour to match financials TTL
-        return df
-    except Exception:
-        # Table may not exist yet if the DAG hasn't run — return empty frame so the dashboard doesn't crash
-        return pd.DataFrame(columns=ANOMALY_COLUMNS)
+    return _cached_query("anomalies", CACHE_TTL_FINANCIALS, ANOMALY_COLUMNS, _query)  # 1-hour cache — matches financials TTL
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Pipeline health (freshness + row counts) ──────────────────────────────────
@@ -218,33 +225,26 @@ def load_pipeline_health() -> pd.DataFrame:
 
     Single UNION ALL query — one warehouse activation, result cached 1 hour.
     """
-    # Guard: all three tables only exist in Snowflake — skip for other backends
-    if DB_BACKEND != "snowflake":
-        return pd.DataFrame(columns=HEALTH_COLUMNS)
+    def _query():
+        # Single UNION ALL covers all three tables in one warehouse activation
+        # Table names are hardcoded constants (not user input), so f-string is safe here
+        query = text(f"""
+            SELECT 'Financials' AS table_name, COUNT(*) AS row_count,
+                   MAX(filed_date)::TIMESTAMP_NTZ AS latest_ts
+            FROM {_TBL_FINANCIALS}
+            UNION ALL
+            SELECT 'Weather', COUNT(*), MAX(imported_at)
+            FROM {_TBL_WEATHER}
+            UNION ALL
+            SELECT 'Anomalies', COUNT(*), MAX(detected_at)
+            FROM {_TBL_ANOMALIES}
+        """)
+        try:
+            with DB_ENGINE.connect() as conn:
+                return pd.read_sql(query, conn)  # execute and load all three rows into a DataFrame
+        except Exception:
+            # Table may not exist yet or Snowflake may be briefly unavailable — return empty frame
+            return pd.DataFrame(columns=HEALTH_COLUMNS)
 
-    # Return in-memory cache hit to avoid a Snowflake round-trip on every page load
-    cached = _cache_get("pipeline_health")
-    if cached is not None:
-        return cached  # cache hit — return immediately
-
-    # Single UNION ALL covers all three tables in one warehouse activation
-    query = text("""
-        SELECT 'Financials' AS table_name, COUNT(*) AS row_count,
-               MAX(filed_date)::TIMESTAMP_NTZ AS latest_ts
-        FROM PIPELINE_DB.MARTS.FCT_COMPANY_FINANCIALS
-        UNION ALL
-        SELECT 'Weather', COUNT(*), MAX(imported_at)
-        FROM PIPELINE_DB.MARTS.FCT_WEATHER_HOURLY
-        UNION ALL
-        SELECT 'Anomalies', COUNT(*), MAX(detected_at)
-        FROM PIPELINE_DB.ANALYTICS.FCT_ANOMALIES
-    """)
-    try:
-        with DB_ENGINE.connect() as conn:
-            df = pd.read_sql(query, conn)  # execute and load all three rows into a DataFrame
-        _cache_set("pipeline_health", df, CACHE_TTL_FINANCIALS)  # cache 1 hour — matches financials TTL
-        return df
-    except Exception:
-        # Table may not exist yet or Snowflake may be briefly unavailable — return empty frame
-        return pd.DataFrame(columns=HEALTH_COLUMNS)
+    return _cached_query("pipeline_health", CACHE_TTL_FINANCIALS, HEALTH_COLUMNS, _query)  # 1-hour cache — matches financials TTL
 # ─────────────────────────────────────────────────────────────────────────────

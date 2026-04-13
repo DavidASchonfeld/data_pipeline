@@ -1,5 +1,13 @@
 import pandas as pd
 from datetime import datetime
+from shared.snowflake_schema import PIPELINE_DB, RAW_SCHEMA  # centralized DB/schema names — no heavy imports
+
+
+def get_snowflake_cursor():
+    """Return an open cursor from the default Snowflake connection."""
+    from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook  # deferred: avoids parse-time import
+    hook = SnowflakeHook(snowflake_conn_id="snowflake_default")  # uses the connection registered in Airflow
+    return hook.get_conn().cursor()  # caller is responsible for closing the cursor
 
 
 def write_df_to_snowflake(
@@ -37,7 +45,7 @@ def write_df_to_snowflake(
 
     # If overwrite=True and table exists, truncate it
     if overwrite and table_exists:
-        cur.execute(f"DELETE FROM PIPELINE_DB.RAW.{table_name}")
+        cur.execute(f"DELETE FROM {PIPELINE_DB}.{RAW_SCHEMA}.{table_name}")  # schema names from shared/snowflake_schema.py
 
     # Prepare rows for INSERT — convert each row to a tuple with proper SQL formatting
     # Note: This handles tables with NUMBER columns for timestamps (converts to epoch seconds)
@@ -68,7 +76,7 @@ def write_df_to_snowflake(
     col_list = ','.join(df.columns)
     for i in range(0, len(rows_to_insert), batch_size):
         batch = rows_to_insert[i : i + batch_size]
-        insert_sql = f"INSERT INTO PIPELINE_DB.RAW.{table_name} ({col_list}) VALUES " + ', '.join(batch)
+        insert_sql = f"INSERT INTO {PIPELINE_DB}.{RAW_SCHEMA}.{table_name} ({col_list}) VALUES " + ', '.join(batch)  # schema names from shared/snowflake_schema.py
         cur.execute(insert_sql)
 
     conn.commit()

@@ -2,6 +2,9 @@ import pandas as pd
 import plotly.graph_objects as go
 from dash import html
 
+from theme import CHART_THEME as _CHART_THEME  # shared dark theme — single source of truth, no longer duplicated here
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 def build_temperature_fig(df: pd.DataFrame) -> go.Figure:
     """Line chart of hourly temperature (°F) over the last 7 days.
@@ -11,7 +14,12 @@ def build_temperature_fig(df: pd.DataFrame) -> go.Figure:
     # Guard: return an annotated empty figure if no data has arrived from the pipeline yet
     if df.empty:
         fig = go.Figure()
-        fig.add_annotation(text="No weather data yet", showarrow=False, font={"size": 14})  # placeholder so the chart area isn't blank
+        # Apply dark theme so the empty state doesn't show a jarring white panel
+        fig.update_layout(**_CHART_THEME)
+        fig.add_annotation(
+            text="No weather data yet", showarrow=False,
+            font={"size": 14, "color": "#8892a4"},  # cool gray — muted placeholder text
+        )
         return fig
 
     fig = go.Figure(data=[go.Scatter(
@@ -19,13 +27,15 @@ def build_temperature_fig(df: pd.DataFrame) -> go.Figure:
         y=df["temperature_f"],          # temperature in Fahrenheit on the y-axis
         mode="lines",                   # continuous line (no dots) — cleaner for dense hourly data
         name="Temperature (°F)",
-        line={"color": "#3b82f6", "width": 2},  # blue matches the stocks dashboard palette
+        line={"color": "#3b82f6", "width": 2.5},  # cornflower blue — increased width for dark-bg legibility
         hovertemplate="%{x}<br>%{y:.1f}°F<extra></extra>",  # clean tooltip showing time + temp
     )])
+    # Apply shared dark theme then add chart-specific title/axis labels
     fig.update_layout(
+        **_CHART_THEME,
         title="7-Day Hourly Temperature (°F)",
-        xaxis_title="Date / Time",     # label tells the viewer the x-axis is time
-        yaxis_title="Temperature (°F)",  # label clarifies the unit
+        xaxis_title="Date / Time",      # label tells the viewer the x-axis is time
+        yaxis_title="Temperature (°F)", # label clarifies the unit
         hovermode="x unified",          # unified hover shows all traces at the same x position
     )
     return fig
@@ -57,18 +67,16 @@ def build_weather_stats_table(df: pd.DataFrame):
     # ── Header ────────────────────────────────────────────────────────────────
     header_cols = ["Current Temp", "24h Min", "24h Max", "Location", "Elevation", "Timezone"]
     header = html.Thead(html.Tr([
-        html.Th(c, style={"border": "1px solid #e5e7eb", "padding": "8px", "background": "#f9fafb"})
-        for c in header_cols
+        html.Th(c) for c in header_cols  # CSS .dash-table th handles all header cell styling
     ]))
 
     # ── Single data row ───────────────────────────────────────────────────────
     cells = [current_temp, temp_min, temp_max, location, elevation, timezone]
     body = html.Tbody(html.Tr([
-        html.Td(v, style={"border": "1px solid #e5e7eb", "padding": "8px"})
-        for v in cells
+        html.Td(v) for v in cells  # CSS .dash-table td handles padding, borders, and font
     ]))
 
     return html.Table(
-        style={"borderCollapse": "collapse", "width": "100%"},
+        className="dash-table",  # CSS class provides dark surface, borders, and layout
         children=[header, body],
     )

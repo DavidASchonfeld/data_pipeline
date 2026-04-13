@@ -6,7 +6,7 @@ MLFLOW_IMAGE="ghcr.io/mlflow/mlflow:latest"
 
 step_deploy_mlflow() {
     echo "=== Step 2b5: Syncing MLflow manifests to EC2 ==="
-    rsync -avz --progress "$PROJECT_ROOT/airflow/manifests/mlflow/" "$EC2_HOST:$EC2_HOME/airflow/manifests/mlflow/"
+    rsync $RSYNC_FLAGS "$PROJECT_ROOT/airflow/manifests/mlflow/" "$EC2_HOST:$EC2_HOME/airflow/manifests/mlflow/"
 
     echo "=== Step 2b5a: Importing MLflow image into K3S containerd ==="
     # WHY import instead of letting K3S pull at runtime:
@@ -15,18 +15,17 @@ step_deploy_mlflow() {
     #   Same pattern used for the airflow-dbt image (Step 2b2).
     #   We pull the image using Docker (which caches layers), then pipe it directly into K3S's image store.
     #   On repeat deploys this is fast because Docker only downloads what's changed.
+    # Prune stale copies and pull the latest image — kept in one SSH session so Docker layer cache is warm
     ssh "$EC2_HOST" "
         echo 'Pruning old MLflow images from K3S containerd to free ephemeral storage...' &&
         sudo k3s ctr images ls | grep 'mlflow' | awk '{print \$1}' | xargs -r sudo k3s ctr images rm 2>/dev/null || true &&
         echo 'Pruning dangling Docker images to free disk space...' &&
         docker image prune -f || true &&
         echo 'Pulling MLflow image via Docker...' &&
-        docker pull $MLFLOW_IMAGE &&
-        echo 'Importing into K3S containerd...' &&
-        docker save $MLFLOW_IMAGE | sudo k3s ctr images import - &&
-        echo 'Verifying image is visible to K3S...' &&
-        sudo k3s ctr images list | grep mlflow
+        docker pull $MLFLOW_IMAGE
     "
+    # Import the pulled image into K3S — shared helper in common.sh handles save+import+verify
+    import_image_to_k3s "$MLFLOW_IMAGE" "mlflow"
 
     echo "=== Step 2b6: Deploying MLflow to K3s (safe to run multiple times) ==="
     # Print node taints and pressure conditions before deploy — catches scheduling blockers early

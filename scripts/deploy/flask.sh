@@ -4,7 +4,7 @@
 
 step_deploy_flask() {
     echo "=== Step 3: Syncing dashboard build files to EC2 ==="
-    rsync -avz --progress "$PROJECT_ROOT/dashboard/" "$EC2_HOST:$EC2_BUILD_PATH/"
+    rsync $RSYNC_FLAGS "$PROJECT_ROOT/dashboard/" "$EC2_HOST:$EC2_BUILD_PATH/"
 
     echo "=== Step 4a: Configuring ECR credential helper on EC2 ==="
     # amazon-ecr-credential-helper is the recommended way to authenticate with ECR. It automatically gets
@@ -127,8 +127,8 @@ print('ECR credential helper configured')
     else
         sed "s|\${ECR_REGISTRY}|$ECR_REGISTRY|g" "$PROJECT_ROOT/dashboard/manifests/pod-flask.yaml" > /tmp/pod-flask-rendered.yaml
     fi
-    rsync -avz /tmp/pod-flask-rendered.yaml "$EC2_HOST:/tmp/pod-flask.yaml"
-    rsync -avz "$PROJECT_ROOT/dashboard/manifests/service-flask.yaml" "$EC2_HOST:/tmp/"
+    rsync $RSYNC_FLAGS /tmp/pod-flask-rendered.yaml "$EC2_HOST:/tmp/pod-flask.yaml"
+    rsync $RSYNC_FLAGS "$PROJECT_ROOT/dashboard/manifests/service-flask.yaml" "$EC2_HOST:/tmp/"
     ssh "$EC2_HOST" "kubectl apply -f /tmp/service-flask.yaml && kubectl apply -f /tmp/pod-flask.yaml"
 }
 

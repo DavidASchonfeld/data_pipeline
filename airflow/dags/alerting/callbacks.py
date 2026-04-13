@@ -7,6 +7,7 @@ These fire regardless of vacation mode. If a DAG fails during vacation
 
 from file_logger import OutputTextWriter
 from shared.config import ALERT_COOLDOWN_MINUTES
+from shared.utils import get_writer  # shared factory — avoids duplicating the K8s PVC path here
 from alerting.notifier import _send_slack_message
 from alerting.cooldown import (
     _alert_variable_key,
@@ -15,13 +16,8 @@ from alerting.cooldown import (
     _clear_alert_state,
 )
 
-
-def _get_writer() -> OutputTextWriter:
-    """Create a log writer with K8s PVC path, falling back to /tmp."""
-    try:
-        return OutputTextWriter("/opt/airflow/out")
-    except PermissionError:
-        return OutputTextWriter("/tmp")
+# Re-export so existing callers (staleness.py) continue to work unchanged
+_get_writer = get_writer
 
 
 def on_failure_alert(context: dict) -> None:
