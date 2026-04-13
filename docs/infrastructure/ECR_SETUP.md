@@ -6,7 +6,7 @@ One-time checklist for the migration from `--docker` mode to K3S + AWS ECR. All 
 - Want to understand containerization? See [ARCHITECTURE.md](ARCHITECTURE.md#container-runtime-docker-vs-containerd)
 - Looking for Docker/push commands? See [COMMANDS.md](COMMANDS.md#docker-commands-local-development)
 - Need to understand ECR or docker push flow? See [GLOSSARY.md](GLOSSARY.md#ecr-elastic-container-registry)
-- Debugging deployment issues? See [DEBUGGING.md](DEBUGGING.md)
+- Debugging deployment issues? See [Troubleshooting](../operations/TROUBLESHOOTING.md)
 
 ---
 

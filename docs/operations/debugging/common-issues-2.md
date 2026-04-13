@@ -1,6 +1,6 @@
 # Common Issues & Fixes (J-N)
 
-Back to [Debugging Index](../DEBUGGING.md) | [Common Issues (A-I)](common-issues-1.md)
+Back to [Troubleshooting](../TROUBLESHOOTING.md) | [Common Issues (A-I)](common-issues-1.md)
 
 ---
 

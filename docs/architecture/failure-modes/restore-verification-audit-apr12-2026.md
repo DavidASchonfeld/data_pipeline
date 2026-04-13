@@ -2,7 +2,7 @@
 
 ## What Happened
 
-Ran through `docs/RESTORE_VERIFICATION.md` end-to-end for the first time since several recent infrastructure changes. The document had not been validated against the current state of the cluster. Three separate issues caused the pipeline to silently appear healthy while actually producing no new data — `dbt`, anomaly detection, and the staleness monitor had all been broken for an unknown period.
+Ran through `docs/VERIFICATION.md` end-to-end for the first time since several recent infrastructure changes. The document had not been validated against the current state of the cluster. Three separate issues caused the pipeline to silently appear healthy while actually producing no new data — `dbt`, anomaly detection, and the staleness monitor had all been broken for an unknown period.
 
 ---
 
@@ -40,7 +40,7 @@ An initial attempt to fix this by resetting the weather consumer group to `--to-
 
 Reset both consumer groups to `--to-latest` *before* triggering the producer. This positions the consumer's committed offset at the current end of the topic. The producer then publishes a new message at the next offset, the consumer starts from its committed position and finds it.
 
-The fix is now documented in `RESTORE_VERIFICATION.md` Steps 8 and 10:
+The fix is now documented in `VERIFICATION.md` Steps 8 and 10:
 
 ```bash
 kubectl exec kafka-0 -n kafka -- \
@@ -100,7 +100,7 @@ Changed `scripts/deploy/sync.sh` to build the connection as a JSON object instea
 
 The Kubernetes secret in both namespaces (`airflow-my-namespace` and `default`) was patched immediately and the scheduler pod was restarted to pick up the change. Future deploys via `./scripts/deploy.sh` will produce the correct format automatically.
 
-A verification step was added to `RESTORE_VERIFICATION.md` Step 3: after retrieving the connection, confirm that `extra_dejson` contains a non-empty `"account"` field.
+A verification step was added to `VERIFICATION.md` Step 3: after retrieving the connection, confirm that `extra_dejson` contains a non-empty `"account"` field.
 
 ---
 
@@ -136,7 +136,7 @@ After the fix, the staleness monitor runs cleanly and correctly reports:
 
 ---
 
-## Other Doc Corrections in RESTORE_VERIFICATION.md
+## Other Doc Corrections in VERIFICATION.md
 
 - **Step 1**: The Flask dashboard pod (`my-kuber-pod-flask`) lives in the `default` namespace, not `airflow-my-namespace`. The Airflow 3.x "webserver" pod is called `api-server`.
 - **Step 14**: `airflow dags unpause` output always prints the previous `is_paused` state — the unpause did take effect even when the output shows `True`. Also documented the expected staleness alert behaviour for the stocks table.
@@ -147,7 +147,7 @@ After the fix, the staleness monitor runs cleanly and correctly reports:
 
 - `scripts/deploy/sync.sh` — Step 2c1a: switched `AIRFLOW_CONN_SNOWFLAKE_DEFAULT` from URI to JSON format
 - `airflow/dags/alerting/staleness.py` — replaced `make_mariadb_engine()` with `SnowflakeHook`; updated table names and timestamp handling
-- `docs/RESTORE_VERIFICATION.md` — Steps 1, 3, 8, 10, 14 updated with correct commands, pod locations, and expected alert behaviour
+- `docs/VERIFICATION.md` — Steps 1, 3, 8, 10, 14 updated with correct commands, pod locations, and expected alert behaviour
 
 ---
 

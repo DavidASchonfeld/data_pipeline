@@ -15,7 +15,7 @@ A deep dive into the non-obvious risks of running K3s on a single EC2 instance w
 
 - **Cost efficiency** — One t3.large (~$54/mo) vs. EKS cluster ($73/mo just for control plane + compute)
 - **Simplicity** — No multi-node networking, no leader election complexity, no split-brain scenarios
-- **Full K8s API** — Production-grade orchestration (auto-restart, rolling updates, health checks)
+- **Full K8s API** — Full orchestration (auto-restart, rolling updates, health checks)
 - **Portfolio value** — Demonstrates real K8s knowledge without cloud-managed training wheels
 
 ### What You Lose (Hidden Costs)
@@ -30,7 +30,7 @@ A deep dive into the non-obvious risks of running K3s on a single EC2 instance w
 
 ### What to Do About It
 
-You don't need to solve these — this is a portfolio project. But you should **document that you understand them**. In interviews, saying "I chose single-node K3s for cost and accepted these tradeoffs" is more impressive than pretending it's production-grade.
+These are accepted tradeoffs. Single-node K3s was chosen for cost efficiency, and understanding these limitations is important when deciding whether to scale to a multi-node setup later.
 
 ---
 

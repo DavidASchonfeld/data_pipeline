@@ -2,7 +2,7 @@
 
 Troubleshooting DAG discovery failures, DagBag errors, parse-time import failures, and deprecation warnings.
 
-**See also:** [DAG Runtime Issues](airflow-dag-runtime-issues.md) | [Parent index](../TROUBLESHOOTING.md) | [DEBUGGING.md](../DEBUGGING.md)
+**See also:** [DAG Runtime Issues](airflow-dag-runtime-issues.md) | [Parent index](../TROUBLESHOOTING.md) | [Troubleshooting](../TROUBLESHOOTING.md)
 
 ---
 

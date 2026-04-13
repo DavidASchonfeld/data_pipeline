@@ -2,7 +2,7 @@
 
 Troubleshooting deploy.sh failures, Docker/ECR problems, DAG file sync issues, and deployment validation.
 
-**See also:** [Parent index](../TROUBLESHOOTING.md) | [DEBUGGING.md](../DEBUGGING.md) | [RUNBOOKS.md](../RUNBOOKS.md)
+**See also:** [Parent index](../TROUBLESHOOTING.md) | [Troubleshooting](../TROUBLESHOOTING.md) | [RUNBOOKS.md](../RUNBOOKS.md)
 
 ---
 

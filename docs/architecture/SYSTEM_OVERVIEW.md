@@ -24,7 +24,7 @@ You run K3S on a single **t3.large EC2 instance** (2 vCPU, 8 GB RAM) in AWS. Thi
 - **K3S on EC2:** Only pay for the t3.large instance (~$0.07/hour) → ~$54/month total, with full Kubernetes features
 - **Docker Compose on EC2:** No orchestration, no auto-restart, harder to scale → risky for production
 
-K3S gives you production-grade container orchestration (auto-restart, rolling updates, health checks) at a fraction of the cost.
+K3S gives you container orchestration (auto-restart, rolling updates, health checks) at a fraction of the cost of managed Kubernetes.
 
 ---
 

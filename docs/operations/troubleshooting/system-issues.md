@@ -2,7 +2,7 @@
 
 Troubleshooting OS-level problems, SSH warnings, kubectl permissions, and browser console errors.
 
-**See also:** [Parent index](../TROUBLESHOOTING.md) | [DEBUGGING.md](../DEBUGGING.md) | [RUNBOOKS.md](../RUNBOOKS.md)
+**See also:** [Parent index](../TROUBLESHOOTING.md) | [Troubleshooting](../TROUBLESHOOTING.md) | [RUNBOOKS.md](../RUNBOOKS.md)
 
 ---
 
@@ -31,7 +31,7 @@ This is safe for automated/scripted use but not recommended interactively — yo
 ### Notes
 - This is harmless — the upgrade did not fail, it was just waiting
 - The prompt appears in the terminal output if you're actively watching, but is easy to miss in an overnight run
-- Real incident: 2026-04-06, `apt upgrade` waited ~6 hours overnight for an Enter keypress ([CHANGELOG.md](../../incidents/CHANGELOG.md))
+- Real incident: 2026-04-06, `apt upgrade` waited ~6 hours overnight for an Enter keypress ([Incident Log](../../incidents/INDEX.md))
 
 ---
 

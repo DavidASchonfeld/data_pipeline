@@ -8,7 +8,7 @@
 
 ## Symptom
 
-Running the RESTORE_VERIFICATION.md Step 7 compile check:
+Running the VERIFICATION.md Step 7 compile check:
 
 ```bash
 kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
@@ -44,7 +44,7 @@ The original verification command only set `DBT_PROFILES_DIR` and omitted the ot
 
 ## Fix
 
-Updated RESTORE_VERIFICATION.md Step 7 with:
+Updated VERIFICATION.md Step 7 with:
 
 1. A pre-check that confirms `/dbt/profiles.yml` is mounted before attempting compile.
 2. The corrected compile command that sets `DBT_TARGET_PATH`, `DBT_LOG_PATH`, pre-creates those tmp dirs with `mkdir -p`, and adds `--debug` to force output to the terminal.

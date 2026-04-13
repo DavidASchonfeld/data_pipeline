@@ -50,7 +50,7 @@ The `--docker` mode *worked* for running pods (K3S and Docker shared the same im
 |---|---|
 | `scripts/deploy.sh` | Step 4: adds `docker tag` + `docker push` to ECR after build. Step 5: replaced broken containerd import with ECR pull-secret refresh. |
 | `dashboard/manifests/pod-flask.yaml` | `image:` changed to full ECR URI. `imagePullPolicy: Never` → `IfNotPresent`. Added `imagePullSecrets` referencing the `ecr-credentials` secret. |
-| `OVERVIEW.md` | Updated deploy step descriptions and tech stack table. |
+| `SETUP.md` | Updated deploy step descriptions and tech stack table. |
 
 ---
 

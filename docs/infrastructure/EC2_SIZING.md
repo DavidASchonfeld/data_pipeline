@@ -9,9 +9,37 @@ How to choose the right EC2 instance size for this stack, and what changes are r
 
 ---
 
+## RAM and vCPU in Plain English
+
+Your EC2 instance is like a computer. **RAM** is working memory — when it fills up, programs crash (the kernel force-kills them, which Kubernetes reports as `OOMKilled`). **vCPU** is like the number of hands your computer has — more hands means more simultaneous tasks.
+
+The quick version:
+
+| Size | RAM | vCPU | Verdict |
+|------|-----|------|---------|
+| t3.small | 2GB | 2 | Too small — K3s and Airflow alone use most of this |
+| t3.medium | 4GB | 2 | Not enough — barely fits the stack, no room for Kafka |
+| **t3.large** | **8GB** | **2** | **Works — the right size for this project** |
+| t3.xlarge | 16GB | 4 | Comfortable but costs ~$60/month more than needed |
+
+Current stack uses roughly 2.5–4 GB. t3.large has 8 GB — enough headroom for Kafka and startup spikes. If it ever feels slow, resize to t3.xlarge in the AWS Console in ~2 minutes with no data loss.
+
+---
+
+## Resource Limits — Why Every Pod Needs Them
+
+Without limits, one runaway pod can eat all 8 GB of RAM, crashing every other pod. With limits, each pod has a ceiling it can't exceed.
+
+- **Request** — "I need at least this much." Kubernetes guarantees this amount and uses it to decide where to schedule the pod.
+- **Limit** — "The absolute most I'm allowed to use." Exceeding it for memory = instant kill (`OOMKilled`). Exceeding it for CPU = throttled (slowed down, not killed).
+
+Think of it like seats on a plane: the request is your reserved seat, the limit is the armrest rule.
+
+---
+
 ## Component RAM Requirements
 
-These are practical estimates for this specific stack at low/portfolio traffic levels.
+These are practical estimates for this specific stack at low traffic levels.
 
 | Component | Where it runs | Approx RAM |
 |-----------|--------------|-----------|
@@ -106,7 +134,7 @@ Kafka is a Java application and by default requests 1–2GB of heap. On t3.large
   value: "-Xmx768m -Xms768m"
 ```
 
-This limits Kafka to 768MB heap, which is sufficient for a single-topic, low-throughput portfolio pipeline.
+This limits Kafka to 768MB heap, which is sufficient for a single-topic, low-throughput pipeline.
 
 Also set a K8s memory limit to prevent the JVM from creeping beyond the heap setting:
 ```yaml
