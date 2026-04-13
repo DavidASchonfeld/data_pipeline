@@ -1,9 +1,18 @@
 # Standalone anomaly detection script — runs under /opt/ml-venv (scikit-learn + mlflow available)
 # Reads FCT_COMPANY_FINANCIALS, fits IsolationForest on YoY pct changes, writes to FCT_ANOMALIES
+# NOTE: shared/ is not imported here because this script runs under a separate venv that may not
+#       have the same sys.path as the Airflow workers. Constants are duplicated intentionally.
 
 import os
 import json
 import argparse
+
+# ── Snowflake table identifiers (mirrors shared/snowflake_schema.py) ──────────
+# Defined locally because this script runs under /opt/ml-venv, not the Airflow venv.
+_DB              = "PIPELINE_DB"
+_MARTS_FCT_FIN   = f"{_DB}.MARTS.FCT_COMPANY_FINANCIALS"   # source table for feature engineering
+_ANALYTICS_SCHEMA = f"{_DB}.ANALYTICS"                     # schema for DDL statements
+_FCT_ANOMALIES   = f"{_DB}.ANALYTICS.FCT_ANOMALIES"        # output table for model results
 
 import pandas as pd
 import snowflake.connector                        # direct connector — no Airflow dependency
@@ -34,9 +43,9 @@ def fetch_data(conn) -> pd.DataFrame:
     Pull FY Revenues + NetIncomeLoss from the mart, pivot to wide format,
     compute YoY % change per ticker, and drop the first year (NaN row).
     """
-    query = """
+    query = f"""
         SELECT ticker, fiscal_year, metric, value
-        FROM PIPELINE_DB.MARTS.FCT_COMPANY_FINANCIALS
+        FROM {_MARTS_FCT_FIN}
         WHERE UPPER(metric) IN ('REVENUEFROMCONTRACTWITHCUSTOMEREXCLUDINGASSESSEDTAX', 'NETINCOMELOSS')  -- matches XBRL concept fetched by edgar_client.py
           AND fiscal_period = 'FY'
     """
@@ -85,7 +94,8 @@ def run_model(df: pd.DataFrame, contamination: float, n_estimators: int) -> tupl
     # Keep as DataFrame (not .values) so sklearn remembers feature names — prevents "fitted without feature names" warning
     features_df = df[["revenue_yoy_pct", "net_income_yoy_pct"]]
 
-    mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])         # point at the MLflow server
+    # Fall back to in-cluster K8s service address if env var absent (matches shared/config.py default)
+    mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow.airflow-my-namespace.svc.cluster.local:5500"))  # point at the MLflow server
     # Restore soft-deleted experiment if present — set_experiment cannot reuse deleted experiments
     _client = mlflow.tracking.MlflowClient()
     _exp = _client.get_experiment_by_name("anomaly_detection")
@@ -140,9 +150,9 @@ def write_results(conn, df: pd.DataFrame) -> None:
     cur = conn.cursor()
 
     # Create schema + table only if they don't already exist
-    cur.execute("CREATE SCHEMA IF NOT EXISTS PIPELINE_DB.ANALYTICS")
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS PIPELINE_DB.ANALYTICS.FCT_ANOMALIES (
+    cur.execute(f"CREATE SCHEMA IF NOT EXISTS {_ANALYTICS_SCHEMA}")  # schema name from local constant
+    cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS {_FCT_ANOMALIES} (
             ticker          VARCHAR,
             fiscal_year     NUMBER,
             revenue_yoy_pct FLOAT,
@@ -155,11 +165,11 @@ def write_results(conn, df: pd.DataFrame) -> None:
     """)
 
     # Full-refresh: wipe previous run's results before inserting new ones
-    cur.execute("DELETE FROM PIPELINE_DB.ANALYTICS.FCT_ANOMALIES")
+    cur.execute(f"DELETE FROM {_FCT_ANOMALIES}")  # table name from local constant
 
     # Build rows as tuples for executemany — CURRENT_TIMESTAMP() resolved server-side
-    insert_sql = """
-        INSERT INTO PIPELINE_DB.ANALYTICS.FCT_ANOMALIES
+    insert_sql = f"""
+        INSERT INTO {_FCT_ANOMALIES}
             (ticker, fiscal_year, revenue_yoy_pct, net_income_yoy_pct,
              is_anomaly, anomaly_score, detected_at, mlflow_run_id)
         VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP(), %s)

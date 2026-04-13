@@ -12,6 +12,7 @@ from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOpe
 # My Files
 from weather_client import fetch_weather_forecast  # renamed from sendRequest_openMeteo
 from file_logger import OutputTextWriter  # renamed from outputTextWriter
+from shared.utils import get_writer, log_df_preview  # shared log writer factory and DataFrame preview helper
 from dag_utils import check_vacation_mode  # shared guard: skips task if VACATION_MODE Variable is "true"
 from alerting import on_failure_alert, on_retry_alert, on_success_alert  # Slack + PVC log alerts on task failure/retry/recovery
 
@@ -75,7 +76,8 @@ def weather_pipeline():
         # Halt this task (and downstream transform/load) if vacation mode is active
         check_vacation_mode()
 
-        raw_data : dict = fetch_weather_forecast(latitude=40, longitude=40, fahrenheit=True)
+        from shared.config import WEATHER_LATITUDE, WEATHER_LONGITUDE  # deferred: configurable coordinates
+        raw_data : dict = fetch_weather_forecast(latitude=WEATHER_LATITUDE, longitude=WEATHER_LONGITUDE, fahrenheit=True)
         print(raw_data)
         # Validate API response structure
         if not all(key in raw_data for key in ["hourly", "hourly_units"]):
@@ -103,8 +105,7 @@ def weather_pipeline():
         ### Transform task. aka clean/format the data
         """
 
-        # Location that the K3S Kubernetes pod (as specified in the PortableVolume) is pointing to inside the K3S Kubernetes pod, which will push
-        writer : OutputTextWriter = OutputTextWriter("/opt/airflow/out")
+        writer : OutputTextWriter = get_writer()  # K8s PVC path or LOCAL_LOG_PATH fallback
 
         # Transform the incoming JSON into a SQL table, each with a different row for each time (and therfore smae or different temperature)
         # I will need to add
@@ -126,8 +127,7 @@ def weather_pipeline():
         })
 
         writer.log("----Transform Preview----")
-        writer.log(str(df.head()))
-        writer.log(str(df.dtypes))
+        log_df_preview(writer, df)  # shared helper: logs head() + dtypes()
 
         # Convert to list-of-dicts so Airflow XCom can serialize it as JSON
         return df.to_dict(orient="records")
@@ -142,28 +142,24 @@ def weather_pipeline():
 
         One message per DAG run keyed by run_id for idempotency.
         """
-        from kafka import KafkaProducer  # kafka-python, installed via _PIP_ADDITIONAL_REQUIREMENTS
+        from kafka_client import make_producer  # shared factory: single source of truth for producer config
+        from shared.config import KAFKA_WEATHER_TOPIC  # deferred: centralized topic name
 
-        writer: OutputTextWriter = OutputTextWriter("/opt/airflow/out")
+        writer: OutputTextWriter = get_writer()  # K8s PVC path or LOCAL_LOG_PATH fallback
         context = get_current_context()
 
-        bootstrap: str = Variable.get("KAFKA_BOOTSTRAP_SERVERS")  # kafka.kafka.svc.cluster.local:9092
-        producer = KafkaProducer(
-            bootstrap_servers=bootstrap,
-            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-            max_block_ms=15000,  # fail fast if broker unreachable during send/flush
-        )
+        producer = make_producer()  # construct producer with broker address resolved from Airflow Variable
 
         # Single message per run — full list-of-dicts as one JSON payload
         producer.send(
-            "weather-hourly-raw",
+            KAFKA_WEATHER_TOPIC,
             key=context["run_id"].encode("utf-8"),  # idempotency key: prevents duplicate processing on retry
             value=records,
         )
         producer.flush()   # block until broker acknowledges receipt
         producer.close()
 
-        writer.log(f"Published {len(records)} records to weather-hourly-raw")
+        writer.log(f"Published {len(records)} records to {KAFKA_WEATHER_TOPIC}")
         return len(records)
 
     # Airflow automatically converts all task method return values to XComArg objects for cross-task data passing.

@@ -27,6 +27,7 @@ step_build_airflow_image() {
     # (If you re-import under the same tag name, K3S can silently reuse the old cached version
     # even after you've deleted and re-imported it.)
     echo "Build tag: $BUILD_TAG"
+    # Build the image and clean up stale copies — kept in one SSH session so Docker cache is warm
     ssh "$EC2_HOST" "
         echo 'Building airflow-dbt:$BUILD_TAG image...' &&
         docker build -t airflow-dbt:$BUILD_TAG $EC2_HOME/airflow/docker/ &&
@@ -37,10 +38,8 @@ step_build_airflow_image() {
         echo 'Pruning old airflow-dbt Docker images from previous builds to free disk space...' &&
         docker images --format '{{.Repository}}:{{.Tag}}' | grep 'airflow-dbt' | grep -v '$BUILD_TAG' | xargs -r docker rmi 2>/dev/null || true &&
         echo 'Pruning dangling Docker images to free disk space...' &&
-        docker image prune -f || true &&
-        echo 'Importing new image into K3S containerd (bypasses Docker image store, which K3S cannot see)...' &&
-        docker save airflow-dbt:$BUILD_TAG | sudo k3s ctr images import - &&
-        echo 'Verifying image is visible to K3S...' &&
-        sudo k3s ctr images list | grep airflow-dbt
+        docker image prune -f || true
     "
+    # Import the freshly built image into K3S — shared helper in common.sh handles save+import+verify
+    import_image_to_k3s "airflow-dbt:$BUILD_TAG" "airflow-dbt"
 }

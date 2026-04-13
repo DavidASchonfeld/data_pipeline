@@ -119,17 +119,17 @@ resource "aws_iam_instance_profile" "ec2_ecr_profile" {
 
 # ── EC2 Instance ──────────────────────────────────────────────────────────────
 
-# Single t3.large running K3s with Airflow, Kafka, MLflow, Flask, and MariaDB.
+# Single instance running K3s with Airflow, Kafka, MLflow, Flask, and MariaDB.
 resource "aws_instance" "pipeline" {
   ami                    = data.aws_ami.ubuntu_24_04.id
-  instance_type          = "t3.large"
+  instance_type          = var.instance_type  # set in variables.tf — default t3.large
   key_name               = aws_key_pair.pipeline.key_name  # implicit dependency — key pair must exist in AWS before instance is created
   vpc_security_group_ids = [aws_security_group.pipeline_sg.id]
   iam_instance_profile   = aws_iam_instance_profile.ec2_ecr_profile.name
 
   root_block_device {
     volume_type           = "gp3"
-    volume_size           = 100   # GiB — sized for K3s images, MLflow artifacts, and MariaDB data
+    volume_size           = var.ebs_volume_size  # set in variables.tf — default 100 GiB
     encrypted             = true  # Free; zero performance impact — encrypts all data at rest on the volume
     delete_on_termination = false # Preserve root EBS volume if instance is destroyed — prevents permanent data loss
   }

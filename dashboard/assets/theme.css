@@ -1,0 +1,270 @@
+/* ── CSS Custom Properties ───────────────────────────────────────────────────
+   Single source of truth for all colors and design tokens.
+   Centralising here means changing one value updates the whole dashboard.      */
+:root {
+    --bg-base:          #0f1117;  /* near-black    — outermost page canvas      */
+    --bg-surface:       #1a1d27;  /* dark navy      — cards, chart panels       */
+    --bg-elevated:      #222638;  /* dark slate-blue — table headers, nav bar   */
+    --bg-hover:         #2a2f45;  /* muted indigo   — row hover, active states  */
+    --text-primary:     #e2e8f0;  /* soft white     — body and heading text     */
+    --text-secondary:   #8892a4;  /* cool gray      — labels, subtitles         */
+    --text-muted:       #4a5568;  /* charcoal       — placeholders, disabled    */
+    --accent-blue:      #3b82f6;  /* cornflower blue — links, primary action    */
+    --accent-blue-bright: #60a5fa; /* sky blue      — button hover, active      */
+    --accent-green:     #10b981;  /* emerald green  — Net Income bars           */
+    --accent-amber-dim: rgba(245, 158, 11, 0.15); /* translucent amber — stale row tint  */
+    --accent-red-dim:   rgba(239,  68, 68, 0.15); /* translucent red   — anomaly row tint */
+    --border:           #2d3348;  /* dark steel     — table cell dividers       */
+    --border-light:     #374160;  /* slate          — nav/header borders        */
+    --radius:           8px;      /* standard corner radius for cards/tables    */
+    --radius-sm:        4px;      /* small corner radius for buttons/dropdowns  */
+    --shadow:           0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+/* ── Global Reset ────────────────────────────────────────────────────────────
+   Remove browser default margins/padding and enforce border-box sizing.       */
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+/* Set the page-wide dark background, cross-platform system font stack,
+   and base text colour so every element inherits sane defaults.               */
+body {
+    background-color: var(--bg-base);
+    color: var(--text-primary);
+    /* system-ui resolves to the native OS font: Segoe UI on Windows,
+       San Francisco on macOS, Roboto on Android — no external request needed. */
+    font-family: system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;  /* crisper text on high-DPI screens  */
+}
+
+/* ── Page Wrapper ────────────────────────────────────────────────────────────
+   Mirrors the old inline maxWidth/margin/padding on each layout's root Div.   */
+.dash-page {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 32px 24px;
+}
+
+/* ── Navigation Bar ──────────────────────────────────────────────────────────
+   Flexbox row holding the page title area on the left and the nav link
+   on the right; bottom border acts as a visual separator from the content.    */
+.dash-nav {
+    display: flex;
+    align-items: center;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 24px;
+}
+
+/* Style the inter-dashboard navigation link as a pill button. */
+.dash-nav__link {
+    color: var(--accent-blue);
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    padding: 6px 12px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    transition: background-color 0.15s, border-color 0.15s;
+}
+
+/* Highlight the nav link on hover to signal it is interactive.               */
+.dash-nav__link:hover {
+    background-color: var(--bg-hover);
+    border-color: var(--accent-blue);
+    color: var(--accent-blue-bright);
+}
+
+/* ── Typography ──────────────────────────────────────────────────────────────*/
+
+/* Page title — removes the old inline color style from html.H1.              */
+h1 {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: -0.02em;
+    margin-bottom: 6px;
+}
+
+/* Section heading — replaces inline color + marginTop on html.H2.            */
+h2 {
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: -0.01em;
+    margin-bottom: 8px;
+}
+
+/* Muted descriptive text below headings — replaces inline gray color on P.   */
+.dash-subtitle {
+    color: var(--text-secondary);
+    font-size: 13px;
+    margin-bottom: 20px;
+}
+
+/* Horizontal rule separator — replaces the default browser grey border.      */
+hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 28px 0;
+}
+
+/* ── Labels ──────────────────────────────────────────────────────────────────
+   Uppercase, letter-spaced label style for form elements like the dropdown.  */
+label {
+    display: block;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 6px;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────────────
+   Replaces the bare html.Button styling on Refresh Anomalies / Refresh Weather. */
+.dash-btn {
+    background-color: var(--bg-elevated);
+    color: var(--accent-blue-bright);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    padding: 8px 16px;
+    font-family: inherit;  /* inherit body font stack so the button matches     */
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    letter-spacing: 0.01em;
+    transition: background-color 0.15s, border-color 0.15s;
+    margin-bottom: 16px;
+}
+
+/* Subtle background shift on hover provides affordance without being harsh.  */
+.dash-btn:hover {
+    background-color: var(--bg-hover);
+    border-color: var(--accent-blue);
+}
+
+/* Fill with accent colour on active/click press for tactile feedback.        */
+.dash-btn:active {
+    background-color: var(--accent-blue);
+    color: #ffffff;  /* pure white — high contrast on the blue fill            */
+}
+
+/* ── Data Tables ─────────────────────────────────────────────────────────────
+   Base class applied to html.Table in all four table-builder functions.       */
+.dash-table {
+    border-collapse: collapse;
+    width: 100%;
+    background-color: var(--bg-surface);
+    border-radius: var(--radius);
+    overflow: hidden;  /* clips cells so border-radius shows on the table      */
+    box-shadow: var(--shadow);
+    margin-top: 16px;
+}
+
+/* Styled header cells: uppercase, small, secondary-color, elevated background. */
+.dash-table th {
+    background-color: var(--bg-elevated);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-light);
+    text-align: left;
+    white-space: nowrap;  /* prevent header text from wrapping on narrow screens */
+}
+
+/* Base data cell — consistent padding, subtle bottom border, tabular numbers. */
+.dash-table td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-primary);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;  /* aligns numeric columns on their decimal point */
+}
+
+/* Remove the bottom border on the last row to avoid a double-border effect.  */
+.dash-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+/* Alternate row stripe: every even row gets a slightly elevated background.  */
+.dash-table tbody tr:nth-child(even) td {
+    background-color: var(--bg-elevated);
+}
+
+/* Row hover highlight — works across both striped and unstriped rows.        */
+.dash-table tbody tr:hover td {
+    background-color: var(--bg-hover);
+}
+
+/* ── State-specific Row Highlighting ─────────────────────────────────────────
+   These classes are applied to html.Tr elements by the table builder functions
+   and override the alternating-stripe rule via higher specificity (tr.class td
+   vs tbody tr:nth-child td).                                                   */
+
+/* Anomaly rows: translucent red tint — replaces inline {"backgroundColor": "#fef2f2"} */
+tr.row-anomaly td {
+    background-color: var(--accent-red-dim) !important;
+}
+
+/* Stale data rows: translucent amber — replaces inline {"backgroundColor": "#fffbeb"} */
+tr.row-stale td {
+    background-color: var(--accent-amber-dim) !important;
+}
+
+/* ── Dash Dropdown (React-Select) ────────────────────────────────────────────
+   Dash bundles React-Select whose styles are injected with high specificity,
+   so !important is required here to override them.                             */
+
+/* Control (the visible input box) — dark background, matching border.        */
+.Select-control {
+    background-color: var(--bg-elevated) !important;
+    border: 1px solid var(--border-light) !important;
+    border-radius: var(--radius-sm) !important;
+    color: var(--text-primary) !important;
+}
+
+/* The floating options panel — dark surface, matching border.                */
+.Select-menu-outer {
+    background-color: var(--bg-elevated) !important;
+    border: 1px solid var(--border-light) !important;
+    border-radius: var(--radius-sm) !important;
+    box-shadow: var(--shadow) !important;
+}
+
+/* Each option item — dark background, primary text colour.                   */
+.Select-option {
+    background-color: var(--bg-elevated) !important;
+    color: var(--text-primary) !important;
+}
+
+/* Focused/hovered option — hover shade matches the rest of the UI.           */
+.Select-option.is-focused {
+    background-color: var(--bg-hover) !important;
+}
+
+/* The selected value label rendered inside the control.                       */
+.Select-value-label {
+    color: var(--text-primary) !important;
+}
+
+/* Placeholder text when nothing is selected.                                  */
+.Select-placeholder {
+    color: var(--text-muted) !important;
+}
+
+/* ── Loading Spinner Overlay ─────────────────────────────────────────────────
+   Dash's dcc.Loading injects a semi-transparent overlay while callbacks run.
+   Override the default white overlay so it blends with the dark background.   */
+._dash-loading-callback {
+    background-color: rgba(15, 17, 23, 0.6) !important;  /* near-black at 60% opacity */
+}

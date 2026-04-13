@@ -24,3 +24,15 @@ variable "ssh_public_key" {
   type        = string
   # No default — extracted at runtime by terraform.sh; never stored in version control
 }
+
+variable "instance_type" {
+  description = "EC2 instance type — t3.large is the minimum for K3s + Airflow + Kafka + MLflow"
+  type        = string
+  default     = "t3.large"
+}
+
+variable "ebs_volume_size" {
+  description = "Root EBS volume size in GiB — sized for K3s images, MLflow artifacts, and MariaDB data"
+  type        = number
+  default     = 100
+}

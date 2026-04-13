@@ -33,3 +33,24 @@ ALERT_COOLDOWN_MINUTES = int(os.environ.get("ALERT_COOLDOWN_MINUTES", "60"))
 # Production always passes /opt/airflow/out explicitly, so this default is never used there.
 # Local dev:   set LOCAL_LOG_PATH in your .env file to your local logs directory
 LOCAL_LOG_PATH = os.environ.get("LOCAL_LOG_PATH", "/tmp/airflow_logs")
+
+# ── Weather ───────────────────────────────────────────────────────────────────
+# Fetch coordinates — override with env vars to point at a different location
+WEATHER_LATITUDE  = float(os.getenv("WEATHER_LATITUDE",  "40"))  # default: Black Sea coast, Turkey
+WEATHER_LONGITUDE = float(os.getenv("WEATHER_LONGITUDE", "40"))  # arbitrary location chosen for learning
+
+# ── Anomaly detection ─────────────────────────────────────────────────────────
+# IsolationForest hyperparameters — tune via env vars without editing DAG files or triggering re-parse
+ANOMALY_CONTAMINATION = float(os.getenv("ANOMALY_CONTAMINATION", "0.05"))  # expected fraction of anomalies
+ANOMALY_N_ESTIMATORS  = int(os.getenv("ANOMALY_N_ESTIMATORS",   "100"))   # number of isolation trees
+
+# ── Kafka ─────────────────────────────────────────────────────────────────────
+# Topic names and consumer-group IDs — renaming a topic only requires one change here
+KAFKA_STOCKS_TOPIC  = "stocks-financials-raw"   # topic written by dag_stocks.py, read by dag_stocks_consumer.py
+KAFKA_WEATHER_TOPIC = "weather-hourly-raw"       # topic written by dag_weather.py, read by dag_weather_consumer.py
+KAFKA_STOCKS_GROUP  = "stocks-consumer-group"    # consumer group for stocks pipeline (offsets tracked per group)
+KAFKA_WEATHER_GROUP = "weather-consumer-group"   # consumer group for weather pipeline
+
+# ── MLflow ────────────────────────────────────────────────────────────────────
+# Default points at the in-cluster K8s service; override with env var to change target
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow.airflow-my-namespace.svc.cluster.local:5500")

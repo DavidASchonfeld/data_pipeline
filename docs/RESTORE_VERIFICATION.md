@@ -2,9 +2,42 @@
 
 Run these steps **in order** after restoring the project from scratch (Terraform + Helm deploy via `./scripts/deploy.sh`). Each section has a clear **Pass** condition. If a step fails, fix it before continuing — later steps depend on earlier ones.
 
+---
+
+## How to Access and Run Tests
+
+All verification steps run on the EC2 instance. You can access it in two ways:
+
+**Option 1: Run tests from your local machine (no SSH session needed)**
+```bash
+# Example: Check if all pods are running
+ssh <your-instance> "kubectl get pods -n airflow-my-namespace"
+
+# Example: Trigger the stocks pipeline
+ssh <your-instance> "kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- airflow dags trigger Stock_Market_Pipeline"
+```
+
+**Option 2: Open an interactive SSH session** (run multiple tests sequentially)
+```bash
+ssh <your-instance>
+# Once connected, run tests directly without 'ssh' prefix
+kubectl get pods -n airflow-my-namespace
+kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- airflow dags list
+```
+
+**Option 3: Port forwarding** (view MLflow or dashboard UI in your browser)
+```bash
+ssh <your-instance> -L 5500:localhost:5500 -L 32147:localhost:32147
+# Then open http://localhost:5500 (MLflow) or http://localhost:32147/dashboard (Dashboard)
+```
+
+> **Setup:** Replace `<your-instance>` with your EC2 SSH alias or address (e.g., `ubuntu@192.0.2.100` or a shortcut from `~/.ssh/config`).
+
 > **Context:** This doc covers the full pipeline. For deep dives into specific components, see:
 > - Anomaly detection + MLflow details → [`docs/verification-steps.md`](verification-steps.md)
 > - OpenLineage details → [`docs/operations/T3_OPENLINEAGE_VERIFY.md`](operations/T3_OPENLINEAGE_VERIFY.md)
+
+---
 
 ---
 
@@ -389,6 +422,15 @@ kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
 > **Expected alert behaviour after Steps 8–10:**
 > - **Stocks** (`FCT_COMPANY_FINANCIALS`): The `filed_date` column reflects the actual SEC EDGAR filing date (e.g. Feb 2026 for FY2025 10-Ks), not the pipeline run date. This will almost always exceed the 168h threshold. The alert is expected and does not indicate a pipeline problem.
 > - **Weather** (`FCT_WEATHER_HOURLY`): Should be fresh (within 2h) if you just ran Steps 10 with the Kafka offset reset. If an alert fires here, the weather write to Snowflake may not have succeeded — re-check Step 10's task states.
+
+---
+
+## Known Issues & Fixes
+
+**Issue:** Anomaly detection task fails with SQL syntax error `unexpected '_MARTS_FCT_FIN'`
+- **Root cause:** The SQL query in `anomaly_detector.py:46` used a placeholder string `{_MARTS_FCT_FIN}` without an f-string prefix, so the variable was never interpolated.
+- **Fix:** Changed line 46 from `query = """` to `query = f"""` to enable f-string interpolation.
+- **Status:** Fixed in commit [hash]. If you see this error, ensure you've redeployed the DAGs with `./scripts/deploy.sh --dags-only`.
 
 ---
 

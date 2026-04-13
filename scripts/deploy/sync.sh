@@ -12,24 +12,24 @@
 step_sync_dags() {
     echo "=== Step 2: Syncing DAG files to EC2 ==="
     # Trailing "/" on source means "sync contents of folder", not the folder itself
-    rsync -avz --progress "$PROJECT_ROOT/airflow/dags/" "$EC2_HOST:$EC2_DAG_PATH/"
+    rsync $RSYNC_FLAGS "$PROJECT_ROOT/airflow/dags/" "$EC2_HOST:$EC2_DAG_PATH/"
 }
 
 step_sync_helm_dockerfile() {
     echo "=== Step 2b: Syncing Helm values to EC2 ==="
-    rsync -avz --progress "$PROJECT_ROOT/airflow/helm/values.yaml" "$EC2_HOST:$EC2_HELM_PATH/"
+    rsync $RSYNC_FLAGS "$PROJECT_ROOT/airflow/helm/values.yaml" "$EC2_HOST:$EC2_HELM_PATH/"
 
     echo "=== Step 2b1: Syncing Airflow Dockerfile to EC2 ==="
     # Sync the Dockerfile so the image can be built on EC2 (image is built and loaded directly into K3S — it's never pushed to ECR)
-    rsync -avz --progress "$PROJECT_ROOT/airflow/docker/" "$EC2_HOST:$EC2_HOME/airflow/docker/"
+    rsync $RSYNC_FLAGS "$PROJECT_ROOT/airflow/docker/" "$EC2_HOST:$EC2_HOME/airflow/docker/"
 }
 
 step_sync_manifests_secrets() {
     echo "=== Step 2c: Syncing Kubernetes manifests to EC2 ==="
     # These copies let you run kubectl commands directly on EC2 if you ever need to
     # (Git is still the master copy — these are just for convenience on the EC2 side)
-    rsync -avz --progress "$PROJECT_ROOT/airflow/manifests/" "$EC2_HOST:$EC2_HOME/airflow/manifests/"
-    rsync -avz --progress "$PROJECT_ROOT/dashboard/manifests/" "$EC2_HOST:$EC2_HOME/dashboard/manifests/"
+    rsync $RSYNC_FLAGS "$PROJECT_ROOT/airflow/manifests/" "$EC2_HOST:$EC2_HOME/airflow/manifests/"
+    rsync $RSYNC_FLAGS "$PROJECT_ROOT/dashboard/manifests/" "$EC2_HOST:$EC2_HOME/dashboard/manifests/"
 
     echo "=== Step 2c1: Applying K8s secrets (credentials) ==="
     # Apply Snowflake and database credential secrets to both airflow-my-namespace and default namespaces.
@@ -105,10 +105,8 @@ step_sync_manifests_secrets() {
     # Airflow tasks point dbt to that folder by setting DBT_PROFILES_DIR=/dbt.
     if [ -f "$PROJECT_ROOT/profiles.yml" ]; then
         scp "$PROJECT_ROOT/profiles.yml" "$EC2_HOST:$EC2_HOME/profiles.yml"
-        ssh "$EC2_HOST" "kubectl create secret generic dbt-profiles \
-            --from-file=profiles.yml=$EC2_HOME/profiles.yml \
-            -n airflow-my-namespace \
-            --dry-run=client -o yaml | kubectl apply -f -"
+        # apply_k8s_secret handles --dry-run=client -o yaml | kubectl apply (idempotent create/update)
+        apply_k8s_secret airflow-my-namespace dbt-profiles "--from-file=profiles.yml=$EC2_HOME/profiles.yml"
     else
         echo "Note: profiles.yml not found locally — skipping (create it first if dbt is not yet set up)."
     fi

@@ -10,8 +10,10 @@ from airflow.sdk import dag, task, XComArg, get_current_context, Variable  # Air
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator  # fires consumer DAG after publish
 
 # My Files
-from edgar_client import resolve_cik, fetch_company_facts, flatten_company_financials  # SEC EDGAR XBRL API calls and data flattening
+from edgar_api import resolve_cik, fetch_company_facts          # SEC EDGAR HTTP layer (rate limiter + CIK resolution)
+from edgar_transforms import flatten_company_financials         # XBRL → flat row-dicts transform
 from file_logger import OutputTextWriter  # renamed from outputTextWriter
+from shared.utils import get_writer, log_df_preview  # shared log writer factory and DataFrame preview helper
 from dag_utils import check_vacation_mode  # shared guard: skips task if VACATION_MODE Variable is "true"
 from alerting import on_failure_alert, on_retry_alert, on_success_alert  # Slack + PVC log alerts on task failure/retry/recovery
 
@@ -96,8 +98,7 @@ def stock_market_pipeline():
         # Halt this task (and downstream transform/load) if vacation mode is active
         check_vacation_mode()
 
-        # Location that the K3S Kubernetes pod (as specified in the PortableVolume) is pointing to inside the K3S Kubernetes pod, which will push
-        writer: OutputTextWriter = OutputTextWriter("/opt/airflow/out")
+        writer: OutputTextWriter = get_writer()  # K8s PVC path or LOCAL_LOG_PATH fallback
 
         # NOTE: I must declare this inside a @task object so the task only connects to that folder when the task runs.
         # If I had declared this constructor in the main area (outside of a task method etc.), it would run when the DAG is initialized,
@@ -154,8 +155,7 @@ def stock_market_pipeline():
                                     "fiscal_year", "fiscal_period", "frame" }, ...]
         """
 
-        # Location that the K3S Kubernetes pod (as specified in the PortableVolume) is pointing to inside the K3S Kubernetes pod, which will push
-        writer: OutputTextWriter = OutputTextWriter("/opt/airflow/out")
+        writer: OutputTextWriter = get_writer()  # K8s PVC path or LOCAL_LOG_PATH fallback
 
         # Read the full raw payload from PVC — avoids loading 45 MB through XCom
         with open(staging_path, "r") as f:
@@ -165,7 +165,7 @@ def stock_market_pipeline():
 
         for item in raw_data:
             ticker = item["ticker"]
-            # flatten_company_financials() lives in edgar_client.py — keeps transform() clean
+            # flatten_company_financials() lives in edgar_transforms.py — keeps transform() clean
             rows = flatten_company_financials(ticker, item["raw"], annual_only=True)
             all_records.extend(rows)
             writer.log(f"  {ticker}: {len(rows)} rows after flatten (10-K annual filings only)")
@@ -173,8 +173,7 @@ def stock_market_pipeline():
         # Preview the transformed data
         preview_df: pd.DataFrame = pd.DataFrame(all_records)
         writer.log("----Transform Preview----")
-        writer.log(str(preview_df.head()))
-        writer.log(str(preview_df.dtypes))
+        log_df_preview(writer, preview_df)  # shared helper: logs head() + dtypes()
 
         # Remove staging file — data now lives in XCom as compact flat records
         os.remove(staging_path)
@@ -194,29 +193,24 @@ def stock_market_pipeline():
 
         One message per DAG run keyed by run_id for idempotency.
         """
-        import json
-        from kafka import KafkaProducer  # kafka-python, installed via _PIP_ADDITIONAL_REQUIREMENTS
+        from kafka_client import make_producer  # shared factory: single source of truth for producer config
+        from shared.config import KAFKA_STOCKS_TOPIC  # deferred: centralized topic name
 
-        writer: OutputTextWriter = OutputTextWriter("/opt/airflow/out")
+        writer: OutputTextWriter = get_writer()  # K8s PVC path or LOCAL_LOG_PATH fallback
         context = get_current_context()
 
-        bootstrap: str = Variable.get("KAFKA_BOOTSTRAP_SERVERS")  # kafka.kafka.svc.cluster.local:9092
-        producer = KafkaProducer(
-            bootstrap_servers=bootstrap,
-            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-            max_block_ms=15000,  # fail fast if broker unreachable during send/flush
-        )
+        producer = make_producer()  # construct producer with broker address resolved from Airflow Variable
 
         # Single message per run — full list-of-dicts as one JSON payload
         producer.send(
-            "stocks-financials-raw",
+            KAFKA_STOCKS_TOPIC,
             key=context["run_id"].encode("utf-8"),  # idempotency key: prevents duplicate processing on retry
             value=records,
         )
         producer.flush()   # block until broker acknowledges receipt
         producer.close()
 
-        writer.log(f"Published {len(records)} records to stocks-financials-raw")
+        writer.log(f"Published {len(records)} records to {KAFKA_STOCKS_TOPIC}")
         return len(records)
 
 

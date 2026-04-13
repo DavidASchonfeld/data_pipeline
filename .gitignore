@@ -25,3 +25,6 @@ terraform/.terraform.lock.hcl
 terraform/terraform.tfvars
 terraform/terraform.tfstate
 terraform/terraform.tfstate.backup
+# AWS installer binary — install from aws.amazon.com/cli instead
+AWSCLIV2.pkg
+AWSCLIV2.pkg
