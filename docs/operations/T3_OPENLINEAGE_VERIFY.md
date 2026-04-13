@@ -17,16 +17,20 @@ kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
 
 ---
 
-## 3. Trigger DAG and check task logs
-1. Airflow UI → `dag_stocks` → trigger manually
-2. `dbt_run` task → **Logs**
-3. Look for OpenLineage JSON events, e.g.:
+## 3. Trigger DAG and check for OpenLineage events
+The `stock_consumer_pipeline` DAG emits OpenLineage events when it runs. Trigger it manually:
+1. Airflow UI → `stock_consumer_pipeline` → trigger manually (or use CLI: `airflow dags trigger stock_consumer_pipeline`)
+2. Check scheduler logs for OpenLineage events:
+   ```bash
+   kubectl logs airflow-scheduler-0 -n airflow-my-namespace -c scheduler --since=2m | grep openlineage
+   ```
+3. Look for OpenLineage JSON events with `eventType` of `START` and `COMPLETE`, e.g.:
    ```json
    {"eventType": "START", "job": {"namespace": "pipeline", ...}, "inputs": [...], "outputs": [...]}
    ```
-   One START + COMPLETE pair per dbt model.
+   One START event at DAG start, one COMPLETE event at DAG completion.
 
-**Pass:** JSON events appear. **Fail:** no events → check `OPENLINEAGE_CONFIG` prefix in BashOperator command.
+**Pass:** OpenLineage events appear in logs with `eventType` fields. **Fail:** no events → verify openlineage-dbt package is installed (Step 2) and check for errors in scheduler logs.
 
 ---
 
