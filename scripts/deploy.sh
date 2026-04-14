@@ -40,6 +40,7 @@ DEPLOY_DIR="$SCRIPT_DIR/deploy"
 
 # Load helper files in the right order — common.sh must go first since everything else depends on it
 source "$DEPLOY_DIR/common.sh"       # shared vars, _wait_bg, _print_deploy_summary, .env.deploy
+source "$DEPLOY_DIR/bootstrap.sh"    # step_auto_bootstrap (installs K3s, Docker, Helm, MariaDB on fresh spot instances)
 source "$DEPLOY_DIR/setup.sh"        # step_setup
 source "$DEPLOY_DIR/sync.sh"         # step_sync_dags, step_sync_helm_dockerfile, step_sync_manifests_secrets
 source "$DEPLOY_DIR/snowflake.sh"    # step_snowflake_setup
@@ -159,23 +160,24 @@ fi
 # Phase 3: Secrets (runs while background jobs execute — fast, ~15s)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Must finish before the Helm upgrade — pods need these secrets to read their environment variables when they start up
+# Must finish before Flask and Helm — pods need these secrets to read their environment variables when they start up
 step_sync_manifests_secrets  # Steps 2c-2c3: rsync all manifests + apply K8s secrets
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Phase 4: Wait for parallel jobs, then Helm upgrade + Flask deploy (full deploy only)
+# Phase 4: Flask (parallel) + Helm upgrade (full deploy only)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 if [ "$DAGS_ONLY" = false ]; then
-    # Wait for the Airflow image build first — the Helm upgrade needs the new image to already be loaded into K3S
+    # Flask has no dependency on Kafka or MLflow — it queries Snowflake directly.
+    # Start it now in the background so the dashboard comes up ~10 min earlier
+    # while Kafka and MLflow continue building in the background.
+    step_deploy_flask &  # Steps 3-6: dashboard rsync, ECR setup, Flask build/push, Flask pod restart
+    FLASK_PID=$!
+
+    # Helm upgrade only needs the Airflow image — wait for that, not Kafka/MLflow
     _wait_bg $AIRFLOW_BUILD_PID "Airflow Docker build + K3S import (Step 2b2)"
-    # Kafka + MLflow must be running before pod restarts (Airflow DAGs connect to both at startup)
-    _wait_bg $KAFKA_PID         "Kafka deploy (Steps 2b3-2b4)"
-    _wait_bg $MLFLOW_PID        "MLflow deploy (Steps 2b5-2b6)"
 
-    step_helm_upgrade   # Steps 2d + 2e: helm upgrade + apply Airflow service manifest
-
-    step_deploy_flask   # Steps 3-6: dashboard rsync, ECR setup, Flask build/push, Flask pod restart
+    step_helm_upgrade  # Steps 2d + 2e: helm upgrade + apply Airflow service manifest
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -183,6 +185,11 @@ fi
 # ═══════════════════════════════════════════════════════════════════════════════
 
 if [ "$DAGS_ONLY" = false ]; then
+    # Kafka and MLflow must be ready before Airflow pods start — DAGs connect to both on startup.
+    # Flask doesn't need them (it uses Snowflake), so we only wait here, not before Flask.
+    _wait_bg $KAFKA_PID  "Kafka deploy (Steps 2b3-2b4)"
+    _wait_bg $MLFLOW_PID "MLflow deploy (Steps 2b5-2b6)"
+
     # Check that K3S didn't automatically delete the Airflow image to free disk space during the ~20 min gap since we built it
     step_verify_airflow_image  # Step 7a
 fi
@@ -200,7 +207,10 @@ step_cleanup_dead_pods  # Step 7e: delete Evicted/Error/Unknown pods left over f
 step_mlflow_portforward  # Step 7d: restart port-forward for MLflow UI on EC2 localhost:5500
 
 if [ "$DAGS_ONLY" = false ]; then
-    step_verify_flask  # Step 8: confirm Flask pod is Ready (created in Step 6)
+    # Flask was launched in the background in Phase 4 — it's likely already done by now.
+    # Wait here to catch any errors before declaring the deploy complete.
+    _wait_bg $FLASK_PID "Flask deploy (Steps 3-6)"
+    step_verify_flask  # Step 8: confirm Flask pod is Ready
 fi
 
 echo ""
@@ -224,6 +234,9 @@ echo ""
 echo "To apply directly from EC2:"
 echo "  ssh ec2-stock"
 echo "  kubectl apply -f $EC2_HOME/airflow/manifests/service-airflow-ui.yaml -n airflow-my-namespace"
+echo ""
+echo "=== SSH Tunnel (run on Mac before opening browser) ==="
+echo "  ssh -L 6443:localhost:6443 -L 30080:localhost:30080 -L 32147:localhost:32147 -L 5500:localhost:5500 ec2-stock"
 echo ""
 
 # ACCESS NOTE — these URLs are NOT open to the public by default.

@@ -15,7 +15,7 @@ if [ ! -f "$ENV_DEPLOY" ]; then
 fi
 
 # shellcheck source=../../.env.deploy
-source "$ENV_DEPLOY"
+set -a; source "$ENV_DEPLOY"; set +a  # auto-export all .env.deploy vars so child processes (e.g. python3) can read them
 
 # Make sure the required variables were actually set in .env.deploy (in case the file is empty)
 for var in ECR_REGISTRY AWS_REGION FLASK_SECRET_KEY VALIDATION_USER VALIDATION_PASS; do
@@ -46,6 +46,20 @@ ECR_IMAGE="$ECR_REGISTRY/my-flask-app:latest"
 _print_deploy_summary() {
     local exit_code=$?  # save before any other command can overwrite it
     set +e              # turn off 'stop on error' so the summary always finishes printing
+    # Kill any background jobs still running so the terminal isn't frozen for minutes after a failure.
+    # pkill -P kills child processes (SSH sessions) BEFORE killing the parent — if we killed
+    # the parent first, the SSH children would become orphans (reparented to init) and continue
+    # streaming remote output to the terminal, making it appear frozen even after the script exits.
+    if [ "$exit_code" -ne 0 ]; then
+        for _pid_var in AIRFLOW_BUILD_PID KAFKA_PID MLFLOW_PID FLASK_PID; do
+            local _pid="${!_pid_var:-}"
+            if [ -n "$_pid" ]; then
+                pkill -TERM -P "$_pid" 2>/dev/null || true  # kill child SSH sessions first
+                kill -TERM "$_pid" 2>/dev/null || true       # then the parent shell
+                wait "$_pid" 2>/dev/null || true             # wait for it to finish exiting
+            fi
+        done
+    fi
     sleep 0.2           # give the tee process a moment to finish writing everything to the log file before we search it
     # Search the log for warnings and errors, removing duplicate lines while keeping them in order
     local summary_lines
@@ -110,14 +124,22 @@ _print_deploy_summary() {
 # ── K8s and K3S helpers ───────────────────────────────────────────────────────
 # Pipe a Docker image into K3S containerd on EC2; grep_term is the string used to verify it was imported.
 # Avoids writing a temporary tar file — pipes directly to k3s ctr images import (saves disk space on EC2).
+# Retries once with a short delay — concurrent K3s containerd writes from parallel background jobs can
+# produce a transient "failed commit on ref" race condition on the first attempt.
 import_image_to_k3s() {
     local image_name="$1" grep_term="$2"
-    ssh "$EC2_HOST" "
-        echo 'Importing $image_name into K3S containerd (bypasses Docker image store, which K3S cannot see)...' &&
-        docker save '$image_name' | sudo k3s ctr images import - &&
-        echo 'Verifying image is visible to K3S...' &&
-        sudo k3s ctr images ls | grep '$grep_term'
-    "
+    for _attempt in 1 2; do
+        if ssh "$EC2_HOST" "
+            echo 'Importing $image_name into K3S containerd (attempt $_attempt/2)...' &&
+            docker save '$image_name' | sudo k3s ctr images import - &&
+            echo 'Verifying image is visible to K3S...' &&
+            sudo k3s ctr images ls | grep '$grep_term'
+        "; then
+            return 0
+        fi
+        [ "$_attempt" -lt 2 ] && echo "K3S import attempt $_attempt failed, retrying in 5s..." && sleep 5
+    done
+    return 1
 }
 
 # Apply a K8s generic secret idempotently — creates if absent, updates if present.
@@ -139,6 +161,26 @@ restart_pod() {
         kubectl wait --for=delete pod -l '$pod_selector' -n '$namespace' --timeout=60s 2>/dev/null || true &&
         kubectl apply -f '$manifest' -n '$namespace'
     "
+}
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── SSH readiness helper ──────────────────────────────────────────────────────
+# Waits for sshd to accept connections — a fresh spot instance can take 2-3 min to boot
+# and start sshd, so we retry for up to 3 minutes before giving up.
+# StrictHostKeyChecking=accept-new: automatically trusts a brand-new host key (safe after
+# deploy.sh clears known_hosts for the replaced instance) but still rejects unexpected
+# key changes on already-known hosts.
+_wait_ssh_ready() {
+    # 18 attempts × 10 s = 3 min — enough for a cold spot instance boot
+    for _attempt in $(seq 1 18); do
+        if ssh -o StrictHostKeyChecking=accept-new "$EC2_HOST" true 2>/dev/null; then
+            return 0
+        fi
+        echo "SSH not ready (attempt $_attempt/18), retrying in 10s..."
+        [ "$_attempt" -lt 18 ] && sleep 10
+    done
+    echo "✗ EC2 SSH unreachable after 18 attempts (3 min)"
+    return 1
 }
 # ─────────────────────────────────────────────────────────────────────────────
 

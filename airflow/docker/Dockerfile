@@ -57,4 +57,14 @@ RUN /opt/ml-venv/bin/pip install --upgrade pip \
     && /opt/ml-venv/bin/python -c "import sklearn, mlflow, snowflake.connector, pandas; import importlib.metadata; importlib.metadata.version('setuptools'); print('ml-venv imports OK')"
 
 # requests warns when chardet ≥6 is installed (check: chardet must be <6); also upgrade requests itself
-RUN pip install "requests>=2.32.0" "chardet>=3.0.2,<6"
+RUN pip install "requests>=2.32.3" "chardet>=3.0.2,<6"
+
+# runtime packages baked in so init containers don't run pip at startup (which caused 5-7 min delays and 600s timeouts)
+# NOTE: do NOT add apache-airflow-providers-snowflake or snowflake-connector-python here —
+# apache/airflow:3.1.8 already bundles them; downgrading them breaks the startup probe (~7 min download)
+RUN pip install \
+    pymysql \
+    "requests>=2.32.3" \
+    "apache-airflow-providers-common-compat>=1.5.0" \
+    kafka-python \
+    python-dotenv

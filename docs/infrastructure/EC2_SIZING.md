@@ -19,7 +19,8 @@ The quick version:
 |------|-----|------|---------|
 | t3.small | 2GB | 2 | Too small — K3s and Airflow alone use most of this |
 | t3.medium | 4GB | 2 | Not enough — barely fits the stack, no room for Kafka |
-| **t3.large** | **8GB** | **2** | **Works — the right size for this project** |
+| t3.large | 8GB | 2 | Works — viable with tuning; ~$61/mo on-demand, ~$18/mo spot |
+| **t4g.large** | **8GB** | **2** | **Recommended — ARM Graviton2, same specs as t3.large at ~20% lower cost (~$49/mo on-demand, ~$14–15/mo spot)** |
 | t3.xlarge | 16GB | 4 | Comfortable but costs ~$60/month more than needed |
 
 Current stack uses roughly 2.5–4 GB. t3.large has 8 GB — enough headroom for Kafka and startup spikes. If it ever feels slow, resize to t3.xlarge in the AWS Console in ~2 minutes with no data loss.
@@ -65,10 +66,15 @@ These are practical estimates for this specific stack at low traffic levels.
 |----------|------|-----|--------------|---------|
 | t3.small | 2 | 2GB | ~$15 | No — K3s alone can hit 1GB; no room for anything else |
 | t3.medium | 2 | 4GB | ~$30 | No — fits today's stack barely, no headroom for Kafka |
-| **t3.large** | **2** | **8GB** | **~$61** | **Yes — viable with tuning (see conditions below)** |
+| t3.large | 2 | 8GB | ~$61 | Yes — viable with tuning (see conditions below) |
+| **t4g.large** | **2** | **8GB** | **~$15 (spot) / ~$49 (on-demand)** | **Yes — ARM Graviton2, same specs as t3.large at lower cost; now the default** |
 | t3.xlarge | 4 | 16GB | ~$121 | Comfortable, but ~$60/mo more than needed |
 
 *us-east-1 on-demand Linux pricing, approximate.
+
+### ARM Compatibility Note
+
+All base images used in this project (Airflow, Kafka, Python/Flask, PostgreSQL, MLflow) publish official multi-arch variants. No Dockerfile changes are needed — Docker and K3s automatically pull the correct architecture for `arm64`.
 
 ---
 
@@ -99,9 +105,9 @@ Every pod has explicit `requests` and `limits` to prevent a single runaway compo
 
 ---
 
-## Conditions for t3.large to Work
+## Conditions for t3.large / t4g.large to Work
 
-Three things make t3.large viable. All three are already part of the Step 2 roadmap.
+Three things make t3.large (and by extension t4g.large) viable. All three conditions have been met: MariaDB removed, KRaft mode enabled, and Kafka JVM heap tuned.
 
 ### Condition 1: Complete Snowflake migration (remove MariaDB from EC2)
 

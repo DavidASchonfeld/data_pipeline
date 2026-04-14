@@ -26,13 +26,19 @@ variable "ssh_public_key" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance type — t3.large is the minimum for K3s + Airflow + Kafka + MLflow"
+  description = "EC2 instance type — t4g.large is the minimum for K3s + Airflow + Kafka + MLflow (ARM Graviton2)"
   type        = string
-  default     = "t3.large"
+  default     = "t4g.large"
 }
 
 variable "ebs_volume_size" {
-  description = "Root EBS volume size in GiB — sized for K3s images, MLflow artifacts, and MariaDB data"
+  description = "Root EBS volume size in GiB — 30 GiB covers K3s images, MLflow artifacts, and Airflow logs with headroom"
   type        = number
-  default     = 100
+  default     = 30
+}
+
+variable "spot_max_price" {
+  description = "Maximum hourly spot price — empty string uses the on-demand price as the ceiling"
+  type        = string
+  default     = ""
 }

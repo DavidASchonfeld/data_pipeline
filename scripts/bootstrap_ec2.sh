@@ -1,7 +1,7 @@
 #!/bin/bash
 # Provision a fresh Ubuntu 24.04 EC2 instance: install stack, restore MariaDB, configure K3s/Airflow.
 # Automates Runbook #15 Phases C-E. Run from Mac; drives new EC2 via SSH/SCP.
-# Usage:   ./scripts/bootstrap_ec2.sh <temp-ssh-host>
+# Usage:   ./scripts/bootstrap_ec2.sh <temp-ssh-host> [--fresh-db]
 # Example: ./scripts/bootstrap_ec2.sh ec2-ubuntu-temp
 #
 # Prerequisites (manual steps before running):
@@ -9,6 +9,7 @@
 #   2. Add temp SSH config entry pointing to new instance's public IP (see RUNBOOKS.md §15 Phase B)
 #   3. Check Airflow chart version: ssh ec2-stock helm list -n airflow-my-namespace
 #   4. Confirm /tmp/db_backup.sql exists on your Mac (mysqldump from old instance)
+#      (Skip step 4 and pass --fresh-db if the old instance is gone and no backup is available)
 
 set -euo pipefail
 
@@ -42,20 +43,29 @@ for var in ECR_REGISTRY AWS_REGION; do
 done
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── Validate argument ─────────────────────────────────────────────────────────
-if [ $# -lt 1 ]; then
-    echo "Usage: $0 <temp-ssh-host>"
+# ── Validate arguments ────────────────────────────────────────────────────────
+FRESH_DB=false
+NEW_HOST=""
+for arg in "$@"; do
+    case "$arg" in
+        --fresh-db) FRESH_DB=true ;;
+        -*) echo "Unknown flag: $arg"; exit 1 ;;
+        *)  [ -z "$NEW_HOST" ] && NEW_HOST="$arg" ;;
+    esac
+done
+if [ -z "$NEW_HOST" ]; then
+    echo "Usage: $0 <temp-ssh-host> [--fresh-db]"
     echo "  temp-ssh-host: SSH config alias for the new Ubuntu instance (e.g. ec2-ubuntu-temp)"
     exit 1
 fi
-NEW_HOST="$1"
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Preflight checks ──────────────────────────────────────────────────────────
-if [ ! -f "$DB_BACKUP_LOCAL" ]; then
+if [ "$FRESH_DB" = false ] && [ ! -f "$DB_BACKUP_LOCAL" ]; then
     echo "ERROR: $DB_BACKUP_LOCAL not found on your Mac."
     echo "Run on old instance:  sudo mysqldump -u root database_one > /tmp/db_backup.sql"
     echo "Then copy to Mac:     scp ec2-stock:/tmp/db_backup.sql /tmp/db_backup.sql"
+    echo "If the old instance is gone, rerun with:  $0 $NEW_HOST --fresh-db"
     exit 1
 fi
 
@@ -97,14 +107,22 @@ echo ""
 # Phase C: Install packages and tools
 # ═════════════════════════════════════════════════════════════════════════════
 echo "=== Phase C: Updating apt and installing base packages ==="
-ec2_ssh "sudo apt-get update -y && sudo apt-get install -y mariadb-server docker.io unzip curl"
-ec2_ssh "sudo systemctl enable --now mariadb docker"
+ec2_ssh "sudo apt-get update -y && sudo apt-get install -y mariadb-server unzip curl ca-certificates gnupg"
+ec2_ssh "sudo systemctl enable --now mariadb"
+
+# Docker CE from official repo — Ubuntu's docker.io package lacks docker-buildx-plugin,
+# which causes DOCKER_BUILDKIT=1 docker build to hang for 8+ minutes then fail.
+echo "=== Phase C: Installing Docker CE from official repo (includes buildx plugin) ==="
+ec2_ssh "sudo install -m 0755 -d /etc/apt/keyrings && curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg && sudo chmod a+r /etc/apt/keyrings/docker.gpg"
+ec2_ssh '. /etc/os-release && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $VERSION_CODENAME stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null'
+ec2_ssh "sudo apt-get update -y && sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin"
+ec2_ssh "sudo systemctl enable --now docker"
 # Add ubuntu to docker group so deploy.sh can run docker commands without sudo
 ec2_ssh "sudo usermod -aG docker ubuntu"
 
 echo "=== Phase C: Installing AWS CLI v2 ==="
 # apt install awscli on Ubuntu 24.04 gives CLI v1 (deprecated); use the official v2 installer
-ec2_ssh "curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip \
+ec2_ssh "curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip -o /tmp/awscliv2.zip \
     && unzip -q /tmp/awscliv2.zip -d /tmp/awscliv2-install \
     && sudo /tmp/awscliv2-install/aws/install \
     && rm -rf /tmp/awscliv2.zip /tmp/awscliv2-install"
@@ -137,12 +155,17 @@ ec2_ssh "
 # ═════════════════════════════════════════════════════════════════════════════
 # Phase D: Restore MariaDB
 # ═════════════════════════════════════════════════════════════════════════════
-echo "=== Phase D: Uploading DB backup to EC2 ==="
-ec2_scp "$DB_BACKUP_LOCAL" "/tmp/db_backup.sql"
+if [ "$FRESH_DB" = false ]; then
+    echo "=== Phase D: Uploading DB backup to EC2 ==="
+    ec2_scp "$DB_BACKUP_LOCAL" "/tmp/db_backup.sql"
 
-echo "=== Phase D: Creating database and importing backup ==="
-ec2_ssh "sudo mysql -e 'CREATE DATABASE IF NOT EXISTS database_one;'"
-ec2_ssh "sudo mysql database_one < /tmp/db_backup.sql"
+    echo "=== Phase D: Creating database and importing backup ==="
+    ec2_ssh "sudo mysql -e 'CREATE DATABASE IF NOT EXISTS database_one;'"
+    ec2_ssh "sudo mysql database_one < /tmp/db_backup.sql"
+else
+    echo "=== Phase D: Creating empty database (--fresh-db) ==="
+    ec2_ssh "sudo mysql -e 'CREATE DATABASE IF NOT EXISTS database_one;'"
+fi
 
 echo "=== Phase D: Recreating airflow_user with grants ==="
 # Grants cover 10.42.% (K3s pod network) and the instance's own private IP

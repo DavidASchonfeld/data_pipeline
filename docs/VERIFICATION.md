@@ -6,6 +6,89 @@ For the full deploy process, see [DEPLOY.md](DEPLOY.md).
 
 ---
 
+## Spot Recovery Quick Check
+
+Use this short checklist after the Spot + ASG + ARM migration, or after a spot interruption replaces the instance. Skips Snowflake writes to avoid warehouse costs — use the full 14-step checklist below when you need end-to-end data verification.
+
+### 1. Terraform plan
+
+```bash
+cd terraform && terraform plan
+```
+
+**Pass:** Shows expected resource changes (ASG, launch template, Lambda, SNS, lifecycle hook). No unexpected destroys.
+
+### 2. Terraform apply
+
+```bash
+terraform apply
+```
+
+**Pass:** ASG launches a spot instance. No errors.
+
+### 3. Confirm ARM architecture
+
+```bash
+ssh ec2-stock uname -m
+```
+
+**Pass:** Output is `aarch64`.
+
+### 4. All pods running
+
+```bash
+ssh ec2-stock kubectl get pods -A
+```
+
+**Pass:** Every pod shows `Running` or `Completed`. No `CrashLoopBackOff`, `Pending`, or `ImagePullBackOff`.
+
+### 5. Dashboard loads
+
+```bash
+curl http://<EIP>:32147/health
+```
+
+**Pass:** Returns `{"status": "ok"}` with HTTP 200.
+
+Open `http://<EIP>:32147/dashboard/` in a browser.
+
+**Pass:** Page renders with charts (served from cache — no Snowflake cost).
+
+### 6. Spot recovery test
+
+Terminate the instance via AWS CLI (or AWS Console → EC2 → Instances → Terminate):
+
+```bash
+# Get the current instance ID
+AWS_PROFILE=terraform-dev aws ec2 describe-instances \
+  --filters "Name=tag:aws:autoscaling:groupName,Values=pipeline-asg" \
+            "Name=instance-state-name,Values=running" \
+  --query 'Reservations[0].Instances[0].InstanceId' --output text
+
+# Terminate it — the ASG will automatically launch a replacement
+AWS_PROFILE=terraform-dev aws ec2 terminate-instances --instance-ids <instance-id>
+```
+
+The ASG launches a replacement spot instance automatically. The Lambda lifecycle hook re-associates the Elastic IP to the new instance within ~2-3 min.
+
+**What this project uses (vanilla Ubuntu AMI, no pre-baked image):**
+
+The new instance boots as a fresh Ubuntu server — SSH will be available at the same IP after ~2-3 min, but no software is installed yet. Run the full restore with one command:
+
+```bash
+./scripts/deploy.sh --provision
+```
+
+This bootstraps K3s, Docker, Kafka, Airflow, and the dashboard from scratch (~20-30 min).
+
+**Pass:** After `./scripts/deploy.sh --provision` completes, the full 14-step checklist passes again.
+
+> **To speed up recovery:** Create an AMI snapshot of the running instance before terminating. Launch templates can be updated to use that snapshot, reducing cold-start time to ~3-5 min. See AWS docs on "golden AMI" pattern.
+
+---
+
+## Full Post-Deploy Verification (14 Steps)
+
 ## How to Run These Tests
 
 All verification steps run on the EC2 instance. You can access it in three ways:
@@ -103,12 +186,20 @@ kubectl exec kafka-0 -n kafka -- \
 
 ## Step 5 — Airflow Variables Set
 
+> **Note:** `MLFLOW_TRACKING_URI` and `KAFKA_BOOTSTRAP_SERVERS` are injected via `AIRFLOW_VAR_*` env vars in `airflow/helm/values.yaml` — they won't appear in `airflow variables list` (which only shows DB-stored variables). Use the Python check below to confirm all variables are reachable.
+
 ```bash
 kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
-    airflow variables list
+    python3 -c "
+from airflow.sdk import Variable
+print('MLFLOW_TRACKING_URI:', Variable.get('MLFLOW_TRACKING_URI', default='MISSING'))
+print('KAFKA_BOOTSTRAP_SERVERS:', Variable.get('KAFKA_BOOTSTRAP_SERVERS', default='MISSING'))
+print('VACATION_MODE:', Variable.get('VACATION_MODE', default='false'))
+print('SF_STOCKS_LAST_WRITE_DATE:', Variable.get('SF_STOCKS_LAST_WRITE_DATE', default='(not set)'))
+" 2>&1 | grep -E "MLFLOW|KAFKA|VACATION|SF_STOCKS"
 ```
 
-**Pass:** At minimum: `MLFLOW_TRACKING_URI`, `VACATION_MODE`, `SF_STOCKS_LAST_WRITE_DATE`.
+**Pass:** `MLFLOW_TRACKING_URI` and `KAFKA_BOOTSTRAP_SERVERS` show their cluster DNS values (not `MISSING`). `VACATION_MODE` shows `false`. `SF_STOCKS_LAST_WRITE_DATE` may show `(not set)` on a fresh deploy — that's expected and handled automatically by the gate logic.
 
 ---
 
@@ -158,7 +249,7 @@ kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
     bash -c "/opt/dbt-venv/bin/dbt --version 2>&1"
 ```
 
-**Pass:** Prints dbt version (1.8.x).
+**Pass:** Prints dbt version (1.11.x).
 
 > dbt 1.8.x writes all output to stderr. The `bash -c "... 2>&1"` pattern merges streams so output reaches the terminal.
 
@@ -201,6 +292,8 @@ kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
 ---
 
 ## Step 8 — End-to-End: Stocks Pipeline
+
+> **Consumer DAG must be unpaused:** Airflow registers all new DAGs as paused by default — triggered runs queue but never start until unpaused. `deploy.sh` automatically unpauses `stock_consumer_pipeline` and `weather_consumer_pipeline` via a direct PostgreSQL UPDATE (using psql in the postgres pod). If consumer runs are stuck in `queued`, this step was missed — re-run `./scripts/deploy.sh` or unpause manually in the Airflow UI.
 
 **Before triggering, do two things:**
 
@@ -310,7 +403,7 @@ kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
 Verify in Snowflake:
 ```sql
 SELECT COUNT(*), MAX(imported_at) FROM PIPELINE_DB.RAW.WEATHER_HOURLY;
-SELECT COUNT(*), MAX(time) FROM PIPELINE_DB.MARTS.FCT_WEATHER_HOURLY;
+SELECT COUNT(*), MAX(observation_time) FROM PIPELINE_DB.MARTS.FCT_WEATHER_HOURLY;
 ```
 
 **Pass:** Both have rows, timestamps are recent.
@@ -395,9 +488,9 @@ Open the dashboard: `http://<EC2_PUBLIC_IP>:32147/dashboard/`
 - **Data Quality** tab shows the anomaly scatter plot (rows from FCT_ANOMALIES)
 - Weather tab at `/weather/` renders the hourly forecast charts
 
-Validation endpoint:
+Validation endpoint (requires Basic Auth — credentials are `VALIDATION_USER` and `VALIDATION_PASS` from `.env.deploy`):
 ```bash
-curl http://<EC2_PUBLIC_IP>:32147/validation
+curl -u $VALIDATION_USER:$VALIDATION_PASS http://<EC2_PUBLIC_IP>:32147/validation
 ```
 
 **Pass:** Returns JSON with `"status": "ok"`, row counts > 0, and recent timestamps.
@@ -406,11 +499,27 @@ curl http://<EC2_PUBLIC_IP>:32147/validation
 
 ## Step 14 — Staleness Monitor (Optional)
 
-The staleness monitor is paused by default to save Snowflake costs. Trigger it directly without unpausing:
+The staleness monitor is paused by default to save Snowflake costs. In Airflow 3.x, paused DAGs don't execute even when manually triggered — runs just queue indefinitely. Unpause it via psql, trigger, wait for success, then re-pause:
 
 ```bash
+# Unpause — allows the triggered run to actually execute
+PGPASS=$(kubectl get secret airflow-postgresql -n airflow-my-namespace \
+    -o jsonpath='{.data.postgres-password}' | base64 -d)
+kubectl exec airflow-postgresql-0 -n airflow-my-namespace -- \
+    env PGPASSWORD="$PGPASS" psql -U postgres -d postgres -c \
+    "UPDATE dag SET is_paused = false WHERE dag_id = 'Data_Staleness_Monitor';"
+
+# Trigger and wait (~30 s)
 kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
     airflow dags trigger Data_Staleness_Monitor
+
+kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+    airflow dags list-runs Data_Staleness_Monitor
+
+# Re-pause to avoid scheduled runs incurring Snowflake costs
+kubectl exec airflow-postgresql-0 -n airflow-my-namespace -- \
+    env PGPASSWORD="$PGPASS" psql -U postgres -d postgres -c \
+    "UPDATE dag SET is_paused = true WHERE dag_id = 'Data_Staleness_Monitor';"
 ```
 
 **Pass:** DAG completes with `success`.

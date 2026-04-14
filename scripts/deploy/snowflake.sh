@@ -3,7 +3,7 @@
 # Sourced by deploy.sh; all variables from common.sh are available here.
 #
 # Required env vars in .env.deploy (in addition to the normal SNOWFLAKE_* service-account vars):
-#   SNOWFLAKE_ADMIN_USER     — your personal Snowflake login (needs SYSADMIN or equivalent)
+#   SNOWFLAKE_ADMIN_USER     — your personal Snowflake login (needs ACCOUNTADMIN — required to create users and schemas)
 #   SNOWFLAKE_ADMIN_PASSWORD — admin password (never committed)
 #   SNOWFLAKE_ACCOUNT        — account identifier, e.g. abc12345.us-east-1
 #   SNOWFLAKE_PASSWORD       — desired password for PIPELINE_USER (injected into the SQL at run time)
@@ -33,30 +33,40 @@ step_snowflake_setup() {
         exit 1
     fi
 
+    # Ensure snowflake-connector-python is available locally (it lives in the EC2 ml-venv, not Mac system Python).
+    # Use `python3 -m pip` (not `pip3`) so the package is installed into the exact Python that runs the next block.
+    python3 -m pip install --quiet snowflake-connector-python
+
     # Run the setup SQL via Python (snowflake-connector-python is already a project dependency)
     python3 - <<PYTHON
 import snowflake.connector
 import os
 import sys
+import re
 
 # Read the SQL file and replace the password placeholder with the real value
 sql_raw = open("$SQL_FILE").read()
 sql_final = sql_raw.replace("{{SNOWFLAKE_PASSWORD}}", os.environ["SNOWFLAKE_PASSWORD"])
 
-# Connect as SYSADMIN so we can create warehouses, databases, roles, and users
-print("Connecting to Snowflake as SYSADMIN...")
+# Connect as ACCOUNTADMIN — the top-level role in Snowflake. SYSADMIN cannot create schemas or users,
+# so ACCOUNTADMIN is required for a full first-time setup (warehouses, databases, schemas, roles, users).
+print("Connecting to Snowflake as ACCOUNTADMIN...")
 conn = snowflake.connector.connect(
     account=os.environ["SNOWFLAKE_ACCOUNT"],
     user=os.environ["SNOWFLAKE_ADMIN_USER"],
     password=os.environ["SNOWFLAKE_ADMIN_PASSWORD"],
-    role="SYSADMIN",
+    role="ACCOUNTADMIN",  # must be ACCOUNTADMIN — SYSADMIN lacks CREATE SCHEMA and CREATE USER privileges
 )
 
 cur = conn.cursor()
 
-# Split on semicolons; skip blank lines and comment-only lines so we don't send empty statements
-statements = [s.strip() for s in sql_final.split(";") if s.strip()]
-statements = [s for s in statements if not all(line.startswith("--") for line in s.splitlines() if line.strip())]
+# Remove -- comments before splitting on semicolons.
+# Without this, a semicolon inside a comment (e.g. "landing zone; written by Airflow")
+# would be treated as a statement boundary, sending the leftover comment text to Snowflake as SQL.
+sql_no_comments = re.sub(r'--[^\n]*', '', sql_final)
+
+# Split on semicolons; skip anything that is blank after stripping whitespace
+statements = [s.strip() for s in sql_no_comments.split(";") if s.strip()]
 
 total = len(statements)
 print(f"Executing {total} SQL statements...")

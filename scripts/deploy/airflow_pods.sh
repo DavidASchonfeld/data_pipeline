@@ -35,7 +35,13 @@ step_helm_upgrade() {
     #   strip # comments. They become literal text passed to helm, which breaks the command. --force would end up
     #   on its own line and be interpreted as a separate command ("command not found").
     # --set overrides the image tag in values.yaml with the fresh BUILD_TAG from this deploy, so K3S loads the new image
-    ssh "$EC2_HOST" "helm upgrade airflow apache-airflow/airflow \
+    # --install: installs the release if it doesn't exist yet (e.g. on a fresh server), upgrades if it does
+    # Delete one-time jobs before upgrade — useHelmHooks:false creates them without Helm ownership labels,
+    # so helm upgrade refuses to adopt them on subsequent runs. Safe: both jobs complete during first install.
+    ssh "$EC2_HOST" "kubectl delete job airflow-create-user airflow-run-airflow-migrations \
+        -n airflow-my-namespace --ignore-not-found=true"
+
+    ssh "$EC2_HOST" "helm upgrade --install airflow apache-airflow/airflow \
         -n airflow-my-namespace \
         --version 1.20.0 \
         --timeout 10m \
@@ -63,6 +69,83 @@ step_helm_upgrade() {
     # (for example, component label renames between Airflow 2.x and 3.x).
     # Without this step, helm upgrade doesn't update our manually-created NodePort service, so any label changes would be silently ignored.
     ssh "$EC2_HOST" "kubectl apply -f $EC2_HOME/airflow/manifests/service-airflow-ui.yaml -n airflow-my-namespace"
+
+    echo "=== Step 2f: Waiting for Airflow database migrations to complete ==="
+    # helm upgrade with useHelmHooks:false returns immediately — the migration job runs in the background.
+    # On a fresh spot instance, PostgreSQL must initialise its data directory from scratch before the
+    # migration job can connect; the full chain (postgres init → job connect → all schema revisions)
+    # takes several minutes.  Waiting here means step 7 never restarts pods while migrations are still
+    # in progress, which eliminates the wait-for-airflow-migrations init container restart loop
+    # (see 2026-04-13 incident).
+
+    # Phase 1: wait for PostgreSQL before checking the migration job.
+    # helm upgrade creates both PostgreSQL and the migration job at the same time. On a fresh spot
+    # instance, PostgreSQL needs 2-5 min to create its data directory and start accepting connections.
+    # The migration job starts immediately and retries with exponential backoff (10s, 20s, 40s...);
+    # if PostgreSQL takes longer than the cumulative backoff window, the job exhausts its retry limit
+    # (backoffLimit=6) and enters a permanent Failed state. Waiting for PostgreSQL first ensures the
+    # database is accepting connections, so the migration job's next retry (or a recreated job) succeeds.
+    ssh "$EC2_HOST" "
+        echo 'Waiting for PostgreSQL pod to be Ready (up to 300s)...'
+        kubectl wait pod/airflow-postgresql-0 \
+            -n airflow-my-namespace \
+            --for=condition=Ready \
+            --timeout=300s || {
+            echo 'ERROR: PostgreSQL pod did not become Ready within 300s.'
+            kubectl describe pod airflow-postgresql-0 -n airflow-my-namespace 2>/dev/null | tail -20 || true
+            exit 1
+        }
+        echo 'PostgreSQL pod is Ready.'
+    "
+
+    # Phase 2: poll migration job for both Complete and Failed conditions.
+    # kubectl wait --for=condition=complete only watches for success — it completely ignores Failed
+    # jobs, causing a silent 600s stall (see 2026-04-13 timeout incident). This polling loop checks
+    # both outcomes every 10s. If the job already failed (PostgreSQL wasn't ready in time for its
+    # retries), it deletes the failed job and recreates it from the Helm template — PostgreSQL is
+    # confirmed ready at this point, so the fresh job should succeed on its first attempt.
+    # If the job is gone (already cleaned up from a prior successful deploy), skip and continue.
+    ssh "$EC2_HOST" "
+        if kubectl get job airflow-run-airflow-migrations -n airflow-my-namespace \
+                --ignore-not-found --no-headers 2>/dev/null | grep -q .; then
+            echo 'Migration job found — polling for completion (up to 600s)...'
+            RETRIED=false
+            for i in \$(seq 1 60); do
+                STATUS=\$(kubectl get job airflow-run-airflow-migrations -n airflow-my-namespace \
+                    -o jsonpath='{.status.conditions[?(@.status==\"True\")].type}' 2>/dev/null || echo '')
+                if echo \"\$STATUS\" | grep -q 'Complete'; then
+                    echo 'Migration job complete.'
+                    exit 0
+                fi
+                if echo \"\$STATUS\" | grep -q 'Failed'; then
+                    if [ \"\$RETRIED\" = true ]; then
+                        echo 'ERROR: Recreated migration job also failed.'
+                        kubectl logs job/airflow-run-airflow-migrations -n airflow-my-namespace --tail=50 2>/dev/null || true
+                        exit 1
+                    fi
+                    echo 'Migration job failed (likely started before PostgreSQL was ready).'
+                    echo 'Deleting failed job and recreating from Helm template...'
+                    kubectl delete job airflow-run-airflow-migrations -n airflow-my-namespace --ignore-not-found=true
+                    helm template airflow apache-airflow/airflow \
+                        -n airflow-my-namespace \
+                        --version 1.20.0 \
+                        --set images.airflow.tag=$BUILD_TAG \
+                        -f $EC2_HELM_PATH/values.yaml \
+                        -s templates/jobs/migrate-database-job.yaml \
+                        | kubectl apply -f -
+                    RETRIED=true
+                    echo 'Retry job created — continuing to poll...'
+                fi
+                sleep 10
+            done
+            echo 'ERROR: Migration job did not complete within 600s.'
+            kubectl describe job airflow-run-airflow-migrations -n airflow-my-namespace 2>/dev/null | tail -20 || true
+            kubectl logs job/airflow-run-airflow-migrations -n airflow-my-namespace --tail=30 2>/dev/null || true
+            exit 1
+        else
+            echo 'Migration job not found — migrations already complete from a prior deploy, skipping.'
+        fi
+    "
 }
 
 step_verify_airflow_image() {
@@ -94,6 +177,81 @@ step_restart_airflow_pods() {
     #   Restarting the Scheduler and Processor pods forces Kubernetes to remount the DAG folder
     #   with a fresh view. This is the proven fix from the 2026-03-31 staleness incident.
 
+    # Pre-phase 0: verify any in-progress migration job has completed before restarting pods.
+    # Pods' init containers block on wait-for-airflow-migrations — if the schema isn't ready,
+    # they loop for 300s per attempt and the deploy times out with Init:0/1.
+    # Also catches --dags-only mode, which skips step_helm_upgrade() (and Step 2f) entirely.
+    # Uses polling (not kubectl wait) — kubectl wait ignores Failed jobs and would stall for 300s.
+    ssh "$EC2_HOST" "
+        if kubectl get job airflow-run-airflow-migrations -n airflow-my-namespace \
+                --ignore-not-found --no-headers 2>/dev/null | grep -q .; then
+            echo 'Migration job still present — verifying completion before restarting pods...'
+            for i in \$(seq 1 30); do
+                STATUS=\$(kubectl get job airflow-run-airflow-migrations -n airflow-my-namespace \
+                    -o jsonpath='{.status.conditions[?(@.status==\"True\")].type}' 2>/dev/null || echo '')
+                if echo \"\$STATUS\" | grep -q 'Complete'; then
+                    echo 'Migration job confirmed complete.'
+                    break
+                fi
+                if echo \"\$STATUS\" | grep -q 'Failed'; then
+                    echo 'ERROR: Migration job has failed — pods would get stuck at Init:0/1. Failing early.'
+                    kubectl logs job/airflow-run-airflow-migrations -n airflow-my-namespace --tail=20 2>/dev/null || true
+                    exit 1
+                fi
+                if [ \"\$i\" -eq 30 ]; then
+                    echo 'ERROR: Migration job has not completed after 300s — pods would get stuck at Init:0/1. Failing early.'
+                    exit 1
+                fi
+                sleep 10
+            done
+        fi
+    "
+
+    # Pre-phase 1: ensure any Helm rolling update from Step 2d has fully settled before deleting pods.
+    # If the update is mid-rollout, two ReplicaSets are active at once; deleting by label hits both.
+    # The old-RS pod still has desired=1 until the RS controller scales it to 0; deleting it while
+    # desired=1 causes the RS to immediately recreate a pod with the old (already-deleted) image,
+    # producing ErrImageNeverPull. Waiting here costs at most 5 minutes.
+    # || true: non-fatal — fresh servers may not have a rollout in progress at all.
+    ssh "$EC2_HOST" "
+        kubectl rollout status deployment/airflow-dag-processor \
+            -n airflow-my-namespace --timeout=300s 2>/dev/null || true
+    " || true
+
+    # Even after rollout status returns, the old RS pod can still be Terminating for 30-60s.
+    # kubectl wait below uses -l component=dag-processor — it watches ALL pods with that label.
+    # A Terminating pod from the old RS will never become Ready, causing a guaranteed 600s timeout.
+    # Poll until only 1 pod exists so deletion + recreation operate on a clean single-RS state.
+    echo "Waiting for any old dag-processor pod to finish terminating..."
+    ssh "$EC2_HOST" "
+        for i in \$(seq 1 60); do
+            COUNT=\$(kubectl get pods -l component=dag-processor \
+                -n airflow-my-namespace --no-headers 2>/dev/null | grep -c .)
+            [ \"\$COUNT\" -le 1 ] && break
+            if [ \"\$i\" -eq 60 ]; then
+                echo 'WARNING: still '\$COUNT' dag-processor pods after 5 min — old RS may not have scaled down'
+                # Force-scale ALL old RSes to 0 — after multiple deploys several stale RSes can exist;
+                # only the newest RS (last by creation time) should have desired > 0
+                RS_LIST=\$(kubectl get rs -l component=dag-processor \
+                    -n airflow-my-namespace \
+                    --sort-by=.metadata.creationTimestamp \
+                    --no-headers \
+                    -o custom-columns='NAME:.metadata.name' \
+                    2>/dev/null || true)
+                TOTAL=\$(echo \"\$RS_LIST\" | grep -c .)
+                if [ \"\$TOTAL\" -gt 1 ]; then
+                    echo \"\$RS_LIST\" | head -n \$(( TOTAL - 1 )) | while read -r OLD_RS; do
+                        [ -z \"\$OLD_RS\" ] && continue
+                        echo \"Force-scaling old RS \$OLD_RS to 0 to prevent ErrImageNeverPull on recreation...\"
+                        kubectl scale rs \"\$OLD_RS\" --replicas=0 -n airflow-my-namespace 2>/dev/null || true
+                    done
+                    sleep 5
+                fi
+            fi
+            sleep 5
+        done
+    " || true
+
     # Phase A: Delete all three pods in one SSH call — fast, synchronous
     ssh "$EC2_HOST" "
         echo 'Restarting Scheduler pod...' &&
@@ -120,14 +278,35 @@ step_restart_airflow_pods() {
     ssh "$EC2_HOST" "kubectl wait pod/airflow-triggerer-0 -n airflow-my-namespace --for=condition=Ready --timeout=600s" &
     local trigger_pid=$!
 
-    # Print pod state + recent logs automatically if scheduler fails — avoids needing to SSH in manually
-    _wait_bg $sched_pid "airflow-scheduler-0 Ready" || {
+    # Wait on shorter-timeout pods first (600s each), then scheduler (1000s).
+    # OLD ORDER: _wait_bg $sched_pid ran first — if dag-processor/triggerer timed out at 600s,
+    # bash stayed blocked inside 'wait $sched_pid' for up to 400s more, freezing the terminal.
+    # NEW ORDER: check 600s pods first; if either fails, kill the scheduler wait immediately.
+    local dagproc_rc=0 trigger_rc=0 sched_rc=0
+    wait "$dagproc_pid" || dagproc_rc=$?
+    wait "$trigger_pid" || trigger_rc=$?
+
+    if [ "$dagproc_rc" -ne 0 ] || [ "$trigger_rc" -ne 0 ]; then
+        kill "$sched_pid" 2>/dev/null || true  # no point waiting for scheduler — already failing
+        [ "$dagproc_rc" -ne 0 ] && {
+            echo "✗ dag-processor Ready FAILED — describing pods..."
+            ssh "$EC2_HOST" "kubectl get pods -l component=dag-processor -n airflow-my-namespace" || true
+            ssh "$EC2_HOST" "kubectl describe pod -l component=dag-processor -n airflow-my-namespace | tail -40" || true
+        }
+        [ "$trigger_rc" -ne 0 ] && {
+            echo "✗ airflow-triggerer-0 Ready FAILED — describing pod..."
+            ssh "$EC2_HOST" "kubectl describe pod airflow-triggerer-0 -n airflow-my-namespace | tail -40" || true
+        }
+        exit 1
+    fi
+
+    wait "$sched_pid" || sched_rc=$?
+    if [ "$sched_rc" -ne 0 ]; then
+        echo "✗ airflow-scheduler-0 Ready FAILED"
         ssh "$EC2_HOST" "kubectl describe pod airflow-scheduler-0 -n airflow-my-namespace | tail -50" || true
         ssh "$EC2_HOST" "kubectl logs airflow-scheduler-0 -n airflow-my-namespace --tail=30 2>/dev/null" || true
         exit 1
-    }
-    _wait_bg $dagproc_pid "dag-processor Ready"
-    _wait_bg $trigger_pid "airflow-triggerer-0 Ready"
+    fi
     echo "All Airflow pods Ready."
 
     # Phase B.5: Poll until scheduler container is exec-able
@@ -177,6 +356,21 @@ step_restart_airflow_pods() {
     # kubectl exec airflow variables set OOM-kills (exit 137) the scheduler on Airflow 3.x — importing the
     # full provider stack spikes memory past the 2Gi container limit. Env var injection avoids that entirely.
 
+    # Phase C2: Unpause consumer DAGs.
+    # Airflow registers all new DAGs as paused by default — triggered runs queue but never start until unpaused.
+    # We use direct psql (not `airflow dags unpause`) to avoid importing the full provider stack
+    # into the scheduler pod, which OOM-kills it (exit 137) the same way `airflow variables set` does.
+    echo "=== Unpausing consumer DAGs via PostgreSQL ==="
+    ssh "$EC2_HOST" "
+        PGPASS=\$(kubectl get secret airflow-postgresql -n airflow-my-namespace \
+            -o jsonpath='{.data.postgres-password}' | base64 -d)
+        kubectl exec airflow-postgresql-0 -n airflow-my-namespace -- \
+            env PGPASSWORD=\"\$PGPASS\" psql -U postgres -d postgres -c \
+            \"UPDATE dag SET is_paused = false
+              WHERE dag_id IN ('stock_consumer_pipeline', 'weather_consumer_pipeline');\"
+    " && echo "Consumer DAGs unpaused." \
+      || echo "WARNING: failed to unpause consumer DAGs — unpause manually via Airflow UI before triggering pipelines."
+
     # Phase D: Reset Kafka consumer group offsets to latest.
     # After any pod restart or fresh deploy, committed offsets are lost. Both consumer groups use
     # auto_offset_reset="latest" with enable_auto_commit=False (manual commit). Without a committed
@@ -187,21 +381,29 @@ step_restart_airflow_pods() {
     # topic so the NEXT message the producer publishes is the one the consumer reads.
     # Note: --to-earliest is NOT used — the weather topic has old corrupt messages near offset 0 that
     # cause JSONDecodeError during deserialization.
+    # Note: groups are checked for existence first — calling --reset-offsets on a group that has never
+    # connected causes a Java TimeoutException (Kafka can't find a coordinator node for it).
     echo "=== Resetting Kafka consumer group offsets to latest ==="
     ssh "$EC2_HOST" "
-        kubectl exec kafka-0 -n kafka -- \
+        # List existing groups before attempting reset — avoids a Java TimeoutException that fires
+        # when a group has never connected (no coordinator node assigned for it yet).
+        EXISTING=\$(kubectl exec kafka-0 -n kafka -- \
             /opt/kafka/bin/kafka-consumer-groups.sh \
-            --bootstrap-server localhost:9092 \
-            --group stocks-consumer-group \
-            --reset-offsets --to-latest \
-            --topic stocks-financials-raw --execute &&
-        kubectl exec kafka-0 -n kafka -- \
-            /opt/kafka/bin/kafka-consumer-groups.sh \
-            --bootstrap-server localhost:9092 \
-            --group weather-consumer-group \
-            --reset-offsets --to-latest \
-            --topic weather-hourly-raw --execute &&
-        echo 'Kafka consumer group offsets reset to latest.'
+            --bootstrap-server localhost:9092 --list 2>/dev/null || echo '')
+        for pair in stocks-consumer-group:stocks-financials-raw weather-consumer-group:weather-hourly-raw; do
+            group=\${pair%%:*}
+            topic=\${pair##*:}
+            if echo \"\$EXISTING\" | grep -q \"^\$group\$\"; then
+                kubectl exec kafka-0 -n kafka -- \
+                    /opt/kafka/bin/kafka-consumer-groups.sh \
+                    --bootstrap-server localhost:9092 \
+                    --group \"\$group\" --reset-offsets --to-latest \
+                    --topic \"\$topic\" --execute
+            else
+                echo \"\$group not found — skipping reset (fresh deploy, consumer has not connected yet)\"
+            fi
+        done
+        echo 'Kafka consumer group offsets check complete.'
     " || echo "WARNING: Kafka offset reset failed — run Steps 8 and 10 of RESTORE_VERIFICATION.md manually before triggering pipelines."
 }
 

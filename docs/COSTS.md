@@ -8,8 +8,11 @@ Everything this project costs to run, what's free, and how to shut down and rest
 
 | Service | Monthly Cost | Notes |
 |---------|-------------|-------|
-| EC2 t3.large (on-demand, us-east-1) | ~$60 | 2 vCPU, 8 GB RAM — runs all services |
-| EBS 100 GiB gp3 | ~$8 | Encrypted root volume |
+| EC2 t4g.large (spot, us-east-1) | ~$14–15 | 2 vCPU, 8 GB RAM ARM — managed by Auto Scaling Group |
+| EBS 30 GiB gp3 | ~$2.40 | Encrypted root volume |
+| Auto Scaling Group | $0 | Free; manages spot lifecycle |
+| Lambda (lifecycle hook) | $0 | Under free tier at this invocation rate |
+| SNS topic (spot interruption alerts) | $0 | Effectively free at this usage level |
 | Elastic IP | $0 | Free while attached to a running instance |
 | ECR (container registry) | ~$0.10 | Stores one Docker image; lifecycle policy removes old tags |
 | Snowflake (XSMALL warehouse) | ~$2–5 | Auto-suspends after 60 seconds; batch gating limits activations |
@@ -21,7 +24,7 @@ Everything this project costs to run, what's free, and how to shut down and rest
 | MLflow | Free | Open-source |
 | K3S (Kubernetes) | Free | Lightweight Kubernetes, runs on EC2 |
 | GitHub | Free | Public repository |
-| **Total** | **~$70–75** | |
+| **Total** | **~$19–20** | |
 
 ---
 
@@ -44,9 +47,9 @@ Several deliberate choices keep costs low:
 ### Stopping the EC2 instance (not terminating)
 
 The instance stops running and EC2 charges stop, but:
-- **EBS charges continue** — the 100 GiB volume stays attached (~$8/month)
+- **EBS charges continue** — the 30 GiB volume stays attached (~$2.40/month)
 - **Elastic IP charges begin** — AWS charges for an EIP not attached to a running instance (~$3.65/month)
-- **Total idle cost: ~$12/month**
+- **Total idle cost: ~$6/month**
 
 All data on the EBS volume is preserved. Restarting the instance restores everything except the public IP (which stays the same because of the Elastic IP).
 
@@ -82,4 +85,26 @@ If you shut everything down and want to bring it back:
 3. **Verify everything works:**
    Follow the [Verification Checklist](VERIFICATION.md) — 14 steps that confirm every component is running.
 
-Full restoration takes about 30–45 minutes. See [DEPLOY.md](DEPLOY.md) for the complete deploy guide.
+Full restoration takes about 30–45 minutes from a cold start (new instance, no AMI). If the ASG launches from the pre-baked AMI, recovery is ~3–5 minutes. See [DEPLOY.md](DEPLOY.md) for the complete deploy guide.
+
+---
+
+## Spot + ASG Architecture
+
+The EC2 instance runs as a spot instance managed by an Auto Scaling Group (ASG) rather than as a standalone on-demand instance.
+
+**Why spot?** t4g.large spot in us-east-1 runs ~$0.02–0.021/hour vs ~$0.0832/hour on-demand — roughly a 75% discount. The workload (batch DAGs, Kafka, K3S) tolerates brief interruptions, making spot a good fit.
+
+**Why ASG instead of a standalone spot request?** The ASG handles spot interruption automatically: when AWS reclaims the instance, the ASG requests a replacement. It also enables the lifecycle hook pattern below.
+
+**Why no ALB?** An Application Load Balancer costs a minimum of ~$16/month regardless of traffic — more than the EC2 instance itself at spot prices. Since this project has a single instance and no zero-downtime requirement, the instance's Elastic IP is used directly instead.
+
+**Lambda lifecycle hook:** A small Lambda function is triggered on ASG `EC2_INSTANCE_LAUNCHING` events. It re-attaches the Elastic IP to the new instance and sends an SNS notification on interruption. This keeps the public IP stable across spot replacements without manual intervention.
+
+---
+
+## Pre-Baked AMI
+
+The ASG launch template points to a pre-baked AMI that already contains the full software stack: K3S, Kafka, Airflow image imported into containerd, and all dependencies.
+
+This means a spot replacement goes from ~30–45 minutes (full bootstrap from a base AMI) down to ~3–5 minutes (mount EBS, start services). The AMI is rebuilt via Packer whenever a significant dependency changes and the launch template is updated in Terraform.

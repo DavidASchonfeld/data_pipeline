@@ -15,17 +15,9 @@ images:
 imagePullSecrets:
   - name: ecr-credentials
 
-# Install extra pip packages at pod startup so all pods get them
-# pymysql: SQLAlchemy needs it to connect to MariaDB via mysql+pymysql://
-# requests>=2.32.3: pins requests to a version that supports urllib3 2.x (fixes RequestsDependencyWarning)
-# apache-airflow-providers-common-compat>=1.5.0: upgrades the compat shim that was importing the
-#   deprecated airflow.security.permissions module (fixes RemovedInAirflow4Warning on dags list)
-# NOTE: do NOT pin apache-airflow-providers-snowflake or snowflake-connector-python here —
-#   apache/airflow:3.1.8 already bundles 6.10.0 / 4.0.0; pinning older ==5.6.1 / ==3.10.1
-#   causes pip to downgrade them at every pod startup (~7 min download), breaking the startup probe
+# runtime packages are baked into the Docker image — _PIP_ADDITIONAL_REQUIREMENTS removed because
+# it ran pip install inside every init container at pod startup, adding 5-7 min to every rollout
 env:
-  - name: _PIP_ADDITIONAL_REQUIREMENTS
-    value: "pymysql requests>=2.32.3 apache-airflow-providers-common-compat>=1.5.0 kafka-python python-dotenv"
   - name: AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE  # prevents moment.tz.guess() on login; moment.tz() error on Home Page is a known Airflow 3.x cosmetic bug (non-blocking, unfixable via Helm)
     value: "America/New_York"
   # OpenLineage — native to Airflow 3.x (apache-airflow-providers-openlineage bundled)
@@ -51,12 +43,19 @@ env:
   - name: AIRFLOW_VAR_KAFKA_BOOTSTRAP_SERVERS  # Variable.get('KAFKA_BOOTSTRAP_SERVERS') in consumer DAGs
     value: "kafka.kafka.svc.cluster.local:9092"
 
-# Override postgresql image: chart default tag (16.1.0-debian-11-r15) removed from Docker Hub; ECR Public has no rate limits from EC2
+# Override postgresql image: chart default tag (16.1.0-debian-11-r15) removed from Docker Hub.
+# ECR Public was used before (public.ecr.aws/bitnami/postgresql:16), but that repository
+# turned out to be empty — it has zero tags, so the image was never actually pullable from there.
+# On the old x86 instance it worked only because the image was already cached from Docker Hub.
+# The ARM spot instance (t4g.large) has no cache, so the pull fails immediately.
+# Bitnami also removed all versioned tags ("16", "16.8.0", etc.) from Docker Hub — only "latest"
+# survives. "latest" is currently PostgreSQL 18; this is safe because the spot ASG creates
+# the database from scratch on every new instance (no existing data to migrate).
 postgresql:
   image:
-    registry: public.ecr.aws
+    registry: docker.io
     repository: bitnami/postgresql
-    tag: "16"
+    tag: "latest"
 
 # Inject all DB credentials and API keys into every Airflow pod from the db-credentials secret
 extraEnvFrom: |
@@ -265,10 +264,18 @@ dagProcessor:
       memory: "512Mi"
       cpu: "500m"
 
-# Run DB migration as a regular K8s Job instead of a Helm post-upgrade hook.
-# useHelmHooks: true (chart default) makes helm upgrade block until the migrate job
-# finishes — on this single-node K3S cluster that exceeds --timeout 10m, causing
-# "timed out waiting for the condition". With false, Helm returns immediately;
-# the job still runs and each pod's waitForMigrations init container waits for it.
+# Run DB migration and user-creation as regular K8s Jobs instead of Helm post-install/upgrade hooks.
+# useHelmHooks: true (chart default) makes helm block until each job finishes — on this
+# single-node K3S cluster the migration alone exceeds --timeout 10m on a fresh install,
+# causing "timed out waiting for the condition". With false, Helm returns immediately;
+# the jobs still run in the background, and pods wait for migrations via init containers.
 migrateDatabaseJob:
   useHelmHooks: false
+createUserJob:
+  useHelmHooks: false  # createUserJob waits on migrations internally; no need for Helm to block on it
+
+# Belt-and-suspenders: if pods are ever restarted outside deploy.sh (e.g. manual kubectl delete pod),
+# give the init container enough time to wait out a slow Postgres cold-start on a fresh spot instance.
+# Default is 60s — raised to 300s to match observed migration duration (see 2026-04-13 incident).
+waitForMigrations:
+  migrationWaitTimeout: 300

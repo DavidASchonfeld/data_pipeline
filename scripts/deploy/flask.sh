@@ -21,7 +21,7 @@ step_deploy_flask() {
             BUILDX_VER=\$(curl -fsSL https://api.github.com/repos/docker/buildx/releases/latest \
                 | python3 -c \"import sys,json; print(json.load(sys.stdin)['tag_name'])\")
             mkdir -p ~/.docker/cli-plugins
-            curl -fsSL \"https://github.com/docker/buildx/releases/download/\${BUILDX_VER}/buildx-\${BUILDX_VER}.linux-amd64\" \
+            curl -fsSL \"https://github.com/docker/buildx/releases/download/\${BUILDX_VER}/buildx-\${BUILDX_VER}.linux-arm64\" \
                 -o ~/.docker/cli-plugins/docker-buildx
             chmod +x ~/.docker/cli-plugins/docker-buildx
             echo \"Installed buildx \${BUILDX_VER}\"

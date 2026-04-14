@@ -1,0 +1,621 @@
+{
+  "version": 4,
+  "terraform_version": "1.14.8",
+  "serial": 20,
+  "lineage": "f0e28675-f0e4-47a3-3023-90aaccbd1102",
+  "outputs": {
+    "ami_used": {
+      "value": "ami-009d9173b44d0482b",
+      "type": "string"
+    },
+    "ecr_repository_url": {
+      "value": "683010036255.dkr.ecr.us-east-1.amazonaws.com/my-flask-app",
+      "type": "string"
+    },
+    "elastic_ip": {
+      "value": "100.30.3.22",
+      "type": "string"
+    },
+    "instance_id": {
+      "value": "i-08f429ea763e04c82",
+      "type": "string"
+    },
+    "ssh_connect_command": {
+      "value": "ssh -i ~/path/to/kafkaProjectKeyPair_4-29-2025.pem ubuntu@100.30.3.22",
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "mode": "data",
+      "type": "aws_ami",
+      "name": "ubuntu_24_04",
+      "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "architecture": "x86_64",
+            "arn": "arn:aws:ec2:us-east-1::image/ami-009d9173b44d0482b",
+            "block_device_mappings": [
+              {
+                "device_name": "/dev/sda1",
+                "ebs": {
+                  "delete_on_termination": "true",
+                  "encrypted": "false",
+                  "iops": "0",
+                  "snapshot_id": "snap-020f75a777d51cd85",
+                  "throughput": "0",
+                  "volume_initialization_rate": "0",
+                  "volume_size": "8",
+                  "volume_type": "gp3"
+                },
+                "no_device": "",
+                "virtual_name": ""
+              },
+              {
+                "device_name": "/dev/sdb",
+                "ebs": {},
+                "no_device": "",
+                "virtual_name": "ephemeral0"
+              },
+              {
+                "device_name": "/dev/sdc",
+                "ebs": {},
+                "no_device": "",
+                "virtual_name": "ephemeral1"
+              }
+            ],
+            "boot_mode": "uefi-preferred",
+            "creation_date": "2026-04-09T14:13:23.000Z",
+            "deprecation_time": "2028-04-09T14:13:23.000Z",
+            "description": "Canonical, Ubuntu, 24.04, amd64 noble image",
+            "ena_support": true,
+            "executable_users": null,
+            "filter": [
+              {
+                "name": "name",
+                "values": [
+                  "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"
+                ]
+              },
+              {
+                "name": "virtualization-type",
+                "values": [
+                  "hvm"
+                ]
+              }
+            ],
+            "hypervisor": "xen",
+            "id": "ami-009d9173b44d0482b",
+            "image_id": "ami-009d9173b44d0482b",
+            "image_location": "amazon/ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-20260409",
+            "image_owner_alias": "amazon",
+            "image_type": "machine",
+            "imds_support": "v2.0",
+            "include_deprecated": false,
+            "kernel_id": "",
+            "last_launched_time": "",
+            "most_recent": true,
+            "name": "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-20260409",
+            "name_regex": null,
+            "owner_id": "099720109477",
+            "owners": [
+              "099720109477"
+            ],
+            "platform": "",
+            "platform_details": "Linux/UNIX",
+            "product_codes": [],
+            "public": true,
+            "ramdisk_id": "",
+            "root_device_name": "/dev/sda1",
+            "root_device_type": "ebs",
+            "root_snapshot_id": "snap-020f75a777d51cd85",
+            "sriov_net_support": "simple",
+            "state": "available",
+            "state_reason": {
+              "code": "UNSET",
+              "message": "UNSET"
+            },
+            "tags": {},
+            "timeouts": null,
+            "tpm_support": "",
+            "uefi_data": null,
+            "usage_operation": "RunInstances",
+            "virtualization_type": "hvm"
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 0
+        }
+      ]
+    },
+    {
+      "mode": "data",
+      "type": "aws_caller_identity",
+      "name": "current",
+      "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "account_id": "683010036255",
+            "arn": "arn:aws:sts::683010036255:assumed-role/AWSReservedSSO_AdministratorAccess_071facb8b5dbaca8/userForCLI_Dave",
+            "id": "683010036255",
+            "user_id": "AROAZ6BUSCIPRNKSWGJYG:userForCLI_Dave"
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 0
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "aws_ecr_lifecycle_policy",
+      "name": "flask_app_lifecycle",
+      "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "my-flask-app",
+            "policy": "{\"rules\":[{\"action\":{\"type\":\"expire\"},\"description\":\"Remove untagged images after 1 day\",\"rulePriority\":1,\"selection\":{\"countNumber\":1,\"countType\":\"sinceImagePushed\",\"countUnit\":\"days\",\"tagStatus\":\"untagged\"}}]}",
+            "registry_id": "683010036255",
+            "repository": "my-flask-app"
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 0,
+          "private": "bnVsbA==",
+          "dependencies": [
+            "aws_ecr_repository.flask_app"
+          ]
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "aws_ecr_repository",
+      "name": "flask_app",
+      "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "arn": "arn:aws:ecr:us-east-1:683010036255:repository/my-flask-app",
+            "encryption_configuration": [
+              {
+                "encryption_type": "AES256",
+                "kms_key": ""
+              }
+            ],
+            "force_delete": null,
+            "id": "my-flask-app",
+            "image_scanning_configuration": [
+              {
+                "scan_on_push": true
+              }
+            ],
+            "image_tag_mutability": "MUTABLE",
+            "name": "my-flask-app",
+            "registry_id": "683010036255",
+            "repository_url": "683010036255.dkr.ecr.us-east-1.amazonaws.com/my-flask-app",
+            "tags": {
+              "Project": "data-pipeline"
+            },
+            "tags_all": {
+              "Project": "data-pipeline"
+            },
+            "timeouts": null
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 0,
+          "private": "eyJlMmJmYjczMC1lY2FhLTExZTYtOGY4OC0zNDM2M2JjN2M0YzAiOnsiZGVsZXRlIjoxMjAwMDAwMDAwMDAwfX0="
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "aws_eip",
+      "name": "pipeline_eip",
+      "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "address": null,
+            "allocation_id": "eipalloc-01a104daeec39e3e3",
+            "arn": "arn:aws:ec2:us-east-1:683010036255:elastic-ip/eipalloc-01a104daeec39e3e3",
+            "associate_with_private_ip": null,
+            "association_id": "eipassoc-015d60212813d03d6",
+            "carrier_ip": "",
+            "customer_owned_ip": "",
+            "customer_owned_ipv4_pool": "",
+            "domain": "vpc",
+            "id": "eipalloc-01a104daeec39e3e3",
+            "instance": "i-08f429ea763e04c82",
+            "ipam_pool_id": null,
+            "network_border_group": "us-east-1",
+            "network_interface": "eni-05aa24861b962d66b",
+            "private_dns": "ip-172-31-81-93.ec2.internal",
+            "private_ip": "172.31.81.93",
+            "ptr_record": "",
+            "public_dns": "ec2-100-30-3-22.compute-1.amazonaws.com",
+            "public_ip": "100.30.3.22",
+            "public_ipv4_pool": "amazon",
+            "tags": {
+              "Name": "pipeline-eip",
+              "Project": "data-pipeline"
+            },
+            "tags_all": {
+              "Name": "pipeline-eip",
+              "Project": "data-pipeline"
+            },
+            "timeouts": null,
+            "vpc": true
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 0,
+          "private": "eyJlMmJmYjczMC1lY2FhLTExZTYtOGY4OC0zNDM2M2JjN2M0YzAiOnsiZGVsZXRlIjoxODAwMDAwMDAwMDAsInJlYWQiOjkwMDAwMDAwMDAwMCwidXBkYXRlIjozMDAwMDAwMDAwMDB9fQ=="
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "aws_eip_association",
+      "name": "pipeline_eip_assoc",
+      "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "allocation_id": "eipalloc-01a104daeec39e3e3",
+            "allow_reassociation": null,
+            "id": "eipassoc-015d60212813d03d6",
+            "instance_id": "i-08f429ea763e04c82",
+            "network_interface_id": "eni-05aa24861b962d66b",
+            "private_ip_address": "172.31.81.93",
+            "public_ip": "100.30.3.22"
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 0,
+          "private": "bnVsbA==",
+          "dependencies": [
+            "aws_eip.pipeline_eip",
+            "aws_iam_instance_profile.ec2_ecr_profile",
+            "aws_iam_role.ec2_ecr_role",
+            "aws_instance.pipeline",
+            "aws_key_pair.pipeline",
+            "aws_security_group.pipeline_sg",
+            "data.aws_ami.ubuntu_24_04"
+          ]
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "aws_iam_instance_profile",
+      "name": "ec2_ecr_profile",
+      "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "arn": "arn:aws:iam::683010036255:instance-profile/ec2-ecr-role",
+            "create_date": "2026-03-30T00:52:23Z",
+            "id": "ec2-ecr-role",
+            "name": "ec2-ecr-role",
+            "name_prefix": "",
+            "path": "/",
+            "role": "ec2-ecr-role",
+            "tags": {},
+            "tags_all": {},
+            "unique_id": "AIPAZ6BUSCIPYG2FNHZ7S"
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 0,
+          "private": "eyJzY2hlbWFfdmVyc2lvbiI6IjAifQ==",
+          "dependencies": [
+            "aws_iam_role.ec2_ecr_role"
+          ]
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "aws_iam_role",
+      "name": "ec2_ecr_role",
+      "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "arn": "arn:aws:iam::683010036255:role/ec2-ecr-role",
+            "assume_role_policy": "{\"Statement\":[{\"Action\":\"sts:AssumeRole\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ec2.amazonaws.com\"}}],\"Version\":\"2012-10-17\"}",
+            "create_date": "2026-03-30T00:52:23Z",
+            "description": "",
+            "force_detach_policies": false,
+            "id": "ec2-ecr-role",
+            "inline_policy": [],
+            "managed_policy_arns": [
+              "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
+            ],
+            "max_session_duration": 3600,
+            "name": "ec2-ecr-role",
+            "name_prefix": "",
+            "path": "/",
+            "permissions_boundary": "",
+            "tags": {
+              "Project": "data-pipeline"
+            },
+            "tags_all": {
+              "Project": "data-pipeline"
+            },
+            "unique_id": "AROAZ6BUSCIPVFWXPT7CC"
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 0,
+          "private": "bnVsbA=="
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "aws_iam_role_policy_attachment",
+      "name": "ecr_power_user",
+      "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "id": "ec2-ecr-role-arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser",
+            "policy_arn": "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser",
+            "role": "ec2-ecr-role"
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 0,
+          "private": "eyJzY2hlbWFfdmVyc2lvbiI6IjAifQ==",
+          "dependencies": [
+            "aws_iam_role.ec2_ecr_role"
+          ]
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "aws_instance",
+      "name": "pipeline",
+      "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+      "instances": [
+        {
+          "schema_version": 1,
+          "attributes": {
+            "ami": "ami-009d9173b44d0482b",
+            "arn": "arn:aws:ec2:us-east-1:683010036255:instance/i-08f429ea763e04c82",
+            "associate_public_ip_address": true,
+            "availability_zone": "us-east-1b",
+            "capacity_reservation_specification": [
+              {
+                "capacity_reservation_preference": "open",
+                "capacity_reservation_target": []
+              }
+            ],
+            "cpu_core_count": 1,
+            "cpu_options": [
+              {
+                "amd_sev_snp": "",
+                "core_count": 1,
+                "threads_per_core": 2
+              }
+            ],
+            "cpu_threads_per_core": 2,
+            "credit_specification": [
+              {
+                "cpu_credits": "unlimited"
+              }
+            ],
+            "disable_api_stop": false,
+            "disable_api_termination": false,
+            "ebs_block_device": [],
+            "ebs_optimized": false,
+            "enable_primary_ipv6": null,
+            "enclave_options": [
+              {
+                "enabled": false
+              }
+            ],
+            "ephemeral_block_device": [],
+            "get_password_data": false,
+            "hibernation": false,
+            "host_id": "",
+            "host_resource_group_arn": null,
+            "iam_instance_profile": "ec2-ecr-role",
+            "id": "i-08f429ea763e04c82",
+            "instance_initiated_shutdown_behavior": "stop",
+            "instance_lifecycle": "",
+            "instance_market_options": [],
+            "instance_state": "stopped",
+            "instance_type": "t3.large",
+            "ipv6_address_count": 0,
+            "ipv6_addresses": [],
+            "key_name": "kafkaProjectKeyPair_4-29-2025",
+            "launch_template": [],
+            "maintenance_options": [
+              {
+                "auto_recovery": "default"
+              }
+            ],
+            "metadata_options": [
+              {
+                "http_endpoint": "enabled",
+                "http_protocol_ipv6": "disabled",
+                "http_put_response_hop_limit": 2,
+                "http_tokens": "required",
+                "instance_metadata_tags": "disabled"
+              }
+            ],
+            "monitoring": false,
+            "network_interface": [],
+            "outpost_arn": "",
+            "password_data": "",
+            "placement_group": "",
+            "placement_partition_number": 0,
+            "primary_network_interface_id": "eni-05aa24861b962d66b",
+            "private_dns": "ip-172-31-81-93.ec2.internal",
+            "private_dns_name_options": [
+              {
+                "enable_resource_name_dns_a_record": false,
+                "enable_resource_name_dns_aaaa_record": false,
+                "hostname_type": "ip-name"
+              }
+            ],
+            "private_ip": "172.31.81.93",
+            "public_dns": "ec2-100-30-3-22.compute-1.amazonaws.com",
+            "public_ip": "100.30.3.22",
+            "root_block_device": [
+              {
+                "delete_on_termination": false,
+                "device_name": "/dev/sda1",
+                "encrypted": true,
+                "iops": 3000,
+                "kms_key_id": "arn:aws:kms:us-east-1:683010036255:key/ffc3e4e9-b44c-4882-8526-ae952f388cb5",
+                "tags": {},
+                "tags_all": {},
+                "throughput": 125,
+                "volume_id": "vol-0004d7c91572193e7",
+                "volume_size": 100,
+                "volume_type": "gp3"
+              }
+            ],
+            "secondary_private_ips": [],
+            "security_groups": [
+              "pipeline-sg"
+            ],
+            "source_dest_check": true,
+            "spot_instance_request_id": "",
+            "subnet_id": "subnet-0bd42d7388fabd9ec",
+            "tags": {
+              "Name": "data-pipeline-ec2",
+              "Project": "data-pipeline"
+            },
+            "tags_all": {
+              "Name": "data-pipeline-ec2",
+              "Project": "data-pipeline"
+            },
+            "tenancy": "default",
+            "timeouts": null,
+            "user_data": null,
+            "user_data_base64": null,
+            "user_data_replace_on_change": false,
+            "volume_tags": null,
+            "vpc_security_group_ids": [
+              "sg-08c655a9debe6dfab"
+            ]
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 0,
+          "private": "eyJlMmJmYjczMC1lY2FhLTExZTYtOGY4OC0zNDM2M2JjN2M0YzAiOnsiY3JlYXRlIjo2MDAwMDAwMDAwMDAsImRlbGV0ZSI6MTIwMDAwMDAwMDAwMCwicmVhZCI6OTAwMDAwMDAwMDAwLCJ1cGRhdGUiOjYwMDAwMDAwMDAwMH0sInNjaGVtYV92ZXJzaW9uIjoiMSJ9",
+          "dependencies": [
+            "aws_iam_instance_profile.ec2_ecr_profile",
+            "aws_iam_role.ec2_ecr_role",
+            "aws_key_pair.pipeline",
+            "aws_security_group.pipeline_sg",
+            "data.aws_ami.ubuntu_24_04"
+          ]
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "aws_key_pair",
+      "name": "pipeline",
+      "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+      "instances": [
+        {
+          "schema_version": 1,
+          "attributes": {
+            "arn": "arn:aws:ec2:us-east-1:683010036255:key-pair/kafkaProjectKeyPair_4-29-2025",
+            "fingerprint": "ea:04:87:9a:f8:e2:52:03:43:78:81:ee:d3:4e:8d:dc",
+            "id": "kafkaProjectKeyPair_4-29-2025",
+            "key_name": "kafkaProjectKeyPair_4-29-2025",
+            "key_name_prefix": "",
+            "key_pair_id": "key-010b3b8e097f509a7",
+            "key_type": "rsa",
+            "public_key": "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC52yvdj1ZX/kNr4BRsOGjSjhZ10Q1OR0hh0m/MqiPXHO5uFBd6sB2ReEQN27uFc6PNjFJs3TVv2cgpU5WrSXMbUxc5AA5P63lIktxyqu6Z4lxTWH/WxyiZNqUwLWy6yIFQjf3vFwDWPDsWpgQ3sa7wY4OrvxOt47vYu/xcpDxXb+ef+ufC7alEmzE7GVrWKaMzvBziLnLzzdOGha8HlAapCpLQhhGybzJ9F6Sdt+s76IJMB3u/ZPI108E5ZS5mCxgw2a4FoWMrYVCdePNXdjC3P0qJ0O3AkkvafDtDE79QMnD2rQ+R8CGDVP+nCfVYt2pBKOY9wkVett8IG8aAEdrZ",
+            "tags": {
+              "Project": "data-pipeline"
+            },
+            "tags_all": {
+              "Project": "data-pipeline"
+            }
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 0,
+          "private": "eyJzY2hlbWFfdmVyc2lvbiI6IjEifQ=="
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "aws_security_group",
+      "name": "pipeline_sg",
+      "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+      "instances": [
+        {
+          "schema_version": 1,
+          "attributes": {
+            "arn": "arn:aws:ec2:us-east-1:683010036255:security-group/sg-08c655a9debe6dfab",
+            "description": "SSH-only ingress; all app ports accessed via SSH tunnel",
+            "egress": [
+              {
+                "cidr_blocks": [
+                  "0.0.0.0/0"
+                ],
+                "description": "Allow all outbound (ECR pulls, apt, SEC EDGAR API calls)",
+                "from_port": 0,
+                "ipv6_cidr_blocks": [],
+                "prefix_list_ids": [],
+                "protocol": "-1",
+                "security_groups": [],
+                "self": false,
+                "to_port": 0
+              }
+            ],
+            "id": "sg-08c655a9debe6dfab",
+            "ingress": [
+              {
+                "cidr_blocks": [
+                  "71.163.94.251/32"
+                ],
+                "description": "SSH from operators current IP only",
+                "from_port": 22,
+                "ipv6_cidr_blocks": [],
+                "prefix_list_ids": [],
+                "protocol": "tcp",
+                "security_groups": [],
+                "self": false,
+                "to_port": 22
+              }
+            ],
+            "name": "pipeline-sg",
+            "name_prefix": "",
+            "owner_id": "683010036255",
+            "revoke_rules_on_delete": false,
+            "tags": {
+              "Name": "pipeline-sg",
+              "Project": "data-pipeline"
+            },
+            "tags_all": {
+              "Name": "pipeline-sg",
+              "Project": "data-pipeline"
+            },
+            "timeouts": null,
+            "vpc_id": "vpc-0bafa8f9d3514ed51"
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 0,
+          "private": "eyJlMmJmYjczMC1lY2FhLTExZTYtOGY4OC0zNDM2M2JjN2M0YzAiOnsiY3JlYXRlIjo2MDAwMDAwMDAwMDAsImRlbGV0ZSI6OTAwMDAwMDAwMDAwfSwic2NoZW1hX3ZlcnNpb24iOiIxIn0="
+        }
+      ]
+    }
+  ],
+  "check_results": null
+}
