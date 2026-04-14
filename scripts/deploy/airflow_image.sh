@@ -27,18 +27,38 @@ step_build_airflow_image() {
     # (If you re-import under the same tag name, K3S can silently reuse the old cached version
     # even after you've deleted and re-imported it.)
     echo "Build tag: $BUILD_TAG"
-    # Build the image and clean up stale copies — kept in one SSH session so Docker cache is warm
+
+    # Verify Docker daemon is still reachable right before building — Step 1c3 confirmed it
+    # earlier, but the daemon can go down between then and now (e.g., OOM-killed on a small
+    # instance running K3s + Docker + MariaDB simultaneously). timeout 10 prevents a wedged
+    # daemon from hanging the build step indefinitely.
+    if ! ssh "$EC2_HOST" "timeout 10 docker info >/dev/null 2>&1"; then
+        echo "Docker daemon not reachable at build time — restarting..."
+        ssh "$EC2_HOST" "sudo systemctl restart docker"
+        sleep 5
+        if ! ssh "$EC2_HOST" "timeout 10 docker info >/dev/null 2>&1"; then
+            echo "✗ Docker daemon still not reachable after restart"
+            echo "  Run 'sudo journalctl -u docker --no-pager -n 30' on EC2 to see why"
+            return 1
+        fi
+        echo "✓ Docker daemon recovered"
+    fi
+
+    # Build first, cleanup after — cleanup is in a subshell so that if docker build fails, the && before
+    # the subshell short-circuits and the SSH session exits non-zero immediately. Without the subshell,
+    # bash's || true on the k3s rm command would swallow the build failure (operator precedence:
+    # A && B || true evaluates as (A && B) || true, not A && (B || true)).
+    # DOCKER_BUILDKIT=1 uses the modern BuildKit engine instead of the deprecated legacy builder.
     ssh "$EC2_HOST" "
         echo 'Building airflow-dbt:$BUILD_TAG image...' &&
-        docker build -t airflow-dbt:$BUILD_TAG $EC2_HOME/airflow/docker/ &&
-        echo 'Purging ALL existing airflow-dbt images from K3S containerd (prevents stale snapshot reuse)...' &&
-        sudo k3s ctr images ls | grep 'airflow-dbt' | awk '{print \$1}' | xargs -r sudo k3s ctr images rm 2>/dev/null || true &&
-        echo 'Running K3S containerd content GC to free orphaned blobs from disk...' &&
-        sudo k3s ctr content gc || true &&
-        echo 'Pruning old airflow-dbt Docker images from previous builds to free disk space...' &&
-        docker images --format '{{.Repository}}:{{.Tag}}' | grep 'airflow-dbt' | grep -v '$BUILD_TAG' | xargs -r docker rmi 2>/dev/null || true &&
-        echo 'Pruning dangling Docker images to free disk space...' &&
-        docker image prune -f || true
+        DOCKER_BUILDKIT=1 docker build -t airflow-dbt:$BUILD_TAG $EC2_HOME/airflow/docker/ && (
+            echo 'Purging ALL existing airflow-dbt images from K3S containerd (prevents stale snapshot reuse)...' ;
+            sudo k3s ctr images ls | grep 'airflow-dbt' | awk '{print \$1}' | xargs -r sudo k3s ctr images rm 2>/dev/null || true ;
+            echo 'Pruning old airflow-dbt Docker images from previous builds to free disk space...' ;
+            docker images --format '{{.Repository}}:{{.Tag}}' | grep 'airflow-dbt' | grep -v '$BUILD_TAG' | xargs -r docker rmi 2>/dev/null || true ;
+            echo 'Pruning dangling Docker images to free disk space...' ;
+            docker image prune -f || true
+        )
     "
     # Import the freshly built image into K3S — shared helper in common.sh handles save+import+verify
     import_image_to_k3s "airflow-dbt:$BUILD_TAG" "airflow-dbt"

@@ -109,23 +109,6 @@ case "$ACTION" in
         terraform -chdir="$TF_DIR" plan -var="ssh_ingress_cidr=$CURRENT_IP"
         ;;
     apply)
-        # Guard: block apply only if an EC2 instance already exists in AWS but hasn't been imported into state
-        # (when no instance exists in AWS yet it is safe to let apply create one)
-        GUARD_INSTANCE_ID=$(aws ec2 describe-instances \
-            --profile "$AWS_PROFILE" \
-            --filters "Name=tag:Name,Values=data-pipeline-ec2" "Name=instance-state-name,Values=running,stopped" \
-            --query "Reservations[0].Instances[0].InstanceId" \
-            --output text 2>/dev/null || echo "")
-        if [ -n "$GUARD_INSTANCE_ID" ] && [ "$GUARD_INSTANCE_ID" != "None" ]; then
-            # Instance exists in AWS — ensure it's been imported before applying to avoid duplicates
-            if ! terraform -chdir="$TF_DIR" state show aws_instance.pipeline &>/dev/null; then
-                echo "ERROR: aws_instance.pipeline ($GUARD_INSTANCE_ID) exists in AWS but is not in Terraform state."
-                echo "  apply would create a brand new blank EC2 instance instead of managing your existing one."
-                echo "  Run import first: ./scripts/deploy/terraform.sh import"
-                exit 1
-            fi
-        fi
-
         # Pre-flight plan: detect instance replacement before applying — auto-snapshot root EBS volume if replacement found
         PLAN_TMPFILE="$(mktemp)"
         trap 'rm -f "$PLAN_TMPFILE"' EXIT  # always clean up temp file on exit
@@ -133,7 +116,7 @@ case "$ACTION" in
         terraform -chdir="$TF_DIR" plan -no-color -var="ssh_ingress_cidr=$CURRENT_IP" | tee "$PLAN_TMPFILE"
 
         # If plan shows the instance will be replaced, snapshot the root EBS volume before proceeding
-        if grep -q "aws_instance.pipeline must be replaced" "$PLAN_TMPFILE"; then
+        if grep -qE "aws_(autoscaling_group|launch_template)\.pipeline must be replaced" "$PLAN_TMPFILE"; then
             echo ""
             echo "WARNING: Plan will REPLACE the EC2 instance (destroy + recreate)."
             echo "  Auto-snapshotting root EBS volume before proceeding to protect your data..."
@@ -226,32 +209,8 @@ case "$ACTION" in
             echo "  aws_iam_role_policy_attachment.ecr_power_user not found in AWS — apply will create it"
         fi
 
-        # Look up the existing EC2 instance by Name tag — prevents Terraform from creating a duplicate
-        EXISTING_INSTANCE_ID=$(aws ec2 describe-instances \
-            --profile "$AWS_PROFILE" \
-            --filters "Name=tag:Name,Values=data-pipeline-ec2" \
-                      "Name=instance-state-name,Values=running,stopped" \
-            --query "Reservations[].Instances[].InstanceId" \
-            --output text)
-        if [ -n "$EXISTING_INSTANCE_ID" ]; then
-            echo "Found existing EC2 instance: $EXISTING_INSTANCE_ID"
-            _import_if_missing aws_instance.pipeline "$EXISTING_INSTANCE_ID"
-        else
-            echo "No existing EC2 instance found — apply will create one."
-        fi
-
-        # Import EIP association if the EIP is already bound to an instance — otherwise apply will create it
-        EIP_ASSOC_ID=$(aws ec2 describe-addresses \
-            --profile "$AWS_PROFILE" \
-            --filters "Name=tag:Name,Values=pipeline-eip" \
-            --query "Addresses[0].AssociationId" \
-            --output text 2>/dev/null || true)
-        if [ -n "$EIP_ASSOC_ID" ] && [ "$EIP_ASSOC_ID" != "None" ]; then
-            echo "Found EIP association: $EIP_ASSOC_ID"
-            _import_if_missing aws_eip_association.pipeline_eip_assoc "$EIP_ASSOC_ID"
-        else
-            echo "EIP is not currently associated — apply will create the association."
-        fi
+        # Note: aws_eip_association is no longer managed by Terraform — EIP re-association
+        # is handled by the Lambda lifecycle hook on every ASG launch event.
 
         # Import key pair if it already exists in AWS under the configured name
         _KP_NAME="${TF_VAR_key_pair_name:-kafkaProjectKeyPair_4-29-2025}"  # fall back to default if not overridden via env
@@ -271,7 +230,6 @@ case "$ACTION" in
         echo "Import complete. Run plan to verify."
         echo "  Expected remaining '+ create' items (handled by apply, not import issues):"
         echo "    aws_ecr_lifecycle_policy.flask_app_lifecycle  — new resource, will be created"
-        echo "    aws_instance.pipeline must be replaced        — encrypted EBS change, auto-snapshot will fire"
         ;;
     destroy)
         # COST: STOPS CHARGES — terminates all managed resources; the Elastic IP is permanently released

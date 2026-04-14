@@ -1,8 +1,8 @@
 # Outputs printed after terraform apply — useful for verifying resources and updating local configs.
 
 output "instance_id" {
-  description = "EC2 instance ID — needed for terraform import and AWS Console lookups"
-  value       = aws_instance.pipeline.id
+  description = "ASG ID — use to look up the current spot instance in the AWS Console"
+  value       = aws_autoscaling_group.pipeline.id
 }
 
 output "elastic_ip" {

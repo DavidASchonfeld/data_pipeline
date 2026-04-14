@@ -94,7 +94,9 @@ dag = stock_market_pipeline()  # Now Airflow can find it
 
 **Why it happened:** Bitnami (the company that packages these images) deleted their old versioned tags from Docker Hub. The Helm chart's default `bitnami/postgresql:16.1.0-debian-11-r15` no longer exists.
 
-**The fix:** Override the image to pull from Amazon ECR Public (`public.ecr.aws/bitnami/postgresql:16`). ECR Public has all the Bitnami images, no rate limits, and no authentication needed.
+**The fix:** Override the image to pull from Amazon ECR Public (`public.ecr.aws/bitnami/postgresql:16`). ECR Public has no rate limits and no authentication needed.
+
+**Update (2026-04-13):** The ECR Public fix was itself superseded — that repository turned out to be empty (zero tags). See the [2026-04-13 PostgreSQL ImagePullBackOff incident](2026-04-13-postgresql-imagepullbackoff-ecr-public-empty.md) for the full story and current fix.
 
 ---
 

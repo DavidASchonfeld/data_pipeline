@@ -33,6 +33,10 @@ For the failure mode catalog (what *can* go wrong, not what *did* go wrong), see
 | 2026-04-10 | RequestsDependencyWarning (urllib3/chardet) | [requests-dependency](airflow/2026-04-10-requests-dependency-warning.md) |
 | 2026-04-11 | sklearn feature name warnings in anomaly detector | [sklearn-warnings](airflow/2026-04-11-anomaly-detector-sklearn-feature-name-warnings.md) |
 | 2026-04-11 | Verification step fixes (Steps 3, 5, 7, 8, 9, 10) | [verification-fixes](airflow/2026-04-11-verification-step-fixes.md) |
+| 2026-04-13 | ErrImageNeverPull: multiple old ReplicaSets after spot redeploy | [errimagenevrpull-multi-rs](airflow/2026-04-13-errimagenevrpull-multiple-old-replicasets.md) |
+| 2026-04-13 | Pods stuck in Init:0/1: wait-for-airflow-migrations timed out on cold Postgres | [wait-for-migrations](airflow/2026-04-13-wait-for-migrations-timeout.md) |
+| 2026-04-13 | Migration job timeout: kubectl wait ignores Failed jobs | [kubectl-wait-blind-spot](airflow/2026-04-13-migration-job-timeout-kubectl-wait-blind-spot.md) |
+| 2026-04-13 | PostgreSQL ImagePullBackOff: ECR Public repository empty | [postgresql-imagepullbackoff](airflow/2026-04-13-postgresql-imagepullbackoff-ecr-public-empty.md) |
 | — | Early bugs: config drift, PV path, API limits, probes (Bugs 1–8) | [early-bugs-config](airflow/early-bugs-config-and-infra.md) |
 | — | Early bugs: OOMKill, upgrade, missing secret, probes (Bugs 9–16) | [early-bugs-upgrade](airflow/early-bugs-upgrade-and-migration.md) |
 | — | OpenLineage dbt fixes | [openlineage-fixes](airflow/OPENLINEAGE_DBT_FIXES.md) |
@@ -68,6 +72,13 @@ For the failure mode catalog (what *can* go wrong, not what *did* go wrong), see
 | 2026-04-10 | Step ordering: 2c must run before 2d | [step-ordering](deploy/2026-04-10-deploy-sh-step-ordering-2c-after-2d.md) |
 | 2026-04-10 | Port-forward exit 255 + silent failure | [portforward-failure](deploy/2026-04-10-deploy-sh-portforward-exit255-silent-failure.md) |
 | 2026-04-10 | Parallelization speedup (22 min → 7-10 min) | [parallelization](deploy/2026-04-10-deploy-sh-parallelization-speedup.md) |
+| 2026-04-14 | chmod K3s config fails on fresh spot instance | [chmod-k3s-not-found](deploy/2026-04-14-chmod-k3s-yaml-not-found-fresh-spot.md) |
+| 2026-04-14 | --provision does not auto-bootstrap fresh spot instances | [provision-no-bootstrap](deploy/2026-04-14-provision-no-auto-bootstrap-fresh-spot.md) |
+| 2026-04-14 | Docker build frozen 8+ min: buildx plugin missing after auto-bootstrap | [docker-buildx-missing](deploy/2026-04-14-docker-buildx-missing-docker-io-bootstrap.md) |
+| 2026-04-14 | Buildx still missing: old bootstrap left docker.io, no pre-flight check | [buildx-no-precheck](deploy/2026-04-14-buildx-missing-no-precheck-old-bootstrap.md) |
+| 2026-04-14 | Docker daemon not running: pre-flight only checked plugin, not service | [docker-daemon-not-running](deploy/2026-04-14-docker-daemon-not-running-no-precheck.md) |
+| 2026-04-14 | Docker daemon down between pre-flight check and build + terminal freeze | [docker-daemon-down-between](deploy/2026-04-14-docker-daemon-down-between-precheck-and-build.md) |
+| 2026-04-14 | Kafka offset reset Java TimeoutException for non-existent consumer groups | [kafka-offset-nonexistent-group](deploy/2026-04-14-kafka-offset-reset-timeout-nonexistent-group.md) |
 
 ### Snowflake
 
@@ -113,6 +124,7 @@ For the failure mode catalog (what *can* go wrong, not what *did* go wrong), see
 |------|-------|------|
 | 2026-04-08 | EBS disk full (K3S garbage-collected images) | [ebs-disk-full](infrastructure/2026-04-08-ebs-disk-full.md) |
 | 2026-04-10 | Ubuntu system updates | [ubuntu-updates](infrastructure/2026-04-10-ubuntu-system-updates-ec2.md) |
+| 2026-04-13 | Spot + ASG + ARM cost optimization (73% reduction) | [spot-asg-arm](infrastructure/2026-04-13-spot-asg-arm-cost-optimization.md) |
 
 ---
 

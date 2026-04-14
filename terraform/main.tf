@@ -8,6 +8,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.0"
+    }
   }
 }
 
@@ -22,6 +26,21 @@ provider "aws" {
 # Fetches the AWS account ID at plan time — avoids requiring it as a variable input.
 data "aws_caller_identity" "current" {}
 
+# ── VPC / Subnet lookup ───────────────────────────────────────────────────────
+
+# Fetches the default VPC — used to place the ASG instances in the correct subnets.
+data "aws_vpc" "default" {
+  default = true
+}
+
+# All subnets in the default VPC — multi-AZ placement improves spot availability.
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
+
 # ── AMI lookup ────────────────────────────────────────────────────────────────
 
 # Dynamically finds the latest Ubuntu 24.04 LTS AMI from Canonical — avoids hardcoding AMI IDs.
@@ -31,7 +50,7 @@ data "aws_ami" "ubuntu_24_04" {
 
   filter {
     name   = "name"
-    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-arm64-server-*"]
   }
 
   filter {
@@ -45,7 +64,7 @@ data "aws_ami" "ubuntu_24_04" {
 # SSH + dashboard ingress — port 32147 exposed publicly; all other app ports via SSH tunnel.
 resource "aws_security_group" "pipeline_sg" {
   name        = "pipeline-sg"
-  description = "SSH + dashboard ingress; all other app ports accessed via SSH tunnel"
+  description = "SSH-only ingress; all app ports accessed via SSH tunnel"
 
   ingress {
     description = "SSH from operators current IP only"
@@ -117,33 +136,91 @@ resource "aws_iam_instance_profile" "ec2_ecr_profile" {
   role = aws_iam_role.ec2_ecr_role.name
 }
 
-# ── EC2 Instance ──────────────────────────────────────────────────────────────
+# ── Launch Template ───────────────────────────────────────────────────────────
 
-# Single instance running K3s with Airflow, Kafka, MLflow, Flask, and MariaDB.
-resource "aws_instance" "pipeline" {
-  ami                    = data.aws_ami.ubuntu_24_04.id
-  instance_type          = var.instance_type  # set in variables.tf — default t3.large
-  key_name               = aws_key_pair.pipeline.key_name  # implicit dependency — key pair must exist in AWS before instance is created
+# Defines the instance configuration used by the ASG — replaces the standalone aws_instance.
+resource "aws_launch_template" "pipeline" {
+  name_prefix   = "pipeline-"
+  image_id      = data.aws_ami.ubuntu_24_04.id  # ARM Ubuntu 24.04 LTS (see AMI filter above)
+  instance_type = var.instance_type              # default t4g.large — set in variables.tf
+  key_name      = aws_key_pair.pipeline.key_name
+
   vpc_security_group_ids = [aws_security_group.pipeline_sg.id]
-  iam_instance_profile   = aws_iam_instance_profile.ec2_ecr_profile.name
 
-  root_block_device {
-    volume_type           = "gp3"
-    volume_size           = var.ebs_volume_size  # set in variables.tf — default 100 GiB
-    encrypted             = true  # Free; zero performance impact — encrypts all data at rest on the volume
-    delete_on_termination = false # Preserve root EBS volume if instance is destroyed — prevents permanent data loss
+  iam_instance_profile {
+    name = aws_iam_instance_profile.ec2_ecr_profile.name
   }
 
-  # user_data is omitted — bootstrap_ec2.sh handles all provisioning via SSH after the instance starts.
+  block_device_mappings {
+    device_name = "/dev/sda1"
+    ebs {
+      volume_type           = "gp3"
+      volume_size           = var.ebs_volume_size  # default 30 GiB — set in variables.tf
+      encrypted             = true
+      delete_on_termination = false  # preserve root EBS volume if instance is terminated
+    }
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name    = "data-pipeline-ec2"
+      Project = "data-pipeline"
+    }
+  }
 
   lifecycle {
-    # AMI updates require deliberate instance replacement, not automatic drift correction on every apply.
-    ignore_changes = [ami]
+    # prevent AMI drift from forcing launch template replacement on every apply
+    ignore_changes = [image_id]
   }
 
-  tags = {
-    Name    = "data-pipeline-ec2"
-    Project = "data-pipeline"
+  tags = { Project = "data-pipeline" }
+}
+
+# ── Auto Scaling Group ────────────────────────────────────────────────────────
+
+# Single-instance ASG — min=max=desired=1. Spot preferred; diversifies across two ARM pools
+# to reduce interruption probability. EIP is associated by Lambda on instance launch.
+resource "aws_autoscaling_group" "pipeline" {
+  name                = "pipeline-asg"
+  min_size            = 1
+  max_size            = 1
+  desired_capacity    = 1
+  vpc_zone_identifier = data.aws_subnets.default.ids  # multi-AZ spot availability
+
+  mixed_instances_policy {
+    instances_distribution {
+      on_demand_base_capacity                  = 0  # no guaranteed on-demand baseline
+      on_demand_percentage_above_base_capacity = 0  # 100% spot
+      spot_allocation_strategy                 = "capacity-optimized"  # minimizes interruptions
+    }
+
+    launch_template {
+      launch_template_specification {
+        launch_template_id = aws_launch_template.pipeline.id
+        version            = "$Latest"
+      }
+
+      # diversify across two ARM pools — if t4g.large spot has no capacity, t4g.xlarge is used
+      override {
+        instance_type = "t4g.large"
+      }
+      override {
+        instance_type = "t4g.xlarge"
+      }
+    }
+  }
+
+  tag {
+    key                 = "Name"
+    value               = "data-pipeline-ec2"
+    propagate_at_launch = true
+  }
+
+  tag {
+    key                 = "Project"
+    value               = "data-pipeline"
+    propagate_at_launch = true
   }
 }
 
@@ -159,10 +236,137 @@ resource "aws_eip" "pipeline_eip" {
   }
 }
 
-# Binds the Elastic IP to the EC2 instance.
-resource "aws_eip_association" "pipeline_eip_assoc" {
-  instance_id   = aws_instance.pipeline.id
-  allocation_id = aws_eip.pipeline_eip.id
+# ── EIP Re-association Lambda ─────────────────────────────────────────────────
+
+# Packages the Python Lambda function as a ZIP for deployment.
+data "archive_file" "eip_reassociate" {
+  type        = "zip"
+  source_file = "${path.module}/lambda/eip_reassociate.py"
+  output_path = "${path.module}/lambda/eip_reassociate.zip"
+}
+
+# IAM role for the Lambda function — allows it to associate EIPs and signal ASG lifecycle hooks.
+resource "aws_iam_role" "lambda_eip" {
+  name = "pipeline-lambda-eip"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+
+  tags = { Project = "data-pipeline" }
+}
+
+resource "aws_iam_role_policy" "lambda_eip" {
+  role = aws_iam_role.lambda_eip.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # CloudWatch Logs — needed for Lambda execution logs
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "arn:aws:logs:*:*:*"
+      },
+      {
+        # EIP association — binds the static IP to the new spot instance
+        Effect   = "Allow"
+        Action   = ["ec2:AssociateAddress", "ec2:DisassociateAddress", "ec2:DescribeAddresses"]
+        Resource = "*"
+      },
+      {
+        # ASG lifecycle signal — tells ASG the hook work is done and it can mark instance InService
+        Effect   = "Allow"
+        Action   = "autoscaling:CompleteLifecycleAction"
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# Lambda function that re-associates the EIP when the ASG launches a new instance.
+resource "aws_lambda_function" "eip_reassociate" {
+  filename         = data.archive_file.eip_reassociate.output_path
+  source_code_hash = data.archive_file.eip_reassociate.output_base64sha256
+  function_name    = "pipeline-eip-reassociate"
+  role             = aws_iam_role.lambda_eip.arn
+  handler          = "eip_reassociate.handler"
+  runtime          = "python3.12"
+  timeout          = 30  # EIP association is fast; 30s is generous
+
+  environment {
+    variables = {
+      EIP_ALLOCATION_ID = aws_eip.pipeline_eip.id
+    }
+  }
+
+  tags = { Project = "data-pipeline" }
+}
+
+# SNS topic that receives ASG lifecycle notifications and fans out to the Lambda.
+resource "aws_sns_topic" "asg_lifecycle" {
+  name = "pipeline-asg-lifecycle"
+  tags = { Project = "data-pipeline" }
+}
+
+resource "aws_sns_topic_subscription" "lifecycle_lambda" {
+  topic_arn = aws_sns_topic.asg_lifecycle.arn
+  protocol  = "lambda"
+  endpoint  = aws_lambda_function.eip_reassociate.arn
+}
+
+# Allows SNS to invoke the Lambda function.
+resource "aws_lambda_permission" "allow_sns" {
+  statement_id  = "AllowSNSInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.eip_reassociate.function_name
+  principal     = "sns.amazonaws.com"
+  source_arn    = aws_sns_topic.asg_lifecycle.arn
+}
+
+# IAM role for ASG to publish lifecycle notifications to SNS.
+resource "aws_iam_role" "asg_lifecycle" {
+  name = "pipeline-asg-lifecycle"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "autoscaling.amazonaws.com" }
+    }]
+  })
+
+  tags = { Project = "data-pipeline" }
+}
+
+resource "aws_iam_role_policy" "asg_lifecycle" {
+  role = aws_iam_role.asg_lifecycle.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "sns:Publish"
+      Resource = aws_sns_topic.asg_lifecycle.arn
+    }]
+  })
+}
+
+# Lifecycle hook: fires when ASG launches a new instance → triggers Lambda via SNS to associate EIP.
+resource "aws_autoscaling_lifecycle_hook" "launch" {
+  name                    = "pipeline-launch-eip"
+  autoscaling_group_name  = aws_autoscaling_group.pipeline.name
+  default_result          = "CONTINUE"  # if Lambda times out, instance still becomes InService
+  heartbeat_timeout       = 300
+  lifecycle_transition    = "autoscaling:EC2_INSTANCE_LAUNCHING"
+  notification_target_arn = aws_sns_topic.asg_lifecycle.arn
+  role_arn                = aws_iam_role.asg_lifecycle.arn
 }
 
 # ── ECR Repository ────────────────────────────────────────────────────────────
