@@ -65,22 +65,30 @@ spec:
               memory: "1536Mi"
               # caps container ephemeral usage (logs, tmp files) — prevents unbounded growth
               ephemeral-storage: "500Mi"
+          # startupProbe: blocks liveness/readiness until MLflow finishes its slow first-boot
+          # (SQLite init + ML lib loading can take >120s — without this, liveness kills the pod mid-start)
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 5500
+            periodSeconds: 10
+            failureThreshold: 30     # 30 × 10s = 300s max startup window before pod is killed
           # readinessProbe: prevents traffic until MLflow HTTP server is up and accepting requests
+          # initialDelaySeconds removed — startupProbe already gates this
           readinessProbe:
             httpGet:
               path: /health      # MLflow built-in health endpoint
               port: 5500
-            initialDelaySeconds: 10  # allow time for SQLite DB initialization on first start
             periodSeconds: 5
             failureThreshold: 6      # ~30s grace before marking pod unready
           # livenessProbe: auto-restarts the pod if MLflow process hangs or crashes post-start
+          # initialDelaySeconds removed — startupProbe already gates this
           livenessProbe:
             httpGet:
               path: /health
               port: 5500
-            initialDelaySeconds: 60  # MLflow needs time for SQLite init + gunicorn start
             periodSeconds: 10
-            failureThreshold: 6      # gives 120s total before kill (was defaulting to 3 = 50s)
+            failureThreshold: 6      # 60s grace before kill
           volumeMounts:
             - name: mlflow-data
               mountPath: /mlflow-data  # PVC mounted here for DB + artifact persistence

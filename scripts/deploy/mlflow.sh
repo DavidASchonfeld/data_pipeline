@@ -47,7 +47,7 @@ step_deploy_mlflow() {
 
         # Kubernetes's Recreate strategy shuts down the old pod before starting the new one —
         # this avoids two pods trying to write to the same storage at the same time
-        kubectl rollout status deployment/mlflow -n airflow-my-namespace --timeout=180s \
+        kubectl rollout status deployment/mlflow -n airflow-my-namespace --timeout=360s \  # raised from 180s: startupProbe allows up to 300s for first boot
         || {
             echo 'ERROR: MLflow rollout timed out. Diagnosing...'
             echo '--- MLflow pod status ---'
