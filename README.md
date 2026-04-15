@@ -1,13 +1,13 @@
 # data_pipeline
 
-> **Live Dashboard: [https://im6g5ue81k.execute-api.us-east-1.amazonaws.com/dashboard/](https://im6g5ue81k.execute-api.us-east-1.amazonaws.com/dashboard/)**
-> The pipeline is running live — click to see it. If the server is sleeping, a loading screen appears and wakes it automatically (~3–5 min).
+> **Live Dashboard: [https://d17husnpvzzqit.cloudfront.net/dashboard/](https://d17husnpvzzqit.cloudfront.net/dashboard/)**
+> The pipeline is running live — click to see it. The server runs continuously; no loading screen or wait time. If the server is briefly switching over to a new instance, you'll see a loading page instead of a browser error.
 
 ---
 
-This is a data pipeline that runs continuously on AWS, pulling real financial filings and weather data, processing them through a streaming architecture, and surfacing the results on a live interactive dashboard — all for about $70 a month.
+This is a data pipeline that runs continuously on AWS, pulling real financial filings and weather data, processing them through a streaming architecture, and surfacing the results on a live interactive dashboard — all for about $18–22 a month.
 
-The pipeline collects two data streams: official SEC financial filings for AAPL, MSFT, and GOOGL (updated daily) and hourly weather data from Open-Meteo. Each stream flows through Apache Kafka into Snowflake, where dbt transforms the raw data into clean, tested tables. A machine learning model (IsolationForest) scores each company's year-over-year financial trends and flags anomalies — with every model run tracked in MLflow for reproducibility. Apache Airflow orchestrates everything on schedule, running on a single EC2 instance under K3S (lightweight Kubernetes). The EC2 t3.large + 100 GiB EBS gp3 + Elastic IP runs about $70–75/month; a combination of auto-suspend, query caching, and batch gating keeps Snowflake costs minimal.
+The pipeline collects two data streams: official SEC financial filings for AAPL, MSFT, and GOOGL (updated daily) and hourly weather forecasts from Open-Meteo for the top 10 US cities by population. Each stream flows through Apache Kafka into Snowflake, where dbt transforms the raw data into clean, tested tables. A machine learning model (IsolationForest) scores each company's year-over-year financial trends and flags anomalies — with every model run tracked in MLflow for reproducibility. Apache Airflow orchestrates everything on schedule, running on a single EC2 instance under K3S (lightweight Kubernetes). The instance runs as an always-on spot instance (t4g.large ARM), which is 70–80% cheaper than standard on-demand pricing; a combination of auto-suspend, query caching, and batch gating keeps Snowflake costs minimal.
 
 The [Design Decisions](#design-decisions) section explains why each architectural choice was made.
 
@@ -19,7 +19,7 @@ The [Design Decisions](#design-decisions) section explains why each architectura
 - **[Cloud data warehousing + transformation](#what-the-snowflake-layers-mean)** — Snowflake for storage, dbt for repeatable SQL transformations with built-in data quality tests
 - **[ML integration with reproducibility](#key-features)** — IsolationForest anomaly detection with every run logged to MLflow so any result can be traced back to the exact model and data that produced it
 - **[Production observability](#key-features)** — Slack alerting, data staleness monitoring, structured task logs that survive container restarts
-- **[Cost-conscious infrastructure](#design-decisions)** — ~$70/month total; multiple deliberate choices keep Snowflake activations to a minimum
+- **[Cost-conscious infrastructure](#design-decisions)** — ~$18–22/month total; spot pricing plus multiple deliberate choices keep Snowflake activations to a minimum
 
 ---
 
@@ -29,11 +29,11 @@ The pipeline runs as five automated jobs, each responsible for one step in the d
 
 1. **Stock producer** (`dag_stocks.py`, daily) — Fetches official financial filings for AAPL, MSFT, and GOOGL from the SEC, then publishes the data to a Kafka message queue. To do this, it first resolves each ticker to the SEC's internal numeric ID called a CIK (e.g. Apple files under `0000320193`, not "AAPL"), then fetches XBRL financial data (a structured XML format the SEC requires companies to use in their filings — it lets code reliably extract specific line items like revenue or net income) from SEC EDGAR, cleans it, and publishes a JSON message to the `stocks-financials-raw` Kafka topic.
 2. **Stock consumer** (`dag_stocks_consumer.py`, event-driven) — Receives the financial data from Kafka, loads it into the warehouse, then runs transformations and anomaly detection. Specifically: it reads the message from Kafka, writes new rows to Snowflake `RAW.COMPANY_FINANCIALS`, runs dbt to build staging views and mart tables, then runs the anomaly detector (`anomaly_detector.py`) under a separate ml-venv. The detector fits an IsolationForest model on year-over-year financial growth, writes flagged rows to `ANALYTICS.FCT_ANOMALIES`, and logs the run to MLflow.
-3. **Weather producer** (`dag_weather.py`, hourly) — Pulls a rolling 7-day hourly weather forecast from Open-Meteo and publishes it to the `weather-hourly-raw` Kafka topic.
-4. **Weather consumer** (`dag_weather_consumer.py`, event-driven) — Receives the weather data from Kafka, removes any duplicate rows that already exist in Snowflake, writes net-new rows to `RAW.WEATHER_HOURLY`, then runs dbt.
+3. **Weather producer** (`dag_weather.py`, hourly) — Pulls a rolling 7-day hourly weather forecast from Open-Meteo for all 10 cities in one run and publishes the combined batch to the `weather-hourly-raw` Kafka topic. All cities are fetched upfront so the dashboard dropdown never needs an extra Snowflake query per city.
+4. **Weather consumer** (`dag_weather_consumer.py`, event-driven) — Receives the weather data from Kafka, removes any duplicate rows that already exist in Snowflake (deduplicates on `(time, city_name)` pairs, since multiple cities share the same timestamp), writes net-new rows to `RAW.WEATHER_HOURLY`, then runs dbt.
 5. **Staleness monitor** (`dag_staleness_check.py`, every 30 min) — Checks that both pipelines ran recently and fires a Slack alert if they haven't. *Intentionally paused in production to avoid unnecessary Snowflake warehouse activations; can be re-enabled on demand.*
 
-Flask + Dash queries Snowflake's `MARTS` schema (the dbt-built tables) and renders an interactive candlestick chart with volume bars and a stats table. A separate "Data Quality" section queries `FCT_ANOMALIES` and displays a scatter chart and detail table of flagged records.
+Flask + Dash queries Snowflake's `MARTS` schema (the dbt-built tables) and renders an interactive candlestick chart with volume bars and a stats table. A separate "Data Quality" section queries `FCT_ANOMALIES` and displays a scatter chart and detail table of flagged records. The weather page includes a city dropdown that filters the pre-loaded 10-city dataset client-side — no extra Snowflake query per selection — and its own pipeline health panel showing row counts and data freshness.
 
 ---
 
@@ -87,7 +87,8 @@ The full journey from API call to visible dashboard chart involves eleven discre
         ↓
 7. write_to_snowflake() — loads rows into Snowflake RAW schema
         (daily batch gate skips if already wrote today; weather dedups
-        against existing timestamps to avoid hourly duplicates)
+        against existing (time, city_name) pairs — multiple cities
+        share the same timestamp so time alone is not a unique key)
         ↓
 8. dbt_run — builds STAGING views + MARTS tables on top of RAW
         ↓
@@ -158,7 +159,7 @@ flowchart LR
 | Web / Dashboard | Flask 2.3.3 + Dash 2.17.1 + Plotly 5.22.0 |
 | ML / Experiment tracking | MLflow 2.x + scikit-learn IsolationForest (runs under dedicated ml-venv on EC2) |
 | Container runtime | containerd (via K3S) |
-| Cloud | AWS EC2 t3.large, 100 GiB EBS gp3 (~$70–75/month total) |
+| Cloud | AWS EC2 t4g.large (ARM, spot), 100 GiB EBS gp3 (~$18–22/month total) |
 | Stock data | SEC EDGAR XBRL API (free, no API key) — XBRL is the structured XML format the SEC requires companies to use in filings; CIK is the SEC's numeric company ID (e.g. `0000320193` for Apple) |
 | Weather data | Open-Meteo API (free, no API key) |
 
@@ -191,9 +192,9 @@ ssh -L 30080:localhost:30080 -L 32147:localhost:32147 ec2-stock
 
 **Public dashboard (no tunnel required):**
 ```
-https://im6g5ue81k.execute-api.us-east-1.amazonaws.com/dashboard/
+https://d17husnpvzzqit.cloudfront.net/dashboard/
 ```
-> This URL always works — it shows a loading screen if the server is sleeping and wakes it automatically. See [docs/PUBLIC_DASHBOARD_URL.md](docs/PUBLIC_DASHBOARD_URL.md) for why this URL is used instead of the Elastic IP.
+> The server runs continuously on spot pricing — no loading screen or wait time. CloudFront proxies to the EC2 instance over HTTPS and automatically shows a loading page during the brief window when a spot instance is being replaced. The raw EIP (`http://52.70.211.1:32147`) still works but has no failover. See [docs/PUBLIC_DASHBOARD_URL.md](docs/PUBLIC_DASHBOARD_URL.md) for details.
 
 ---
 
@@ -201,7 +202,7 @@ https://im6g5ue81k.execute-api.us-east-1.amazonaws.com/dashboard/
 
 - **Validation gates** at every ETL stage — extract, transform, load, and serve
 - **Alerting layer** — Pipeline failures and data staleness trigger automatic Slack alerts with a 60-minute cooldown so repeated alerts don't flood the channel. The staleness DAG and webhook infrastructure are fully configured; both are intentionally inactive in production (staleness DAG paused to save Snowflake costs; Slack webhook not connected to an active workspace). Activate by setting `SLACK_WEBHOOK_URL` in your K8s secrets.
-- **Cost controls** — Several deliberate choices keep infrastructure costs at ~$70–75/month: a daily batch gate (writes to Snowflake once/day, not every hourly run); weather deduplication (skipping rows that already exist); Snowflake XSMALL + auto-suspend 60s; a dashboard query cache that holds Snowflake results for 1 hour so the warehouse is queried ~4–5 times/hour regardless of traffic (see [Dashboard Cache](docs/architecture/DASHBOARD_CACHE.md))
+- **Cost controls** — Several deliberate choices keep infrastructure costs at ~$18–22/month: spot EC2 pricing (~75% cheaper than on-demand); a daily batch gate (writes to Snowflake once/day, not every hourly run); weather deduplication (skipping rows that already exist); Snowflake XSMALL + auto-suspend 60s; a split dashboard cache (1 hour for financials/anomalies/health, 15 minutes for weather) so Snowflake is queried at most a handful of times per hour regardless of traffic (see [Dashboard Cache](docs/architecture/DASHBOARD_CACHE.md))
 - **Vacation mode** — set `VACATION_MODE=true` to pause all pipelines without deleting DAGs
 - **Rate limiting** — SEC EDGAR client uses a token-bucket limiter (8 req/sec, thread-safe)
 - **Anomaly detection** — IsolationForest model scores each ticker's year-over-year revenue and net income growth; flagged rows written to `ANALYTICS.FCT_ANOMALIES` and visible in the dashboard's "Data Quality" tab
@@ -214,7 +215,7 @@ https://im6g5ue81k.execute-api.us-east-1.amazonaws.com/dashboard/
 ## Design Decisions
 
 **Kafka: plain StatefulSet over Strimzi Operator**
-On a single EC2 t3.large already running K3S, Airflow, Postgres, and Flask, every megabyte of RAM is a real cost. Strimzi — the standard Kafka operator for Kubernetes — adds ~200 MB overhead that this instance can't spare. Instead, Kafka runs as a hand-rolled Kubernetes StatefulSet using `apache/kafka:4.0.0` (KRaft mode, no ZooKeeper). The plain StatefulSet keeps Kubernetes primitives transparent and can be migrated to Strimzi without touching the Kafka client code.
+On a single EC2 t4g.large already running K3S, Airflow, Postgres, and Flask, every megabyte of RAM is a real cost. Strimzi — the standard Kafka operator for Kubernetes — adds ~200 MB overhead that this instance can't spare. Instead, Kafka runs as a hand-rolled Kubernetes StatefulSet using `apache/kafka:4.0.0` (KRaft mode, no ZooKeeper). The plain StatefulSet keeps Kubernetes primitives transparent and can be migrated to Strimzi without touching the Kafka client code.
 
 **Kafka topics use hyphen-separated names**
 Kafka's JMX metric layer internally converts dots and underscores to underscores, which causes naming collisions when both appear in the same cluster. Topic names use hyphens (`stocks-financials-raw`) instead of dots or underscores to avoid the issue entirely.
@@ -235,7 +236,7 @@ A fixed threshold (for example, "flag any year-over-year drop greater than 50%")
 scikit-learn and mlflow are not installed in the main Airflow image — adding them would bloat the image and risk version conflicts with Airflow's own dependencies. Instead, the anomaly detector runs as a subprocess under `/opt/ml-venv`, a dedicated Python environment provisioned on the EC2 host. The Airflow task just calls `subprocess.run(["ml-venv/bin/python", "anomaly_detector.py"])` and reads the JSON result from stdout.
 
 **Dashboard query cache: remembering answers instead of asking Snowflake every time**
-Every time someone loads the dashboard, it needs data from Snowflake. Snowflake charges by how long the warehouse is running, so asking it the same question over and over — once per page load — adds up fast. The cache solves this by remembering the answer. After the first query, the result is stored in memory inside the Flask container. For the next hour, every user who loads the dashboard gets that stored answer instantly, without ever touching Snowflake. After an hour the stored answer expires and the next page load fetches a fresh copy. This keeps Snowflake queries at roughly 4–5 per hour regardless of traffic.
+Every time someone loads the dashboard, it needs data from Snowflake. Snowflake charges by how long the warehouse is running, so asking it the same question over and over — once per page load — adds up fast. The cache solves this by remembering the answer. After the first query, the result is stored in memory inside the Flask container. For the next hour (or 15 minutes for weather data), every user who loads the dashboard gets that stored answer instantly, without ever touching Snowflake. After the TTL expires, the next page load fetches a fresh copy. The stock and weather health panels are cached separately — each page only shows freshness data for its own tables. This keeps Snowflake queries to a handful per hour regardless of traffic.
 
 When the container first starts (after a deploy or restart), the cache is empty. To avoid the first visitor sitting through a slow load, a background process fills the cache immediately on startup — before any user arrives. This pre-warm takes about 5–10 seconds and runs in parallel while the web server is already accepting requests. The implementation is a plain Python dictionary; no Redis or external cache service is needed for a single-container deployment. See [docs/architecture/DASHBOARD_CACHE.md](docs/architecture/DASHBOARD_CACHE.md) for technical details.
 

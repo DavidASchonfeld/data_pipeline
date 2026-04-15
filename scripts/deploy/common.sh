@@ -44,7 +44,7 @@ ECR_IMAGE="$ECR_REGISTRY/my-flask-app:latest"
 # ── Warning/Error Summary ─────────────────────────────────────────────────────
 # Runs whenever the script exits — whether it succeeded, was stopped by an error, or called exit 1 directly.
 _print_deploy_summary() {
-    local exit_code="${_DEPLOY_EXIT:-$?}"  # prefer exit code captured by the trap before _mark_deploy_inactive ran
+    local exit_code="${_DEPLOY_EXIT:-$?}"  # prefer exit code captured by the EXIT trap before any cleanup runs
     set +e              # turn off 'stop on error' so the summary always finishes printing
     # Kill any background jobs still running so the terminal isn't frozen for minutes after a failure.
     # pkill -P kills child processes (SSH sessions) BEFORE killing the parent — if we killed
@@ -62,8 +62,9 @@ _print_deploy_summary() {
     fi
     sleep 0.2           # give the tee process a moment to finish writing everything to the log file before we search it
     # Search the log for warnings and errors, removing duplicate lines while keeping them in order
+    # -i: case-insensitive so "Error:" (Kafka), "Warning:" (pip), etc. are caught alongside all-caps variants
     local summary_lines
-    summary_lines=$(grep -E "(WARNING|ERROR|⚠|DeprecationWarning|DEPRECATION:|FutureWarning|UserWarning|✗)" \
+    summary_lines=$(grep -iE "(WARNING|ERROR|⚠|DeprecationWarning|DEPRECATION:|FutureWarning|UserWarning|✗)" \
         "$DEPLOY_LOGFILE" \
         | grep -v -- "--ignore-not-found" \
         | awk '!seen[$0]++') || true  # || true: if grep finds nothing it exits non-zero — this prevents that from stopping the script
@@ -220,99 +221,5 @@ _wait_bg() {
 }
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── Sleep/Wake helpers ────────────────────────────────────────────────────────
-# These functions let the deploy script wake up a sleeping instance, put it to sleep,
-# and prevent the auto-sleep Lambda from shutting down during an active deploy.
-# Use the same AWS SSO profile as terraform.sh for all AWS CLI calls
-export AWS_PROFILE="${AWS_PROFILE:-terraform-dev}"
-
-# Wake the instance by telling the ASG to launch a new server from the baked AMI
-step_wake() {
-    echo "=== Waking pipeline instance ==="
-    # Record activity so the auto-sleep timer resets
-    aws ssm put-parameter --name "/pipeline/last-activity-timestamp" \
-        --value "$(date +%s)" --type String --overwrite \
-        --region "$AWS_REGION" 2>/dev/null || true
-
-    # Check if the instance is already running
-    local desired
-    desired=$(aws autoscaling describe-auto-scaling-groups \
-        --auto-scaling-group-names pipeline-asg \
-        --region "$AWS_REGION" \
-        --query 'AutoScalingGroups[0].DesiredCapacity' --output text 2>/dev/null || echo "1")
-
-    if [ "$desired" = "0" ]; then
-        # Tell the ASG to launch an instance from the pre-baked AMI
-        echo "ASG desired=0 — scaling to 1..."
-        aws autoscaling set-desired-capacity \
-            --auto-scaling-group-name pipeline-asg \
-            --desired-capacity 1 \
-            --region "$AWS_REGION"
-        echo "ASG scaling initiated. Waiting for instance + SSH..."
-    else
-        echo "Instance is already running (desired=$desired)"
-    fi
-
-    # Wait until SSH is available so the deploy can proceed
-    _wait_ssh_ready
-    _wait_k3s_ready  # K3s takes 3-5 min after boot — wait before any kubectl/helm operations
-    echo "=== Instance is awake and SSH-ready ==="
-}
-
-# Scales ASG to 1 if sleeping, but does NOT wait for SSH.
-# Used by --provision so Terraform can update the SSH security group rule before we connect.
-_scale_asg_up_if_sleeping() {
-    local desired
-    desired=$(aws autoscaling describe-auto-scaling-groups \
-        --auto-scaling-group-names pipeline-asg \
-        --region "$AWS_REGION" \
-        --query 'AutoScalingGroups[0].DesiredCapacity' --output text 2>/dev/null || echo "1")
-    if [ "$desired" = "0" ]; then
-        echo "ASG desired=0 — scaling to 1 (Terraform will update security group before SSH)..."
-        aws autoscaling set-desired-capacity \
-            --auto-scaling-group-name pipeline-asg \
-            --desired-capacity 1 \
-            --region "$AWS_REGION"
-        # Reset activity timer so auto-sleep doesn't kill the instance right after launch
-        aws ssm put-parameter --name "/pipeline/last-activity-timestamp" \
-            --value "$(date +%s)" --type String --overwrite \
-            --region "$AWS_REGION" 2>/dev/null || true
-        echo "Instance launch initiated — booting while Terraform runs."
-    else
-        echo "Instance already running (desired=$desired)"
-    fi
-}
-
-# Put the instance to sleep by scaling the ASG to 0 (the instance terminates to save money)
-step_sleep() {
-    echo "=== Putting pipeline instance to sleep ==="
-    # Scale the ASG to 0 so the instance terminates and stops costing money
-    aws autoscaling set-desired-capacity \
-        --auto-scaling-group-name pipeline-asg \
-        --desired-capacity 0 \
-        --region "$AWS_REGION"
-    echo "ASG desired capacity set to 0. Instance will terminate shortly."
-}
-
-# Tell the auto-sleep Lambda that a deploy is running so it does not shut us down mid-deploy
-_mark_deploy_active() {
-    aws ssm put-parameter --name "/pipeline/deploy-active" \
-        --value "true" --type String --overwrite \
-        --region "$AWS_REGION" 2>/dev/null || true
-    # Also refresh the activity timer so the sleep countdown resets
-    aws ssm put-parameter --name "/pipeline/last-activity-timestamp" \
-        --value "$(date +%s)" --type String --overwrite \
-        --region "$AWS_REGION" 2>/dev/null || true
-}
-
-# Tell the auto-sleep Lambda that the deploy is done and normal sleep rules can resume
-_mark_deploy_inactive() {
-    aws ssm put-parameter --name "/pipeline/deploy-active" \
-        --value "false" --type String --overwrite \
-        --region "$AWS_REGION" 2>/dev/null || true
-    # Refresh the activity timer so the instance stays up for the full idle timeout after deploy
-    aws ssm put-parameter --name "/pipeline/last-activity-timestamp" \
-        --value "$(date +%s)" --type String --overwrite \
-        --region "$AWS_REGION" 2>/dev/null || true
-}
-# ─────────────────────────────────────────────────────────────────────────────
+# Instance is always-on (spot) — no sleep/wake helpers needed.
+# SSH readiness is checked directly in deploy.sh before each deploy.

@@ -42,12 +42,3 @@ variable "spot_max_price" {
   type        = string
   default     = ""
 }
-
-# ── Sleep/Wake ────────────────────────────────────────────────────────────────
-
-# How long the instance stays running after the last visitor before it shuts down automatically
-variable "idle_timeout_minutes" {
-  description = "Minutes of inactivity before auto-sleep scales the instance down to save costs"
-  type        = number
-  default     = 45
-}

@@ -11,8 +11,6 @@
 #                                          Run once on a fresh Snowflake account or after a full project teardown.
 #                                          Requires SNOWFLAKE_ADMIN_USER, SNOWFLAKE_ADMIN_PASSWORD, SNOWFLAKE_PASSWORD in .env.deploy.
 #                                          Safe to re-run — all statements are CREATE IF NOT EXISTS.
-#   ./scripts/deploy.sh --wake           — wake the instance (scale ASG 0→1) and wait for SSH
-#   ./scripts/deploy.sh --sleep          — put the instance to sleep (scale ASG 1→0) to save money
 #   ./scripts/deploy.sh --bake-ami       — create a golden AMI snapshot from the running instance
 
 # Exit immediately if any command fails, unset variable is used, or pipe fails
@@ -54,7 +52,7 @@ source "$DEPLOY_DIR/flask.sh"        # step_deploy_flask, step_verify_flask
 source "$DEPLOY_DIR/airflow_pods.sh" # step_helm_upgrade, step_verify_airflow_image, step_restart_airflow_pods, step_setup_ml_venv
 source "$DEPLOY_DIR/ami.sh" 2>/dev/null || true   # ami.sh may not exist yet on first deploy
 
-trap '_DEPLOY_EXIT=$?; _mark_deploy_inactive; _print_deploy_summary' EXIT  # capture exit code first so _mark_deploy_inactive cannot clobber it
+trap '_DEPLOY_EXIT=$?; _print_deploy_summary' EXIT  # capture exit code first so summary always sees the real exit code
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -66,10 +64,6 @@ PROVISION=false
 SNOWFLAKE_SETUP=false
 # --fix-ml-venv: repair a broken ml-venv in the running scheduler pod without a full redeploy (~60s)
 FIX_ML_VENV=false
-# --wake: just wake the sleeping instance and exit (no deploy)
-WAKE_ONLY=false
-# --sleep: put the instance to sleep and exit (no deploy)
-SLEEP_ONLY=false
 # --bake-ami: create a golden AMI from the running instance for fast future boots
 BAKE_AMI=false
 for _arg in "$@"; do
@@ -78,8 +72,6 @@ for _arg in "$@"; do
         --provision)       PROVISION=true ;;
         --snowflake-setup) SNOWFLAKE_SETUP=true ;;
         --fix-ml-venv)     FIX_ML_VENV=true ;;
-        --wake)            WAKE_ONLY=true ;;
-        --sleep)           SLEEP_ONLY=true ;;
         --bake-ami)        BAKE_AMI=true ;;
         *) echo "ERROR: Unknown argument: $_arg"; exit 1 ;;
     esac
@@ -88,8 +80,6 @@ done
 [ "$PROVISION" = true ]       && echo "--- Mode: --provision (running Terraform before deploy) ---"
 [ "$SNOWFLAKE_SETUP" = true ] && echo "--- Mode: --snowflake-setup (bootstrapping Snowflake objects before deploy) ---"
 [ "$FIX_ML_VENV" = true ]     && echo "--- Mode: --fix-ml-venv (repairing ml-venv in running scheduler pod only) ---"
-[ "$WAKE_ONLY" = true ]       && echo "--- Mode: --wake (waking instance only, no deploy) ---"
-[ "$SLEEP_ONLY" = true ]      && echo "--- Mode: --sleep (putting instance to sleep) ---"
 [ "$BAKE_AMI" = true ]        && echo "--- Mode: --bake-ami (creating golden AMI snapshot) ---"
 
 # --fix-ml-venv: skip the full deploy and only rebuild the ml-venv in the running pod
@@ -97,18 +87,6 @@ done
 if [ "$FIX_ML_VENV" = true ]; then
     _wait_scheduler_exec  # confirm the scheduler container is exec-ready before attempting pip install
     step_setup_ml_venv
-    exit 0
-fi
-
-# --wake: just wake the instance and exit — useful before SSH or when you need the server running
-if [ "$WAKE_ONLY" = true ]; then
-    step_wake
-    exit 0
-fi
-
-# --sleep: put the instance to sleep to save money — the AMI preserves everything for next time
-if [ "$SLEEP_ONLY" = true ]; then
-    step_sleep
     exit 0
 fi
 
@@ -137,37 +115,21 @@ fi
 # so it always points to whatever was running before the current deploy started.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── Auto-wake ─────────────────────────────────────────────────────────────────
-# For --provision: start the instance first, run Terraform to update the SSH
-# security group with the current IP, THEN wait for SSH — prevents timeout when
-# the operator's IP changed since the last deploy (which is exactly why --provision exists).
-# For all other modes: wake normally (scale ASG + wait for SSH together).
-_desired=$(aws autoscaling describe-auto-scaling-groups \
-    --auto-scaling-group-names pipeline-asg \
-    --region "$AWS_REGION" \
-    --query 'AutoScalingGroups[0].DesiredCapacity' --output text 2>/dev/null || echo "1")
+# ── SSH readiness ─────────────────────────────────────────────────────────────
+# Instance is always-on (spot) — just wait for SSH to be ready before deploying.
+# For --provision: Terraform runs first (updating security group IP), then SSH is checked.
 if [ "$PROVISION" = true ]; then
-    # Start instance boot now so it runs in parallel with Terraform (~1-2 min overlap)
-    if [ "$_desired" = "0" ]; then
-        echo "=== Instance is sleeping — launching before Terraform ==="
-        _scale_asg_up_if_sleeping  # starts boot; SSH wait happens after Terraform updates security group
-    fi
-    # Protect against auto-sleep shutting down the instance during this deploy
-    _mark_deploy_active
     echo "=== Phase 0: Provisioning infrastructure via Terraform ==="
     "$SCRIPT_DIR/deploy/terraform.sh" apply  # updates SSH ingress rule to current IP
-    # SSH wait is now safe — security group allows current IP and instance has had extra boot time
     echo "=== Waiting for SSH (security group updated) ==="
     _wait_ssh_ready
-    _wait_k3s_ready  # K3s takes 3-5 min after boot — must be Ready before helm/kafka/mlflow
-    echo "=== Instance is awake and SSH-ready ==="
+    _wait_k3s_ready
+    echo "=== SSH ready ==="
 else
-    if [ "$_desired" = "0" ]; then
-        echo "=== Instance is sleeping — waking up before deploy ==="
-        step_wake
-    fi
-    # Protect against auto-sleep shutting down the instance during this deploy
-    _mark_deploy_active
+    echo "=== Verifying SSH connectivity ==="
+    _wait_ssh_ready
+    _wait_k3s_ready
+    echo "=== SSH ready ==="
 fi
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -279,9 +241,12 @@ fi
 echo ""
 echo "=== Done! ==="
 echo ""
+# Resolve the Elastic IP from SSH config so the printed URL is always correct
+_DASHBOARD_IP=$(ssh -G ec2-stock 2>/dev/null | awk '/^hostname / {print $2}')
+
 echo "Verify in browser:"
-echo "  Airflow UI:  http://localhost:30080 (requires SSH tunnel — see below)"
-echo "  Dashboard:   http://localhost:32147/dashboard/"
+echo "  Dashboard:   http://${_DASHBOARD_IP:-52.70.211.1}:32147/dashboard/  (public — no tunnel needed)"
+echo "  Airflow UI:  http://localhost:30080                                 (requires SSH tunnel — see below)"
 echo ""
 
 # Git holds the master copy of all manifests; EC2 has a synced copy for running kubectl commands directly on the server
@@ -298,8 +263,8 @@ echo "To apply directly from EC2:"
 echo "  ssh ec2-stock"
 echo "  kubectl apply -f $EC2_HOME/airflow/manifests/service-airflow-ui.yaml -n airflow-my-namespace"
 echo ""
-echo "=== SSH Tunnel (run on Mac before opening browser) ==="
-echo "  ssh -L 6443:localhost:6443 -L 30080:localhost:30080 -L 32147:localhost:32147 -L 5500:localhost:5500 ec2-stock"
+echo "=== SSH Tunnel (Airflow + MLflow only — run on Mac before opening browser) ==="
+echo "  ssh -L 30080:localhost:30080 -L 5500:localhost:5500 -L 6443:localhost:6443 ec2-stock"
 echo ""
 
 # ── Auto-bake AMI ─────────────────────────────────────────────────────────────
@@ -348,23 +313,14 @@ fi
 echo ""
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ACCESS NOTE — these URLs are NOT open to the public by default.
-# AWS Security Groups (AWS's firewall) block ALL inbound ports unless you explicitly allow them.
-# Right now your EC2 likely only allows SSH from your current IP — ports 30080 and 32147
-# are probably blocked, so pasting the URL in a browser from a new location won't work.
+# ACCESS NOTE:
 #
-# You have two options:
+# Port 32147 (Dashboard) — open to the public internet via the security group in terraform/main.tf.
+#   Accessible at: http://<ELASTIC_IP>:32147/dashboard/
+#   Protected by HTTP Basic Auth (VALIDATION_USER / VALIDATION_PASS from K8s secrets).
+#   If this port is not reachable, run: ./scripts/deploy.sh --provision
+#   (runs terraform apply to sync the security group rules to AWS).
 #
-# Option A — Open the ports in the AWS Security Group (for your current IP only):
-#   Go to AWS Console → EC2 → Security Groups → add inbound rules for ports 30080 and 32147,
-#   source = your current IP. You'll need to update this every time you change locations,
-#   just like you do for SSH. Downside: manual update each time, and the ports are publicly
-#   reachable from your IP (anyone at your coffee shop could access them).
-#
-# Option B — SSH tunnel (recommended / most secure):
-#   Run this on your Mac BEFORE opening the browser:
-#     ssh -L 6443:localhost:6443 -L 30080:localhost:30080 -L 32147:localhost:32147 -L 5500:localhost:5500 ec2-stock
-#   Then access:  http://localhost:30080  and  http://localhost:32147  and  http://localhost:5500 (MLflow)
-#   The traffic travels through your existing encrypted SSH connection.
-#   The ports stay CLOSED in the Security Group — only you can access them, from anywhere,
-#   with no IP updates needed. This is the best-practice approach for personal/dev tools.
+# Port 30080 (Airflow UI) — NOT publicly open; requires SSH tunnel:
+#   ssh -L 30080:localhost:30080 -L 5500:localhost:5500 ec2-stock
+#   Then open: http://localhost:30080 (Airflow)  or  http://localhost:5500 (MLflow)

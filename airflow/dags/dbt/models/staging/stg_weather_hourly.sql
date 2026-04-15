@@ -15,6 +15,8 @@ select
     elevation,
     timezone,
     utc_offset_seconds,
+    city_name,                                    -- city identifier from multi-city pipeline
     to_timestamp(imported_at) as imported_at         -- imported_at also stored as epoch seconds by snowflake_client.py
 from {{ source('raw', 'WEATHER_HOURLY') }}  -- resolves to PIPELINE_DB.RAW.WEATHER_HOURLY
 where time is not null  -- guard against partially written rows
+  and city_name is not null  -- exclude legacy rows from before multi-city support

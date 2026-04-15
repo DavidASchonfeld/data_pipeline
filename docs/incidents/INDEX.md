@@ -118,6 +118,13 @@ For the failure mode catalog (what *can* go wrong, not what *did* go wrong), see
 | 2026-04-11 | Loading spinner | [loading-spinner](dashboard/2026-04-11-dashboard-loading-spinner.md) |
 | 2026-04-11 | Snowflake cache strategy | [cache-strategy](dashboard/2026-04-11-dashboard-snowflake-cache-strategy.md) |
 
+### Features
+
+| Date | Feature | File |
+|------|---------|------|
+| 2026-04-15 | Interactive anomaly table — legend sync & column sorting | [anomaly-table-sorting](features/2026-04-15-anomaly-table-interactive-sorting-and-graph-sync.md) |
+| 2026-04-15 | Weather dropdown investigation + server-offline banner | [offline-banner](features/2026-04-15-weather-dropdown-and-offline-banner.md) |
+
 ### Infrastructure
 
 | Date | Issue | File |
@@ -125,6 +132,8 @@ For the failure mode catalog (what *can* go wrong, not what *did* go wrong), see
 | 2026-04-08 | EBS disk full (K3S garbage-collected images) | [ebs-disk-full](infrastructure/2026-04-08-ebs-disk-full.md) |
 | 2026-04-10 | Ubuntu system updates | [ubuntu-updates](infrastructure/2026-04-10-ubuntu-system-updates-ec2.md) |
 | 2026-04-13 | Spot + ASG + ARM cost optimization (73% reduction) | [spot-asg-arm](infrastructure/2026-04-13-spot-asg-arm-cost-optimization.md) |
+| 2026-04-15 | Dashboard not publicly reachable after deploy | [not-publicly-reachable](infrastructure/2026-04-15-dashboard-not-publicly-reachable.md) |
+| 2026-04-15 | CloudFront showing empty graphs + SyntaxError (4 fixes) | [cloudfront-empty-graphs](infrastructure/2026-04-15-cloudfront-empty-graphs-syntax-error.md) |
 
 ---
 

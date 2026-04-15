@@ -54,7 +54,7 @@ SEC EDGAR API → Kafka → Airflow DAG
                               │
                               ▼  dbt run
                     MARTS.FCT_COMPANY_FINANCIALS  (table — deduplicated annual financials)
-                    MARTS.FCT_WEATHER_HOURLY      (table — deduplicated weather by hour)
+                    MARTS.FCT_WEATHER_HOURLY      (table — deduplicated weather by hour and city; includes city_name column)
                     MARTS.DIM_COMPANY             (table — distinct ticker/CIK/name lookup)
                               │
                          ┌────┴────┐

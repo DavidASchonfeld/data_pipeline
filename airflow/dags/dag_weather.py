@@ -2,7 +2,7 @@
 
 import os
 import json
-from typing import Annotated, Any, cast
+from typing import Any
 from datetime import datetime, timedelta
 
 import pendulum
@@ -54,12 +54,10 @@ def weather_pipeline():
     """
     ### Weather Data Pipeline
 
-    Pulls hourly temperature forecasts from Open-Meteo for a fixed lat/lon point
-    (latitude=40, longitude=40 — Black Sea coast, Turkey) and loads them into
-    Snowflake (RAW schema, table: WEATHER_HOURLY) once per day via batch gate.
-
-    The fixed coordinates are arbitrary — chosen for learning purposes.
-    In a real deployment you would parameterize these or pull from a config file.
+    Pulls hourly temperature forecasts from Open-Meteo for the top 10 US cities
+    (by population) and loads them into Snowflake (RAW schema, table: WEATHER_HOURLY)
+    once per day via batch gate. All cities are fetched upfront each run so the
+    dashboard dropdown never needs to query Snowflake per city click.
 
     #### Pipeline stages:
     extract()  →  transform()  →  publish_to_kafka()  →  trigger weather_consumer_pipeline
@@ -70,21 +68,27 @@ def weather_pipeline():
     def extract():
         """
         ### Extract:
-        Pull information from Meteo Website
+        Pull hourly forecasts from Open-Meteo for all 10 cities.
         """
 
         # Halt this task (and downstream transform/load) if vacation mode is active
         check_vacation_mode()
 
-        from shared.config import WEATHER_LATITUDE, WEATHER_LONGITUDE  # deferred: configurable coordinates
-        raw_data : dict = fetch_weather_forecast(latitude=WEATHER_LATITUDE, longitude=WEATHER_LONGITUDE, fahrenheit=True)
-        print(raw_data)
-        # Validate API response structure
-        if not all(key in raw_data for key in ["hourly", "hourly_units"]):
-            raise ValueError("API response missing required keys: 'hourly', 'hourly_units'")
-        if "temperature_2m" not in raw_data["hourly"]:
-            raise ValueError("API response missing 'temperature_2m' in hourly data")
-        return raw_data
+        import time  # deferred: used only here for API courtesy delay between city requests
+        from shared.config import WEATHER_CITIES  # deferred: top 10 US cities with coordinates
+
+        all_records = []
+        for city_name, (lat, lon) in WEATHER_CITIES.items():
+            raw_data = fetch_weather_forecast(latitude=lat, longitude=lon, fahrenheit=True)
+            if not all(key in raw_data for key in ["hourly", "hourly_units"]):
+                raise ValueError(f"API response missing required keys for city: {city_name}")
+            if "temperature_2m" not in raw_data["hourly"]:
+                raise ValueError(f"API response missing 'temperature_2m' for city: {city_name}")
+            # Tag each record with the city name so Snowflake can filter per-city
+            raw_data["city_name"] = city_name
+            all_records.append(raw_data)
+            time.sleep(0.2)  # brief pause between API calls — courtesy to the free Open-Meteo service
+        return all_records
 
 
     # @task(multiple_outputs=True)
@@ -92,45 +96,33 @@ def weather_pipeline():
     #   Returns a dictioanry-like object, separating top level key-value pairs into different XComArg objects
     #   To access the results, it would be similar to accessing dictionary values. For example: load(stuff, transformed["timestamp"])
     @task()
-    # def transform(inData: Annotated[XComArg, dict[str, Any]]):
-    def transform(inData):
-        import pandas as pd  # deferred: avoid slow pandas init during DagBag parse (30s timeout)
-        # Not adding type hinting since type hinting for
-        # XComArg causes issues when importing the data into a Pandas dataframe
-        # cast() is a no-op at runtime — it only tells the type-checker that inData
-        # is a dict. XComArg deserialization returns a plain Python object, not XComArg,
-        # so the cast helps IDEs and mypy understand the actual shape.
-        inData = cast(dict[str, Any], inData)
-        """
-        ### Transform task. aka clean/format the data
-        """
+    def transform(all_cities_data):
+        import pandas as pd  # deferred: avoid slow pandas init during DagBag parse
 
-        writer : OutputTextWriter = get_writer()  # K8s PVC path or LOCAL_LOG_PATH fallback
+        writer: OutputTextWriter = get_writer()  # K8s PVC path or LOCAL_LOG_PATH fallback
 
-        # Transform the incoming JSON into a SQL table, each with a different row for each time (and therfore smae or different temperature)
-        # I will need to add
-        # --- a primary key
-        # --- time of import
-        # --- MAYBE: If the input is only about latitude/longitude, maybe I can add a city name?...
-        # ------But maybe a city is larger than 1 latitude/longitude
+        all_dfs = []
+        for raw_data in all_cities_data:
+            city_name = raw_data["city_name"]  # city name tagged by extract() task
+            df = pd.DataFrame({
+                "time"              : raw_data["hourly"]["time"],
+                "temperature_2m"   : raw_data["hourly"]["temperature_2m"],
+                "latitude"         : raw_data["latitude"],
+                "longitude"        : raw_data["longitude"],
+                "elevation"        : raw_data["elevation"],
+                "timezone"         : raw_data["timezone"],
+                "utc_offset_seconds": raw_data["utc_offset_seconds"],
+                "city_name"        : city_name,  # city identifier — used for dashboard dropdown filtering
+                "imported_at"      : datetime.now().isoformat(),  # audit column: when this row was loaded
+            })
+            all_dfs.append(df)
 
-        # Open-Meteo returns paired arrays under "hourly" — zip them into one row per hour
-        df : pd.DataFrame = pd.DataFrame({
-            "time"            : inData["hourly"]["time"],
-            "temperature_2m"  : inData["hourly"]["temperature_2m"],
-            "latitude"        : inData["latitude"],
-            "longitude"       : inData["longitude"],
-            "elevation"       : inData["elevation"],
-            "timezone"        : inData["timezone"],
-            "utc_offset_seconds": inData["utc_offset_seconds"],
-            "imported_at"     : datetime.now().isoformat(),  # audit column: when this row was loaded
-        })
-
+        combined_df = pd.concat(all_dfs, ignore_index=True)  # merge all city DataFrames into one batch
         writer.log("----Transform Preview----")
-        log_df_preview(writer, df)  # shared helper: logs head() + dtypes()
+        log_df_preview(writer, combined_df)  # shared helper: logs head() + dtypes()
 
         # Convert to list-of-dicts so Airflow XCom can serialize it as JSON
-        return df.to_dict(orient="records")
+        return combined_df.to_dict(orient="records")
 
     @task()
     def publish_to_kafka(records: list[dict[str, Any]]) -> int:
@@ -167,8 +159,8 @@ def weather_pipeline():
     # ── Wiring the pipeline ───────────────────────────────────────────────────
     # extract → transform → publish_to_kafka → trigger consumer DAG
     # Snowflake write + dbt are handled in dag_weather_consumer.py
-    raw_data  : XComArg = extract()
-    records   : XComArg = transform(raw_data)
+    all_cities_data : XComArg = extract()
+    records         : XComArg = transform(all_cities_data)
     publish_task          = publish_to_kafka(records)  # type: ignore[arg-type]
 
     # Fire consumer DAG after publish; consumer owns Snowflake write + dbt

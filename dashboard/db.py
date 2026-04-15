@@ -155,7 +155,8 @@ def prewarm_cache(tickers: list) -> None:
         futs  = [pool.submit(_safe, _load_ticker_data, f"financials:{t}", t) for t in tickers]
         futs += [pool.submit(_safe, load_anomalies,       "anomalies")]
         futs += [pool.submit(_safe, load_weather_data,    "weather")]
-        futs += [pool.submit(_safe, load_pipeline_health, "pipeline_health")]
+        futs += [pool.submit(_safe, load_stock_health,   "stock_health")]    # warm stock-only health panel
+        futs += [pool.submit(_safe, load_weather_health, "weather_health")]  # warm weather-only health panel
         concurrent.futures.wait(futs)  # block until every query finishes or fails
 
     _prewarm_event.set()  # unblock /health/ready — Lambda can now redirect safely
@@ -164,7 +165,7 @@ def prewarm_cache(tickers: list) -> None:
 
 # ── Weather data ─────────────────────────────────────────────────────────────
 # Column list defined once so the guard path and real query always return the same schema
-WEATHER_COLUMNS = ["observation_time", "temperature_f", "latitude", "longitude", "elevation", "timezone"]
+WEATHER_COLUMNS = ["observation_time", "temperature_f", "latitude", "longitude", "elevation", "timezone", "city_name"]
 
 def load_weather_data() -> pd.DataFrame:
     """Return last 7 days of hourly weather from FCT_WEATHER_HOURLY; empty DataFrame if unavailable.
@@ -173,13 +174,15 @@ def load_weather_data() -> pd.DataFrame:
     Cached for 15 minutes (CACHE_TTL_WEATHER) because forecast data updates hourly.
     """
     def _query():
-        # Fetch last 7 days of hourly rows ordered chronologically for the line chart
+        # includes city_name for dashboard dropdown filtering — all cities fetched once, filtered client-side
         # _TBL_WEATHER is a hardcoded constant (not user input), so f-string is safe here
+        # exclude 'Unknown' — legacy rows from before multi-city support
         query = text(f"""
-            SELECT observation_time, temperature_f, latitude, longitude, elevation, timezone
+            SELECT observation_time, temperature_f, latitude, longitude, elevation, timezone, city_name
             FROM {_TBL_WEATHER}
             WHERE observation_time >= DATEADD('day', -7, CURRENT_TIMESTAMP())
-            ORDER BY observation_time ASC
+              AND city_name != 'Unknown'
+            ORDER BY city_name, observation_time ASC
         """)
         try:
             with DB_ENGINE.connect() as conn:
@@ -254,4 +257,48 @@ def load_pipeline_health() -> pd.DataFrame:
             return pd.DataFrame(columns=HEALTH_COLUMNS)
 
     return _cached_query("pipeline_health", CACHE_TTL_FINANCIALS, HEALTH_COLUMNS, _query)  # 1-hour cache — matches financials TTL
+
+
+def load_stock_health() -> pd.DataFrame:
+    """Return pipeline health for stock-related tables only (Financials + Anomalies).
+
+    Separate from weather health so each dashboard page shows only its own tables.
+    """
+    def _query():
+        # Single UNION query for stock-related tables — one warehouse activation
+        query = text(f"""
+            SELECT 'Financials' AS table_name, COUNT(*) AS row_count,
+                   MAX(filed_date)::TIMESTAMP_NTZ AS latest_ts
+            FROM {_TBL_FINANCIALS}
+            UNION ALL
+            SELECT 'Anomalies', COUNT(*), MAX(detected_at)
+            FROM {_TBL_ANOMALIES}
+        """)
+        try:
+            with DB_ENGINE.connect() as conn:
+                return pd.read_sql(query, conn)
+        except Exception:
+            return pd.DataFrame(columns=HEALTH_COLUMNS)
+
+    return _cached_query("stock_health", CACHE_TTL_FINANCIALS, HEALTH_COLUMNS, _query)  # 1-hour cache — matches financials TTL
+
+
+def load_weather_health() -> pd.DataFrame:
+    """Return pipeline health for weather table only.
+
+    Separate from stock health so the weather page shows only its own table freshness.
+    """
+    def _query():
+        # Single row query for the weather mart table
+        query = text(f"""
+            SELECT 'Weather' AS table_name, COUNT(*) AS row_count, MAX(imported_at) AS latest_ts
+            FROM {_TBL_WEATHER}
+        """)
+        try:
+            with DB_ENGINE.connect() as conn:
+                return pd.read_sql(query, conn)
+        except Exception:
+            return pd.DataFrame(columns=HEALTH_COLUMNS)
+
+    return _cached_query("weather_health", CACHE_TTL_WEATHER, HEALTH_COLUMNS, _query)  # 15-min cache — matches weather TTL
 # ─────────────────────────────────────────────────────────────────────────────

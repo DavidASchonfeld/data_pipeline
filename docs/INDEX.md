@@ -73,6 +73,7 @@ Navigate all project documentation from here. Each link goes to the single sourc
 | [Shell Commands](reference/COMMANDS.md) | What `ss`, `rsync`, `kubectl`, `docker` commands do |
 | [kubectl Commands](reference/KUBECTL_COMMANDS.md) | Kubernetes CLI reference |
 | [Glossary](reference/GLOSSARY.md) | Technical terms: ETL, DAG, PV, PVC, K3S, XCom, etc. |
+| [Data Timing](reference/DATA_TIMING.md) | How long after triggering a DAG until data appears on the dashboard |
 
 ---
 

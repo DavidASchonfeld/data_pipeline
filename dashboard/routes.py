@@ -31,7 +31,7 @@ def register_routes(app: Flask) -> None:
         return {"status": "ok"}, 200
 
     @app.route('/health/ready')
-    @limiter.exempt  # polled by the wake Lambda every 3s — must never be rate-limited
+    @limiter.exempt  # polled during startup and spot recovery — must never be rate-limited
     def health_ready():
         # Returns 200 only after prewarm_cache() has finished all Snowflake queries
         # Wake Lambda uses this instead of /health so it redirects only when data is cached
@@ -93,10 +93,55 @@ def register_routes(app: Flask) -> None:
             logger.exception("Validation endpoint DB error")  # full stack trace to pod stdout
             return {"status": "error", "message": "Internal server error"}, 500  # no DB details exposed
 
+    @app.errorhandler(429)
+    def ratelimit_handler(e):
+        # Return JSON so Dash callbacks can parse the response instead of throwing SyntaxError
+        return {"error": "Rate limit exceeded", "message": "Too many requests — please try again later."}, 429
+
     @app.errorhandler(404)
     def not_found(e):
-        # Return clean JSON — no Flask version or internal route details exposed
-        return {"error": "Not found"}, 404
+        # Return a friendly HTML page with links — more useful than JSON for a browser visitor
+        return """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Page Not Found</title>
+  <style>
+    /* Colors match design_tokens.py — keep in sync manually */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0f1117; color: #e2e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex; align-items: center; justify-content: center; min-height: 100vh;
+    }
+    .card {
+      background: #1a1d27; border: 1px solid #2d3348;
+      border-top: 3px solid #3b82f6; border-radius: 12px;
+      padding: 48px 40px; max-width: 480px; width: 90%; text-align: center;
+    }
+    h1 { font-size: 22px; font-weight: 700; margin-bottom: 12px; }
+    p  { color: #8892a4; font-size: 14px; line-height: 1.7; margin-bottom: 28px; }
+    .links { display: flex; flex-direction: column; gap: 12px; }
+    a {
+      display: block; padding: 12px 20px; border-radius: 8px;
+      background: #3b82f6; color: #fff; text-decoration: none;
+      font-size: 14px; font-weight: 600;
+    }
+    a:hover { background: #2563eb; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Page not found</h1>
+    <p>The URL you visited doesn&rsquo;t exist. Here are the two dashboards:</p>
+    <div class="links">
+      <a href="/dashboard/">Stocks Dashboard</a>
+      <a href="/weather/">Weather Dashboard</a>
+    </div>
+  </div>
+</body>
+</html>""", 404
 
     @app.errorhandler(500)
     def server_error(e):

@@ -5,7 +5,7 @@ Triggered by EventBridge when any EC2 instance in the account reaches the 'termi
 Checks the SSM flag written by spot_preempt.py to determine whether this termination is part
 of a proactive spot replacement. If it is:
   1. Reassociates the static EIP to the new (already-booting) replacement instance.
-  2. Resets ASG max=1 / desired=1 back to normal.
+  2. Resets ASG max=2 / desired=1 back to normal.
   3. Clears both SSM flags so future wakes behave normally.
 
 Graceful degradation:
@@ -68,9 +68,9 @@ def handler(event, context):
     # Reset ASG capacity back to normal now the old spot instance is gone
     try:
         asg = boto3.client("autoscaling")
-        asg.update_auto_scaling_group(AutoScalingGroupName=asg_name, MaxSize=1)
+        asg.update_auto_scaling_group(AutoScalingGroupName=asg_name, MaxSize=2)  # matches always-on Terraform max_size=2
         asg.set_desired_capacity(AutoScalingGroupName=asg_name, DesiredCapacity=1)
-        logger.info("ASG %s reset to max=1 desired=1 — normal operation restored", asg_name)
+        logger.info("ASG %s reset to max=2 desired=1 — normal always-on operation restored", asg_name)
     except ClientError as e:
         logger.warning("ASG reset failed [%s] — manual check may be needed", e.response["Error"]["Code"])
     except Exception:

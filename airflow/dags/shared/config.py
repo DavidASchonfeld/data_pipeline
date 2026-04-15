@@ -35,9 +35,19 @@ ALERT_COOLDOWN_MINUTES = int(os.environ.get("ALERT_COOLDOWN_MINUTES", "60"))
 LOCAL_LOG_PATH = os.environ.get("LOCAL_LOG_PATH", "/tmp/airflow_logs")
 
 # ── Weather ───────────────────────────────────────────────────────────────────
-# Fetch coordinates — override with env vars to point at a different location
-WEATHER_LATITUDE  = float(os.getenv("WEATHER_LATITUDE",  "40"))  # default: Black Sea coast, Turkey
-WEATHER_LONGITUDE = float(os.getenv("WEATHER_LONGITUDE", "40"))  # arbitrary location chosen for learning
+# Top 10 US cities by population — all fetched each DAG run so the dashboard never queries Snowflake per city click
+WEATHER_CITIES = {
+    "New York":     (40.7128, -74.0060),
+    "Los Angeles":  (34.0522, -118.2437),
+    "Chicago":      (41.8781, -87.6298),
+    "Houston":      (29.7604, -95.3698),
+    "Phoenix":      (33.4484, -112.0740),
+    "Philadelphia": (39.9526, -75.1652),
+    "San Antonio":  (29.4241, -98.4936),
+    "San Diego":    (32.7157, -117.1611),
+    "Dallas":       (32.7767, -96.7970),
+    "Austin":       (30.2672, -97.7431),
+}
 
 # ── Anomaly detection ─────────────────────────────────────────────────────────
 # IsolationForest hyperparameters — tune via env vars without editing DAG files or triggering re-parse

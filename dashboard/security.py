@@ -12,8 +12,20 @@ from flask_talisman import Talisman
 # Uses in-process memory storage — one counter per Gunicorn worker.
 # Trade-off: with 2 workers a bot can send ~2× the stated limit before being blocked.
 # Production upgrade path: set LIMITER_STORAGE_URI=redis://... in the K8s secret.
+def _get_real_ip() -> str:
+    """Return the viewer's real IP from CloudFront-Viewer-Address, falling back to socket IP.
+
+    CloudFront's AllViewerExceptHostHeader policy forwards CloudFront-Viewer-Address as
+    '<ip>:<port>'. Without this, all requests share the CloudFront edge IP and one user
+    could exhaust the rate limit for everyone.
+    """
+    cf_addr = request.headers.get("CloudFront-Viewer-Address", "")
+    if cf_addr:
+        return cf_addr.split(":")[0]  # strip port — "1.2.3.4:12345" → "1.2.3.4"
+    return get_remote_address()  # fallback for direct EC2 access (no CloudFront header)
+
 limiter = Limiter(
-    key_func=get_remote_address,          # rate limit per client IP address
+    key_func=_get_real_ip,                # rate limit per real viewer IP, not the shared CloudFront edge IP
     default_limits=["100 per minute"],    # global fallback — also covers /_dash-update-component callbacks
     storage_uri="memory://",              # in-process memory; acceptable for low-traffic portfolio dashboard
 )
@@ -37,6 +49,12 @@ _CSP = {
 # Centralised here so any future security check (logging, blocking) lives in one place.
 # frozenset for O(1) lookup and immutability — must match TICKERS in app.py.
 ALLOWED_TICKERS: frozenset = frozenset({"AAPL", "MSFT", "GOOGL"})
+
+# City allowlist for weather dashboard dropdown — must match WEATHER_CITIES keys in shared/config.py
+ALLOWED_CITIES: frozenset = frozenset({
+    "New York", "Los Angeles", "Chicago", "Houston", "Phoenix",
+    "Philadelphia", "San Antonio", "San Diego", "Dallas", "Austin",
+})
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Basic Auth helper ─────────────────────────────────────────────────────────

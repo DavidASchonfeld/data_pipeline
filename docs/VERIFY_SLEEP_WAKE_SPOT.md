@@ -1,10 +1,12 @@
-# Sleep / Wake / Spot Interruption — Verification Guide
+# Spot Interruption & Server Health — Verification Guide
 
-This document walks through verifying that the pipeline's automatic cost-saving and recovery features are working correctly. It covers:
+> **Note (2026-04-15):** The sleep/wake system has been removed. The server now runs continuously on spot pricing. Steps 1a–1d, Step 2, and Step 4 (sleep/wake cycle) in this guide are no longer applicable and are kept here for historical reference only. Steps 3, 5, 6, and 7 remain valid and describe how to verify the always-on server and spot interruption handling.
 
-- **Sleep/wake:** the server automatically shuts down after 45 minutes of inactivity and starts itself again when someone visits the dashboard.
+This document walks through verifying that the pipeline's availability and spot recovery features are working correctly. It covers:
+
 - **Spot interruption handling:** if AWS reclaims the server with a 2-minute warning, the pipeline boots a replacement and moves the public IP over automatically.
 - **AMI bake:** a disk snapshot of the fully configured server is kept up to date so new instances boot in 3–5 minutes instead of 20+.
+- **Server bootstrap health:** confirms swap, AWS CLI, and Kubernetes are all present and healthy.
 
 Run these checks in order. Each section lists what to run, what to expect, and what a failure means.
 
@@ -14,20 +16,17 @@ Run these checks in order. Each section lists what to run, what to expect, and w
 
 | # | What | Pass Condition |
 |---|---|---|
-| 1a | 5 Lambda functions exist | pipeline-wake / sleep / spot-preempt / spot-restored / eip-reassociate |
-| 1b | Auto Scaling Group exists | min=0, max=1, desired=1 while awake |
-| 1c | 4 SSM config values exist | All four parameters readable |
-| 1d | 3 EventBridge rules exist | pipeline-sleep-check / spot-interruption / ec2-terminated |
-| 2 | API Gateway redirects | HTTP 302 for both /dashboard/ and /weather/ |
+| 1b | Auto Scaling Group exists | min=1, max=2, desired=1 (always-on) |
+| 1d | 2 EventBridge rules exist | pipeline-spot-interruption / pipeline-ec2-terminated |
 | 3a | /health returns OK | `{"status":"ok"}` |
 | 3b | /api/spot-status returns OK | `{"interruption":false}` |
 | 3c | /validation returns data | Row counts for both financials and weather |
-| 4a | Sleep Lambda (safe) | Logs "Active: last activity … ago" — no scale-down |
-| 4b | Full sleep→wake cycle | Server shuts down, loading page appears, server restarts |
 | 5 | AMI snapshot is current | State=available, launch template points to it |
 | 6a | Swap file active | `swapon --show` shows 4G |
 | 6b | AWS CLI version | `aws --version` shows 2.x.x |
 | 6c | Kubernetes node ready | `kubectl get nodes` shows STATUS=Ready |
+
+> Steps 1a, 1c, 2, and 4 from the original guide (wake/sleep Lambda, API Gateway, SSM activity flags, sleep→wake cycle) are no longer applicable. The pipeline-wake and pipeline-sleep Lambdas have been removed along with the API Gateway and the idle-timer SSM parameters.
 
 ---
 
@@ -80,7 +79,7 @@ aws autoscaling describe-auto-scaling-groups \
   --query "AutoScalingGroups[0].{Min:MinSize,Max:MaxSize,Desired:DesiredCapacity}"
 ```
 
-**Expected:** `Min=0, Max=1, Desired=1` (while the server is awake). If the server was manually shut down, Desired will be 0 — that is normal.
+**Expected:** `Min=1, Max=2, Desired=1` — the server is always-on. Max=2 allows a temporary second instance during a spot replacement.
 
 ---
 
@@ -117,12 +116,13 @@ aws events list-rules \
 
 **Expected:**
 ```json
-["pipeline-ec2-terminated", "pipeline-sleep-check", "pipeline-spot-interruption"]
+["pipeline-ec2-terminated", "pipeline-spot-interruption"]
 ```
 
-- `pipeline-sleep-check` — runs every 15 minutes to check if the server has been idle long enough to shut down
 - `pipeline-spot-interruption` — fires when AWS sends a spot termination warning
 - `pipeline-ec2-terminated` — fires when an instance finishes terminating (used to move the public IP to the replacement)
+
+> `pipeline-sleep-check` has been removed — the server no longer sleeps.
 
 ---
 

@@ -18,10 +18,7 @@ def check_daily_gate(variable_key: str, writer: OutputTextWriter) -> int:
     from airflow.sdk import Variable  # deferred — avoid parse-time import of Airflow internals
 
     today_iso = date.today().isoformat()  # e.g. "2026-04-12"
-    try:
-        last_write = Variable.get(variable_key)  # raises KeyError on first run before variable exists
-    except KeyError:
-        last_write = ""  # variable doesn't exist yet — treat as never written
+    last_write = Variable.get(variable_key, default="")  # empty string = first run; Airflow 3.x SDK raises AirflowRuntimeError on missing var (not KeyError)
 
     if last_write == today_iso:
         writer.log(f"Daily batch gate: already processed today ({today_iso}). Skipping.")  # suppress duplicate write

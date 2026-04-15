@@ -185,16 +185,16 @@ resource "aws_launch_template" "pipeline" {
 
 # ── Auto Scaling Group ────────────────────────────────────────────────────────
 
-# Sleep/wake ASG — starts at 0 (asleep) to save costs; Lambda sets desired=1 to wake it up
-# when a visitor hits the dashboard. EIP is associated by Lambda on instance launch.
+# Always-on spot ASG — min=1 keeps one instance running at all times; max=2 allows temporary
+# scale-up during a spot replacement; the lifecycle hook associates the EIP on every new launch.
 resource "aws_autoscaling_group" "pipeline" {
   name                = "pipeline-asg"
-  min_size            = 0   # allow the group to scale down to zero so the instance can sleep
-  max_size            = 1
-  desired_capacity    = 0   # start asleep — the wake Lambda scales this to 1 when someone visits
+  min_size            = 1   # always keep one spot instance running
+  max_size            = 2   # allow a second instance temporarily during spot replacement
+  desired_capacity    = 1   # start running immediately on apply
   vpc_zone_identifier = data.aws_subnets.default.ids  # multi-AZ spot availability
 
-  # Let the sleep/wake Lambdas control desired_capacity at runtime without Terraform resetting it
+  # Let the spot_preempt Lambda modify desired_capacity at runtime without Terraform resetting it
   lifecycle {
     ignore_changes = [desired_capacity]
   }

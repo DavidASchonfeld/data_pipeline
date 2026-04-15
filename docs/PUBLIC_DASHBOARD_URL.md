@@ -1,30 +1,22 @@
 # The Right Link to Share — and Why
 
+> **Updated 2026-04-15:** The API Gateway and sleep/wake system have been removed. The server now runs continuously on spot pricing. The direct Elastic IP URLs are once again the right links to share.
+
 ## The link to put on your resume or portfolio
 
 ```
-https://im6g5ue81k.execute-api.us-east-1.amazonaws.com/dashboard/
+http://52.70.211.1:32147/dashboard/
 ```
 
 The weather page works the same way — just change the path:
 
 ```
-https://im6g5ue81k.execute-api.us-east-1.amazonaws.com/weather/
+http://52.70.211.1:32147/weather/
 ```
 
-These links always work. Click it at any time of day and you will either see the dashboard
-immediately (if the server is already running) or a loading screen that brings the server
-online automatically (if it was sleeping). Either way, you never get an error.
+These links always work. Because the server runs continuously, the direct IP address is always reachable. There is no loading screen or wait time — the dashboard opens immediately.
 
-These replace the old direct-IP URLs that were previously shared publicly:
-
-| Old URL (no longer reliable) | New URL |
-|---|---|
-| `http://52.70.211.1:32147/dashboard/` | `https://im6g5ue81k.execute-api.us-east-1.amazonaws.com/dashboard/` |
-| `http://52.70.211.1:32147/weather/` | `https://im6g5ue81k.execute-api.us-east-1.amazonaws.com/weather/` |
-
-The old URLs still work while the server is running — they just fail silently (connection
-error with no explanation) when the server is sleeping. The new URLs always work.
+The Elastic IP (`52.70.211.1`) stays the same even if AWS replaces the underlying server due to a spot interruption. The IP address is automatically transferred to the replacement instance, so the link remains stable.
 
 ---
 

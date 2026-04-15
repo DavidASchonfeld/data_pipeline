@@ -2,7 +2,7 @@
 
 These constants are consumed by:
 - dashboard/theme.py (Plotly chart theme)
-- terraform/lambda/wake.py (loading page inline styles — must be kept in sync manually)
+- terraform/loading-page.html (CloudFront failover page — must be kept in sync manually)
 
 When changing a color here, also update the matching CSS custom property in
 dashboard/assets/theme.css so the Plotly charts and CSS components stay consistent.

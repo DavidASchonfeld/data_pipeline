@@ -11,10 +11,10 @@
 with deduplicated as (
     select
         *,
-        -- single-location pipeline: observation_time is the primary key; partition by it alone
-        -- so the unique test in schema.yml holds even if Open-Meteo snaps coordinates differently across calls
+        -- multi-city pipeline: (observation_time, city_name) is the composite primary key
+        -- multiple cities share the same timestamp, so partition by both to dedup correctly
         row_number() over (
-            partition by observation_time
+            partition by observation_time, city_name  -- dedup per (time, city) pair — multiple cities share the same timestamp
             order by imported_at desc nulls last
         ) as rn
     from {{ ref('stg_weather_hourly') }}  -- reads from PIPELINE_DB.STAGING.STG_WEATHER_HOURLY view
@@ -22,6 +22,7 @@ with deduplicated as (
 
 select
     observation_time,
+    city_name,
     temperature_f,
     latitude,
     longitude,

@@ -576,21 +576,6 @@ step_restart_airflow_pods() {
     # kubectl exec airflow variables set OOM-kills (exit 137) the scheduler on Airflow 3.x — importing the
     # full provider stack spikes memory past the 2Gi container limit. Env var injection avoids that entirely.
 
-    # Phase C2: Unpause consumer DAGs.
-    # Airflow registers all new DAGs as paused by default — triggered runs queue but never start until unpaused.
-    # We use direct psql (not `airflow dags unpause`) to avoid importing the full provider stack
-    # into the scheduler pod, which OOM-kills it (exit 137) the same way `airflow variables set` does.
-    echo "=== Unpausing consumer DAGs via PostgreSQL ==="
-    ssh "$EC2_HOST" "
-        PGPASS=\$(kubectl get secret airflow-postgresql -n airflow-my-namespace \
-            -o jsonpath='{.data.postgres-password}' | base64 -d)
-        kubectl exec airflow-postgresql-0 -n airflow-my-namespace -- \
-            env PGPASSWORD=\"\$PGPASS\" psql -U postgres -d postgres -c \
-            \"UPDATE dag SET is_paused = false
-              WHERE dag_id IN ('stock_consumer_pipeline', 'weather_consumer_pipeline');\"
-    " && echo "Consumer DAGs unpaused." \
-      || echo "WARNING: failed to unpause consumer DAGs — unpause manually via Airflow UI before triggering pipelines."
-
     # Phase D: Reset Kafka consumer group offsets to latest.
     # After any pod restart or fresh deploy, committed offsets are lost. Both consumer groups use
     # auto_offset_reset="latest" with enable_auto_commit=False (manual commit). Without a committed
@@ -603,6 +588,8 @@ step_restart_airflow_pods() {
     # cause JSONDecodeError during deserialization.
     # Note: groups are checked for existence first — calling --reset-offsets on a group that has never
     # connected causes a Java TimeoutException (Kafka can't find a coordinator node for it).
+    # IMPORTANT: Phase D runs before Phase C2 (DAG unpause) — Kafka refuses offset resets on "Stable"
+    # (active) consumer groups; DAGs must be paused so no consumer is connected during the reset.
     echo "=== Resetting Kafka consumer group offsets to latest ==="
     ssh "$EC2_HOST" "
         # List existing groups before attempting reset — avoids a Java TimeoutException that fires
@@ -625,6 +612,21 @@ step_restart_airflow_pods() {
         done
         echo 'Kafka consumer group offsets check complete.'
     " || echo "WARNING: Kafka offset reset failed — run Steps 8 and 10 of RESTORE_VERIFICATION.md manually before triggering pipelines."
+
+    # Phase C2: Unpause consumer DAGs.
+    # Airflow registers all new DAGs as paused by default — triggered runs queue but never start until unpaused.
+    # We use direct psql (not `airflow dags unpause`) to avoid importing the full provider stack
+    # into the scheduler pod, which OOM-kills it (exit 137) the same way `airflow variables set` does.
+    echo "=== Unpausing consumer DAGs via PostgreSQL ==="
+    ssh "$EC2_HOST" "
+        PGPASS=\$(kubectl get secret airflow-postgresql -n airflow-my-namespace \
+            -o jsonpath='{.data.postgres-password}' | base64 -d)
+        kubectl exec airflow-postgresql-0 -n airflow-my-namespace -- \
+            env PGPASSWORD=\"\$PGPASS\" psql -U postgres -d postgres -c \
+            \"UPDATE dag SET is_paused = false
+              WHERE dag_id IN ('stock_consumer_pipeline', 'weather_consumer_pipeline');\"
+    " && echo "Consumer DAGs unpaused." \
+      || echo "WARNING: failed to unpause consumer DAGs — unpause manually via Airflow UI before triggering pipelines."
 }
 
 step_setup_ml_venv() {

@@ -59,8 +59,13 @@ The cache has the data. Snowflake is never contacted. The page loads instantly.
 | Financials for MSFT | `financials:MSFT` | 1 hour |
 | Financials for GOOGL | `financials:GOOGL` | 1 hour |
 | Anomaly scores | `anomalies` | 1 hour |
+| Weather data (all 10 cities) | `weather` | 15 minutes |
+| Stock pipeline health | `stock_health` | 1 hour |
+| Weather pipeline health | `weather_health` | 15 minutes |
 
-**Why 1 hour?** SEC filings and anomaly scores change at most once per day (when the Airflow DAG runs). A 1-hour TTL means stale data is never more than 1 hour old, while Snowflake is only contacted once per hour per data type — even if hundreds of users load the dashboard.
+**Why different TTLs?** SEC filings and anomaly scores change at most once per day, so 1 hour is sufficient. Weather data updates every hour from the Open-Meteo API, so 15 minutes keeps the display reasonably fresh without over-querying Snowflake.
+
+**City switching is free.** All 10 cities are loaded into the `weather` cache entry as one combined dataset. When a user picks a different city in the dropdown, the city is filtered from the cached data in Python — no extra Snowflake query happens.
 
 ---
 
@@ -75,9 +80,9 @@ Container starts
     │
     ├─► Gunicorn starts serving requests (immediately)
     │
-    └─► Background thread: query Snowflake for all tickers + anomalies
+    └─► Background thread: query Snowflake for all tickers, anomalies, weather (all cities), and both health panels
             │
-            └─► Cache is now populated (takes ~5–10 seconds)
+            └─► Cache is now populated (takes ~30–60 seconds — all 7 queries run in parallel)
 
 User opens dashboard (usually after the pre-warm has finished)
     └─► Served from cache instantly
@@ -100,7 +105,7 @@ The `dcc.Loading` spinner (on the dashboard page) covers the rare case where som
 Each Snowflake query runs for ~3–5 seconds on an XS warehouse. The XS warehouse costs roughly $2/credit, and 1 credit = 1 hour of warehouse time. A 5-second query costs about $0.003. With the cache:
 
 - **Without cache:** Every page load hits Snowflake → cost scales with traffic
-- **With cache + pre-warm:** ~4 Snowflake queries per container restart (one per ticker + anomalies) + ~4 per hour for TTL refresh → cost is nearly flat regardless of traffic
+- **With cache + pre-warm:** ~7 Snowflake queries per container restart (one per ticker, plus anomalies, weather, stock health, and weather health) + a small number per hour for TTL refresh → cost is nearly flat regardless of traffic
 
 For this project the absolute dollar amounts are tiny, but the pattern is the correct one even at larger scale.
 
@@ -110,6 +115,6 @@ For this project the absolute dollar amounts are tiny, but the pattern is the co
 
 | File | What it does |
 |---|---|
-| `dashboard/db.py` | Defines `_QUERY_CACHE`, `_cache_get`, `_cache_set`, `prewarm_cache` |
+| `dashboard/db.py` | Defines `_QUERY_CACHE`, `_cache_get`, `_cache_set`, `prewarm_cache`; all query functions (`load_anomalies`, `load_weather_data`, `load_stock_health`, `load_weather_health`) go through the cache |
 | `dashboard/app.py` | Fires `prewarm_cache` in a background thread at startup |
-| `dashboard/callbacks.py` | Calls `_load_ticker_data` and `load_anomalies` (which hit the cache) |
+| `dashboard/callbacks.py` | Calls the query functions in `db.py` (which hit the cache before touching Snowflake) |

@@ -1,5 +1,7 @@
 # Sleep/Wake System — Improvements (April 14, 2026)
 
+> **Historical document (archived 2026-04-15).** The sleep/wake system described here was removed the following day. The server now runs continuously on spot pricing. This document is kept for reference only.
+
 ## What Is the Sleep/Wake System?
 
 To keep costs low, the pipeline server does not run continuously. Instead it "sleeps" by
