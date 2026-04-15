@@ -100,11 +100,8 @@ def weather_consumer_pipeline():
         log_df_preview(writer, df)  # shared helper: logs head() + dtypes()
 
         # ─── Daily Batch Gate: write to Snowflake only once per day (cost optimization) ───
-        today_iso = date.today().isoformat()
-        try:
-            last_write = Variable.get("SF_WEATHER_LAST_WRITE_DATE")
-        except KeyError:
-            last_write = ""  # Variable doesn't exist yet (first run)
+        today_iso = date.today().isoformat()  # today's date as ISO string for gate comparison
+        last_write = Variable.get("SF_WEATHER_LAST_WRITE_DATE", default="")  # empty string = first run; Airflow 3.x SDK raises AirflowRuntimeError on missing var (not KeyError)
 
         if last_write == today_iso:
             writer.log(f"Daily batch gate: already wrote today ({today_iso}) — skipping")
@@ -114,24 +111,40 @@ def weather_consumer_pipeline():
 
         try:
             from snowflake_client import write_df_to_snowflake
-            from shared.snowflake_schema import RAW_WEATHER_HOURLY  # deferred: centralized table name
+            from shared.snowflake_schema import RAW_WEATHER_HOURLY, PIPELINE_DB  # deferred: centralized table/db names
             from snowflake_client import get_snowflake_cursor  # deferred: shared cursor factory
 
-            # Dedup against existing Snowflake timestamps before inserting
+            # Schema migration: add CITY_NAME column to WEATHER_HOURLY if missing (one-time multi-city upgrade)
+            sf_mig_cur = get_snowflake_cursor()
+            sf_mig_cur.execute(
+                f"SELECT COUNT(*) FROM {PIPELINE_DB}.INFORMATION_SCHEMA.COLUMNS "
+                "WHERE TABLE_SCHEMA = 'RAW' AND TABLE_NAME = 'WEATHER_HOURLY' AND COLUMN_NAME = 'CITY_NAME'"
+            )
+            if sf_mig_cur.fetchone()[0] == 0:
+                sf_mig_cur.execute(f"ALTER TABLE {RAW_WEATHER_HOURLY} ADD COLUMN CITY_NAME VARCHAR")
+                writer.log("Schema migration: added CITY_NAME column to WEATHER_HOURLY")
+            sf_mig_cur.close()
+
+            # Dedup against existing Snowflake (time, city) pairs before inserting
             sf_cur = get_snowflake_cursor()  # cursor from shared factory — no inline hook construction
             try:
-                sf_cur.execute(f"SELECT TIME FROM {RAW_WEATHER_HOURLY}")  # table name from shared/snowflake_schema.py
-                # TIME column is NUMBER(38,0) storing epoch seconds; convert to int for comparison
-                sf_existing = {int(row[0]) for row in sf_cur.fetchall()}
-                writer.log(f"Snowflake has {len(sf_existing)} existing timestamps")
-            except Exception as query_err:
-                writer.log(f"Snowflake table doesn't exist yet or query failed: {query_err}")
-                sf_existing = set()  # table doesn't exist yet
+                # Select both TIME and CITY_NAME to dedup on (time, city) pairs — each city can share the same timestamp
+                sf_cur.execute(f"SELECT TIME, CITY_NAME FROM {RAW_WEATHER_HOURLY}")
+                sf_existing = {(int(row[0]), str(row[1])) for row in sf_cur.fetchall() if row[1] is not None}
+                writer.log(f"Snowflake has {len(sf_existing)} existing (time, city) pairs")
+            except Exception:
+                # Fall back to time-only dedup if CITY_NAME column doesn't exist yet (table schema migration)
+                sf_cur.execute(f"SELECT TIME FROM {RAW_WEATHER_HOURLY}")
+                sf_existing = set()  # treat all as new — first multi-city run will write all rows
+                writer.log("CITY_NAME column not found — treating all rows as new (first multi-city run)")
             sf_cur.close()  # connection is managed by the hook — only the cursor needs explicit close
 
-            # Convert df["time"] ISO strings to epoch seconds for comparison with Snowflake NUMBER column
-            df_times_epoch = pd.to_datetime(df["time"]).astype(int) // 10**9  # ns to seconds
-            sf_new_rows = df[~df_times_epoch.isin(sf_existing)].copy()
+            # Build (epoch_seconds, city_name) pairs from the incoming DataFrame for comparison
+            df_time_city = list(zip(
+                pd.to_datetime(df["time"]).astype(int) // 10**9,
+                df["city_name"].astype(str)
+            ))
+            sf_new_rows = df[[(t, c) not in sf_existing for t, c in df_time_city]].copy()
             writer.log(f"Snowflake dedup: {len(sf_existing)} existing, {len(sf_new_rows)} new rows")
 
             if len(sf_new_rows) > 0:
@@ -144,6 +157,7 @@ def weather_consumer_pipeline():
                 sf_new_rows["elevation"] = sf_new_rows["elevation"].astype(float)
                 sf_new_rows["timezone"] = sf_new_rows["timezone"].astype(str)
                 sf_new_rows["utc_offset_seconds"] = sf_new_rows["utc_offset_seconds"].astype("int64")
+                sf_new_rows["city_name"] = sf_new_rows["city_name"].astype(str)  # city name string — new column added for multi-city support
                 write_df_to_snowflake(sf_new_rows, "WEATHER_HOURLY", overwrite=False)
                 writer.log(f"Loaded {len(sf_new_rows)} rows into Snowflake WEATHER_HOURLY")
             else:
@@ -170,8 +184,8 @@ def weather_consumer_pipeline():
     # Passing row_count as op_args both supplies the value AND infers the upstream dependency.
     check_new_rows = ShortCircuitOperator(
         task_id="check_new_rows",
-        python_callable=_has_new_rows,
-        op_args=[row_count],  # XComArg resolved at runtime — skips dbt if 0 rows written
+        python_callable=_has_new_rows,  # skip dbt if no new rows were written
+        op_args=[row_count],
     )
 
     # dbt_run: builds STAGING views and MARTS tables in Snowflake from the freshly appended RAW data

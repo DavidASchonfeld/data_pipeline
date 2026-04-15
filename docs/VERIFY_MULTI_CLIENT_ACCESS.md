@@ -1,6 +1,8 @@
 # Multi-Client Access — Verification Guide
 
-**Short answer: yes.** Two or more computers can access the dashboard at the same time, staggered times, or completely different times — and the sleep/wake system handles all of these correctly. This document explains why and walks through tests to prove it.
+**Short answer: yes.** Two or more computers can access the dashboard at the same time, staggered times, or completely different times. This document explains why and walks through tests to prove it.
+
+> **Note (2026-04-15):** The sleep/wake system has been removed. The server now runs continuously. Tests T1, T2, and T5 (which required a sleeping server or idle-timer manipulation) are no longer applicable. Tests T3 and T4 remain fully valid and cover the important multi-client scenarios.
 
 ---
 
@@ -8,20 +10,9 @@
 
 | Mechanism | What it does | Why it handles multiple clients |
 |---|---|---|
-| `set_desired_capacity(1)` | Scales ASG from 0→1 on wake | Idempotent — 10 simultaneous calls still produce exactly one instance |
-| `_update_last_activity()` | Writes current Unix timestamp to SSM | Atomic overwrite — concurrent writers all write ~the same value; no corruption |
-| `sessionStorage` in loading page | Remembers countdown start time across 10s auto-refreshes | Per browser tab — each visitor gets an independent countdown, independent of other visitors |
-| HTTP 302 redirect | Sends visitor to EIP once server is healthy | Stateless — every caller independently detects health and gets redirected |
-
----
-
-## Known Behavior: Idle Timer Resets Only on API GW Entry
-
-The wake Lambda resets the idle timer (`_update_last_activity()`) **on every visit via the API Gateway URL.** Once a visitor is redirected to the EIP (`http://52.70.211.1:32147/...`), their subsequent page loads go directly to the server — they no longer pass through the wake Lambda and do **not** continue resetting the timer.
-
-**Practical impact:** if a visitor browses for more than ~60 minutes after their initial redirect without returning to the API GW URL, the sleep Lambda could eventually shut down the server mid-session. The sleep Lambda fires every 15 minutes, so the earliest real shutdown is 45 min idle timeout + up to 15 min detection lag = ~60 minutes.
-
-This is by design — the API GW URL is the intended entry point. For normal use (sessions under an hour, or re-entering via the API GW URL occasionally) this is not an issue.
+| Always-on ASG (min=1) | One spot instance is always running | No wake-up wait — every visitor gets the live dashboard immediately |
+| HTTP direct to EIP | Visitors connect directly to the server's static IP | Stateless — every caller independently fetches their page, no interference |
+| Flask concurrent sessions | Flask handles multiple HTTP requests simultaneously | Per-request state — sessions are independent with no shared mutable state |
 
 ---
 
@@ -29,11 +20,10 @@ This is by design — the API GW URL is the intended entry point. For normal use
 
 | # | Scenario | Pass Condition |
 |---|---|---|
-| T1 | Two clients hit a sleeping server simultaneously | One instance starts, both get a loading page, both eventually reach the dashboard |
-| T2 | Client B arrives while Client A's wake is mid-boot | Client B gets a loading page (different estimated time), both eventually reach the dashboard |
-| T3 | Client B arrives while server is already running | Client B gets an immediate HTTP 302 — no loading page at all |
+| T3 | Client B arrives while server is already running | Immediate response — no loading page |
 | T4 | Both clients browse the live dashboard at the same time | Both work normally with no interference |
-| T5 | Client B visits near the idle deadline, resetting the timer | Server stays alive; sleep Lambda logs "Active" on next 15-min check |
+
+> Tests T1, T2, and T5 required a sleeping server and are no longer applicable.
 
 ---
 

@@ -1,6 +1,8 @@
 # Loading Page and Boot-Time Optimization
 
-What was added, why it was added, and how it helps visitors to the dashboard.
+> **Historical document (archived 2026-04-15).** The sleep/wake system and its loading page have been removed. The server now runs continuously on spot pricing, so there is no longer a boot wait on first visit. This document is kept for reference only.
+
+What was added, why it was added, and how it helped visitors to the dashboard.
 
 ---
 

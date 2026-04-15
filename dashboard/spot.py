@@ -134,11 +134,11 @@ def build_spot_layout_components(prefix: str) -> list:
                     className="spot-banner__body",
                     children=[
                         html.P(
-                            "Heads up \u2014 brief maintenance coming",  # em-dash for clean typography
+                            "Heads up \u2014 switching servers",  # em-dash for clean typography
                             className="spot-banner__title",
                         ),
                         html.P(
-                            "This website will go offline temporarily in:",
+                            "The site will go offline briefly in:",
                             className="spot-banner__subtitle",
                         ),
                         # Large countdown — updated every second by the countdown callback
@@ -148,8 +148,10 @@ def build_spot_layout_components(prefix: str) -> list:
                             children="\u2014",  # em-dash placeholder until first tick
                         ),
                         html.P(
-                            # More accurate once proactive replacement is deployed — a new instance is already booting
-                            "Your data is safe. A replacement server is already starting up.",
+                            # Spot instances cost ~75% less; AWS occasionally reclaims them
+                            "This dashboard uses discounted spare-capacity hosting "
+                            "to keep costs ~75% lower. A new server is already "
+                            "booting and the site will be back in about a minute.",
                             className="spot-banner__note",
                         ),
                     ],
@@ -160,6 +162,73 @@ def build_spot_layout_components(prefix: str) -> list:
 
 
 # ── Dash callbacks ────────────────────────────────────────────────────────────
+
+# ── Server-offline detection helpers ─────────────────────────────────────────
+# These complement the spot-interruption banner above: spot.py warns when AWS is
+# *about* to shut down the server; these warn when the server is *already* down.
+
+def build_offline_layout_components(prefix: str) -> list:
+    """Return the Dash components that power the server-offline banner.
+
+    prefix: short string ("stocks" or "weather") that namespaces every ID
+    so the two Dash apps sharing one Flask process have no ID conflicts.
+    Works alongside build_spot_layout_components — add both to each layout.
+    """
+    return [
+        # Browser-side timer: fires every 15 s so the JS health check stays current
+        dcc.Interval(
+            id=f"{prefix}-health-poll",
+            interval=15_000,   # 15 000 ms — quick enough to detect outages without hammering
+            n_intervals=0,
+        ),
+        # Offline warning banner — displayed at the top of the page when /health is unreachable
+        html.Div(
+            id=f"{prefix}-offline-banner",
+            className="offline-banner",
+            style={"display": "none"},  # hidden by default; clientside callback shows it on failure
+            children=[
+                html.Div(className="offline-banner__icon", children="\u26a0"),  # ⚠ warning sign
+                html.Div(
+                    className="offline-banner__body",
+                    children=[
+                        html.P(
+                            "Dashboard temporarily offline",
+                            className="offline-banner__title",
+                        ),
+                        html.P(
+                            "The server is not responding — your data may be stale. "
+                            "Please refresh this page in a few minutes.",
+                            className="offline-banner__message",
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    ]
+
+
+def register_offline_callbacks(dash_app, prefix: str) -> None:
+    """Register the clientside health-check callback for the offline banner.
+
+    Uses a JavaScript fetch() call to ping /health from the browser — this runs
+    even when the server is down, because the JS is already loaded in the page.
+    When the fetch fails, the banner is shown; when it succeeds, it stays hidden.
+    """
+    # Clientside callback: runs entirely in the browser every 15 s — no server round-trip needed
+    # fetch('/health') catches both HTTP errors and total network failures (server fully down)
+    dash_app.clientside_callback(
+        """
+        function(n_intervals) {
+            return fetch('/health', {cache: 'no-store'})
+                .then(function(r) { return r.ok ? {'display': 'none'} : {'display': 'flex'}; })
+                .catch(function()  { return {'display': 'flex'}; });
+        }
+        """,
+        Output(f"{prefix}-offline-banner", "style"),
+        Input(f"{prefix}-health-poll", "n_intervals"),
+    )
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 def register_spot_callbacks(dash_app, prefix: str) -> None:
     """Register the three callbacks that power the spot interruption banner.

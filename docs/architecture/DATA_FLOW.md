@@ -96,7 +96,7 @@ Gate 2 Checklist:
 ├── DataFrame is not empty (len > 0 rows)
 ├── Column names match expected schema exactly:
 │   ├── Financials: {ticker, cik, entity_name, metric, label, period_end, value, filed_date, form_type, fiscal_year, fiscal_period, frame}
-│   └── Weather: {time, temperature_2m, latitude, longitude, ...}
+│   └── Weather: {time, temperature_2m, latitude, longitude, city_name, ...}
 ├── No unexpected extra columns (schema hasn't grown)
 ├── Data types are correct:
 │   ├── Numeric columns are numeric (not strings)

@@ -165,42 +165,8 @@ def build_anomaly_scatter(df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def build_anomaly_table(df: pd.DataFrame):
-    """HTML table listing all tickers with anomaly rows highlighted in light red.
-
-    Anomaly rows sorted first (ORDER BY is_anomaly DESC in the SQL query).
-    Returns html.P placeholder when no data is available yet.
-    """
-    # Guard: show a friendly message instead of an empty table before the DAG has run
-    if df.empty:
-        return html.P("No anomaly data yet — run the pipeline to generate results.")
-
-    # ── Header ────────────────────────────────────────────────────────────────
-    header_cols = ["Ticker", "Fiscal Year", "Revenue YoY%", "Net Income YoY%", "Anomaly", "Score"]
-    header = html.Thead(html.Tr([
-        html.Th(c) for c in header_cols  # CSS .dash-table th handles all header cell styling
-    ]))
-
-    # ── Body rows ─────────────────────────────────────────────────────────────
-    rows = []
-    for _, row in df.iterrows():
-        # CSS class row-anomaly applies translucent red tint; empty string = no override
-        row_class = "row-anomaly" if row["is_anomaly"] else ""
-
-        cells = [
-            html.Td(row["ticker"]),
-            html.Td(str(row["fiscal_year"])),
-            html.Td(f"{row['revenue_yoy_pct']:.1f}%"),   # 1 decimal place for readability
-            html.Td(f"{row['net_income_yoy_pct']:.1f}%"),
-            html.Td("Yes" if row["is_anomaly"] else "No"),
-            html.Td(f"{row['anomaly_score']:.3f}"),       # 3 decimal places matches MLflow precision
-        ]
-        rows.append(html.Tr(cells, className=row_class))  # className drives conditional row colour
-
-    return html.Table(
-        className="dash-table",  # CSS class provides dark surface, borders, and alternating stripes
-        children=[header, html.Tbody(rows)],
-    )
+# build_anomaly_table removed — table rendering moved to anomaly_table.py
+# and wired via the render_anomaly_table callback in callbacks.py
 # ─────────────────────────────────────────────────────────────────────────────
 
 

@@ -1,91 +1,75 @@
-# On-Demand Architecture
+# Server Architecture
 
-How the dashboard saves money by only running when someone needs it.
+How the dashboard stays available around the clock at a low cost.
 
 ---
 
 ## What It Does
 
-The dashboard website sleeps when no one is using it and wakes up automatically when someone visits the link. Think of it like a computer going into sleep mode — it powers down when idle, then comes back to life when you need it.
+The server runs continuously on AWS spot pricing. Spot instances are spare computing capacity that AWS offers at a significant discount — typically 70–80% cheaper than standard on-demand pricing — in exchange for the possibility that AWS may reclaim the server with a short warning if demand elsewhere spikes.
 
-This matters because a server that runs 24/7 costs money every hour, whether anyone is looking at it or not. Since this dashboard is typically used for a few hours at a time rather than around the clock, keeping it running all day wastes most of that spending. The on-demand approach means the server only runs (and only costs money) when someone is actually using it.
+To handle that possibility gracefully, the system automatically boots a replacement instance and moves the public IP address over before the original goes offline. From a visitor's perspective, the dashboard stays available with no action required.
 
-| Approach | Monthly Cost | Tradeoff |
-|----------|-------------|----------|
-| Always-on (standard pricing) | ~$70 | No wait time, but expensive for low-traffic use |
-| Always-on (spot pricing) | ~$19–20 | Same availability, cheaper, but rare brief interruptions |
-| **On-demand (sleep/wake)** | **~$7–11** | Brief loading time on first visit, significant savings |
+| Approach | Monthly Cost | Availability |
+|----------|-------------|--------------|
+| Always-on (standard pricing) | ~$70 | Continuous |
+| **Always-on (spot pricing)** | **~$19–20** | **Continuous, with automatic recovery** |
 
 ---
 
-## How It Works
+## How Spot Recovery Works
 
-1. **You share a link.** The dashboard has a stable public URL that never changes, regardless of whether the server is awake or asleep.
+When AWS decides to reclaim a spot instance, it sends a 2-minute warning before termination. The pipeline uses this window to start a replacement:
 
-2. **Someone clicks the link.** If the server is already running, the dashboard loads immediately. If the server is asleep, the system detects this and starts waking it up.
+1. **Warning received.** An EventBridge rule detects the 2-minute termination notice and triggers the `spot-preempt` Lambda function.
 
-3. **A loading page appears.** While the server boots up, the visitor sees a simple page that says the dashboard is starting. This page automatically refreshes every few seconds.
+2. **Replacement starts.** The Lambda tells the Auto Scaling Group to launch a second instance immediately (before the first one goes down). This gives the replacement the full boot window to get ready.
 
-4. **The dashboard appears.** After about 3–5 minutes, the server is ready and the loading page redirects to the live dashboard. From this point on, everything works normally.
+3. **Elastic IP moves.** Once the original instance terminates, another Lambda (`eip-reassociate`) automatically moves the static public IP address to the replacement instance. The public URL stays the same.
 
-5. **The server goes back to sleep.** After 45 minutes with no one visiting, the system automatically shuts the server down to stop the meter. The next visitor will trigger a fresh wake-up.
+4. **Normal operation resumes.** The `spot-restored` Lambda resets the Auto Scaling Group back to its normal size (one instance) and clears any status flags. The dashboard shows a brief countdown notification during the transition.
 
 ---
 
 ## Key Components
 
-A few pieces work together to make this possible:
+- **Auto Scaling Group (ASG)** — Keeps one spot instance running at all times. Normally set to min=1, max=1. During a spot replacement, it temporarily scales to max=2 to let the replacement boot before the original terminates.
 
-- **API Gateway** — The stable URL that visitors use. It stays active even when the server is off, so the link always works. When the server is asleep, API Gateway serves the loading page and triggers the wake-up process.
+- **Elastic IP (EIP)** — A static public IP address that moves with the pipeline regardless of which physical server is running. Visitors always use the same address.
 
-- **Wake Lambda** — A small function that runs when a visitor arrives and the server is sleeping. It tells the Auto Scaling Group to start an instance, then serves the loading page while the server boots.
+- **Pre-Baked AMI** — A saved snapshot of the fully configured server, including all installed software. New instances boot from this snapshot so they are ready in a few minutes rather than needing to install everything from scratch.
 
-- **Sleep Lambda** — A function that runs on a timer (every 15 minutes) to check whether anyone has visited recently. If the server has been idle for 45 minutes, it shuts it down.
+- **Spot Interruption Lambdas** — Two Lambda functions handle the replacement sequence automatically: `pipeline-spot-preempt` (starts the replacement) and `pipeline-spot-restored` (moves the IP and resets the ASG after the old instance is gone).
 
-- **Pre-Baked AMI** — A snapshot of the fully configured server, including all software and settings. Instead of installing everything from scratch on each wake-up (which would take 30–45 minutes), the server boots from this snapshot and is ready in a few minutes.
-
-- **Boot Script** — Runs automatically each time the server starts. It starts Kubernetes, launches all the services (Kafka, Airflow, the dashboard), and signals that the server is ready to serve traffic.
+- **Dashboard Toast Notification** — When a spot interruption is detected, the dashboard displays a visible countdown so anyone actively using it knows a brief interruption is coming.
 
 ---
 
 ## How to Use
 
-**Share the dashboard link:**
-The public URL comes from Terraform. Run this to see it:
-```bash
-terraform output dashboard_url
-```
-Share that URL with anyone who needs access. It works whether the server is awake or asleep.
+**The server is always running.** There is no manual start or stop — just SSH or open the dashboard.
 
-**Wake the server manually** (without waiting for someone to visit):
+**If you need to SSH in:**
 ```bash
-./scripts/deploy.sh --wake
-```
-
-**Put the server to sleep manually:**
-```bash
-./scripts/deploy.sh --sleep
+ssh ec2-stock
 ```
 
 **Bake a new AMI** after significant changes (new Docker image, package updates, etc.):
 ```bash
 ./scripts/deploy.sh --bake-ami
 ```
-This creates a fresh snapshot so future wake-ups include the latest changes.
-
-**Change the idle timeout:**
-The default is 45 minutes. To adjust it, change the `idle_timeout_minutes` variable in the Terraform configuration (`terraform/variables.tf`).
+This creates a fresh snapshot so future replacement instances include the latest changes.
 
 ---
 
-## What Happens During the Loading Time
+## What Happens When a New Instance Starts
 
-When the server wakes up, several things happen in sequence:
+Whether launching after a spot interruption or after a full `--provision` deploy, every new instance follows the same boot sequence:
 
-1. **The server boots from its snapshot** — AWS launches a new instance using the pre-baked AMI, which already has all the software installed.
-2. **Kubernetes starts** — K3S (the lightweight Kubernetes distribution) initializes and begins launching all the application containers.
-3. **Services come online** — Kafka, Airflow, and the dashboard application start up inside their containers.
-4. **The dashboard connects to Snowflake** — The application establishes its connection to the data warehouse so it can serve live data.
-5. **The loading page redirects** — Once the health check confirms everything is running, the loading page automatically sends the visitor to the live dashboard.
+1. **Boots from the AMI snapshot** — all software is already installed.
+2. **Kubernetes starts** — K3S initializes and begins launching application containers.
+3. **Services come online** — Kafka, Airflow, and the Flask dashboard start inside their containers.
+4. **The dashboard connects to Snowflake** — the application establishes its data warehouse connection.
+5. **Health check passes** — the instance registers as healthy and begins serving traffic.
 
-This entire process typically takes 3–5 minutes. The loading page refreshes automatically, so the visitor does not need to do anything — just wait for the dashboard to appear.
+This process typically takes 3–5 minutes from instance launch to a live dashboard.

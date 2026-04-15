@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="refresh" content="10">
+  <title>Dashboard — Switching Servers</title>
+  <style>
+    /* Colors match dashboard/design_tokens.py — keep in sync manually */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0f1117;          /* BG_BASE */
+      color: #e2e8f0;               /* TEXT_PRIMARY */
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+
+    .card {
+      background: #1a1d27;          /* BG_SURFACE */
+      border: 1px solid #2d3348;    /* BORDER */
+      border-top: 3px solid #3b82f6; /* ACCENT_BLUE */
+      border-radius: 12px;
+      padding: 48px 40px;
+      max-width: 520px;
+      width: 90%;
+      text-align: center;
+    }
+
+    .spinner {
+      width: 48px;
+      height: 48px;
+      border: 4px solid #2d3348;    /* BORDER */
+      border-top-color: #3b82f6;    /* ACCENT_BLUE */
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 28px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    h1 {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 16px;
+    }
+
+    .explanation {
+      color: #8892a4;              /* TEXT_SECONDARY */
+      font-size: 14px;
+      line-height: 1.7;
+      margin-bottom: 24px;
+    }
+
+    .status {
+      color: #3b82f6;              /* ACCENT_BLUE */
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .muted {
+      color: #4a5568;              /* TEXT_MUTED */
+      font-size: 12px;
+      margin-top: 20px;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="spinner"></div>
+    <h1>Switching servers &mdash; be right back</h1>
+    <p class="explanation">
+      To keep hosting costs low, this dashboard runs on discounted
+      &ldquo;spare capacity&rdquo; servers from Amazon Web Services.
+      These servers cost about 75% less than standard pricing, saving
+      roughly $50 per month.
+      <br><br>
+      The trade-off is that occasionally, Amazon may need the server
+      back. When that happens, a replacement starts up automatically
+      &mdash; that&rsquo;s what&rsquo;s happening right now.
+    </p>
+    <p class="status">This page refreshes automatically. The dashboard should be back in 1&ndash;3 minutes.</p>
+    <p class="muted">If you keep seeing this page after a few minutes, try refreshing manually.</p>
+  </div>
+</body>
+</html>

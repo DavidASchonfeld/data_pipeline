@@ -69,10 +69,6 @@ Without this variable, alerting runs in **log-only mode**.
 ssh ec2-stock
 kubectl create secret generic db-credentials \
   -n airflow-my-namespace \
-  --from-literal=DB_USER=airflow_user \
-  --from-literal=DB_PASSWORD=<DB_PASSWORD> \
-  --from-literal=DB_NAME=database_one \
-  --from-literal=DB_HOST=<MARIADB_PRIVATE_IP> \
   --from-literal=EDGAR_CONTACT_EMAIL=davedevportfolio@gmail.com \
   --from-literal=SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T.../B.../xxx \
   --dry-run=client -o yaml | kubectl apply -f -
@@ -83,6 +79,8 @@ kubectl delete pod -l component=dag-processor -n airflow-my-namespace
 sleep 60
 kubectl get pods -n airflow-my-namespace
 ```
+
+> **Note:** Snowflake credentials (account, user, password, warehouse, role) are stored in a separate `snowflake-credentials` secret — see `airflow/manifests/snowflake-secret.yaml`. The `db-credentials` secret is used only for pipeline-level configuration like the SEC EDGAR contact email and Slack webhook.
 
 ### Staleness Thresholds
 

@@ -10,23 +10,25 @@ It lives at `/weather/` — the same Flask server that hosts the Stocks Dashboar
 
 ## What You Can See
 
-- **7-Day Temperature Chart** — A line chart showing hourly temperature readings (in Fahrenheit) over the last 7 days. The x-axis is time; the y-axis is temperature.
+- **City Selector** — A dropdown to pick from the top 10 US cities by population. Switching cities updates the chart instantly — no additional database queries are made.
+- **7-Day Temperature Chart** — A line chart showing hourly temperature readings (in Fahrenheit) for the selected city over the last 7 days. The x-axis is time; the y-axis is temperature.
 - **Stats Summary Table** — A single-row table showing:
   - Current temperature (latest reading)
   - 24-hour minimum temperature
   - 24-hour maximum temperature
-  - Location (latitude/longitude)
+  - City name and location (latitude/longitude)
   - Elevation (meters)
-  - Timezone (IANA string, e.g. `Europe/Istanbul`)
+  - Timezone (IANA string)
 - **Refresh Button** — Clicking "Refresh Weather" re-queries Snowflake and re-renders the charts. Data is also loaded automatically when the page first opens.
+- **Pipeline Health Panel** — Shows row count and data freshness for the weather table, so you can see at a glance whether the pipeline ran recently.
 
 ---
 
 ## Data Source
 
 - **API**: [Open-Meteo](https://open-meteo.com/) — free, no API key required
-- **Location**: Fixed to latitude 40°N, longitude 40°E (Black Sea coast, Turkey)
-- **Frequency**: Hourly forecast, 7 days (168 rows per API call)
+- **Locations**: Top 10 US cities by population — New York, Los Angeles, Chicago, Houston, Phoenix, Philadelphia, San Antonio, San Diego, Dallas, Austin
+- **Frequency**: Hourly forecast, 7 days per city (168 rows per API call × 10 cities = ~1,680 rows per DAG run)
 - **Unit**: Temperature in Fahrenheit
 
 ---
@@ -55,14 +57,17 @@ The pipeline writes data at most once per day (cost optimization: daily batch ga
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `observation_time` | TIMESTAMP_NTZ | When the temperature was recorded (primary key, unique) |
+| `observation_time` | TIMESTAMP_NTZ | When the temperature was recorded |
+| `city_name` | STRING | City name (e.g. "New York") — composite key with `observation_time` |
 | `temperature_f` | FLOAT | Temperature in Fahrenheit at 2-meter height |
-| `latitude` | FLOAT | Location latitude (fixed to 40.0) |
-| `longitude` | FLOAT | Location longitude (fixed to 40.0) |
+| `latitude` | FLOAT | Location latitude |
+| `longitude` | FLOAT | Location longitude |
 | `elevation` | FLOAT | Location elevation in meters |
-| `timezone` | STRING | IANA timezone string (e.g. `Europe/Istanbul`) |
+| `timezone` | STRING | IANA timezone string (e.g. `America/New_York`) |
 | `utc_offset_seconds` | INTEGER | UTC offset in seconds |
 | `imported_at` | TIMESTAMP_NTZ | When the row was loaded into Snowflake |
+
+Rows are unique per `(observation_time, city_name)` pair — the same timestamp appears once per city, so the primary key is composite.
 
 ---
 
@@ -76,13 +81,15 @@ Weather data is cached in memory for **15 minutes** (`CACHE_TTL_WEATHER = 900` i
 
 | File | Role |
 |------|------|
-| `dashboard/app.py` | Mounts the weather Dash app at `/weather/`; defines the page layout |
+| `dashboard/app.py` | Mounts the weather Dash app at `/weather/`; defines the page layout including city dropdown and health panel |
 | `dashboard/weather_charts.py` | Chart builders: `build_temperature_fig()`, `build_weather_stats_table()` |
-| `dashboard/callbacks.py` | `register_weather_callbacks()` — wires the refresh button to the chart/table outputs |
-| `dashboard/db.py` | `load_weather_data()` — queries FCT_WEATHER_HOURLY with 15-min cache |
-| `airflow/dags/dag_weather.py` | Producer DAG — fetches from Open-Meteo, publishes to Kafka |
-| `airflow/dags/dag_weather_consumer.py` | Consumer DAG — Kafka → Snowflake RAW → dbt |
-| `airflow/dags/dbt/models/marts/fct_weather_hourly.sql` | dbt model — deduplication, final fact table |
+| `dashboard/callbacks.py` | `register_weather_callbacks()` — wires city dropdown, refresh button, and health panel |
+| `dashboard/db.py` | `load_weather_data()` — queries FCT_WEATHER_HOURLY (all cities) with 15-min cache; `load_weather_health()` — freshness panel |
+| `dashboard/security.py` | `ALLOWED_CITIES` — allowlist of valid city names to prevent arbitrary input |
+| `airflow/dags/dag_weather.py` | Producer DAG — fetches all 10 cities from Open-Meteo, publishes to Kafka |
+| `airflow/dags/dag_weather_consumer.py` | Consumer DAG — Kafka → Snowflake RAW → dbt; deduplicates per (time, city) |
+| `airflow/dags/dbt/models/marts/fct_weather_hourly.sql` | dbt model — deduplication per (observation_time, city_name), final fact table |
+| `airflow/dags/shared/config.py` | `WEATHER_CITIES` dict — city names mapped to (latitude, longitude) coordinates |
 
 ---
 

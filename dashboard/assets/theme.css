@@ -221,6 +221,73 @@ tr.row-stale td {
     background-color: var(--accent-amber-dim) !important;
 }
 
+/* ── Sortable Column Headers ─────────────────────────────────────────────────
+   Applied to html.Th elements in the anomaly tables; class toggled by callbacks. */
+
+/* Pointer cursor + no text selection tells users the header is clickable */
+.dash-table th.sortable-header {
+    cursor: pointer;
+    user-select: none;
+}
+
+/* Hover tint matches the row-hover shade for visual consistency */
+.dash-table th.sortable-header:hover {
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+/* Active sort column highlighted in accent blue so it stands out clearly */
+.dash-table th.sorted {
+    color: var(--accent-blue-bright);
+}
+
+/* Sort glyph (▲ / ▼) sits just to the right of the column label */
+.sort-indicator {
+    margin-left: 4px;
+    font-size: 10px;
+}
+
+/* ── × Clear-sort button ──────────────────────────────────────────────────────
+   Hidden by default; the render callback adds .sort-active to the table when
+   a column is sorted, which makes the button and its placeholder cells appear. */
+
+/* Hidden when no sort is active; wide/tall padding makes it easy to click */
+.dash-table th.sort-clear-btn {
+    display: none;
+    cursor: pointer;
+    user-select: none;
+    text-align: center;
+    font-size: 15px;
+    font-weight: 400;
+    color: var(--text-secondary);
+    padding: 6px 18px;
+    transition: color 0.15s, background-color 0.15s;
+    white-space: nowrap;
+}
+
+/* Show the × header cell when a sort is active */
+.dash-table.sort-active th.sort-clear-btn {
+    display: table-cell;
+}
+
+/* Brighten on hover so the user knows it is clickable */
+.dash-table.sort-active th.sort-clear-btn:hover {
+    color: var(--text-primary);
+    background-color: var(--bg-hover);
+}
+
+/* Empty placeholder td — always in the DOM but hidden; revealed alongside the × header */
+.dash-table td.sort-clear-cell {
+    display: none;
+    width: 52px;
+    min-width: 52px;
+}
+
+/* Show placeholder cells when sort is active so column widths stay aligned */
+.dash-table.sort-active td.sort-clear-cell {
+    display: table-cell;
+}
+
 /* ── Dash Dropdown (React-Select) ────────────────────────────────────────────
    Dash bundles React-Select whose styles are injected with high specificity,
    so !important is required here to override them.                             */
@@ -339,4 +406,81 @@ tr.row-stale td {
     color: var(--text-muted);
     margin: 0;
     line-height: 1.4;
+}
+
+/* ── Server-Offline Banner ───────────────────────────────────────────────────
+   Full-width bar pinned to the top of the viewport. Appears when the browser's
+   JS health check (fetch /health) fails — meaning the server is unreachable.
+   display:none by default; clientside callback switches to display:flex.        */
+
+/* Outer bar: stretches the full viewport width, sits above all page content. */
+.offline-banner {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 9999;              /* above charts, dropdowns, and spot banner      */
+    display: flex;              /* overridden to none via inline style by default */
+    align-items: center;
+    gap: 12px;
+    padding: 11px 20px;
+    background-color: #1c1810; /* very dark amber-tinted — matches spot banner   */
+    border-bottom: 3px solid #f59e0b;  /* amber bottom border — visible accent   */
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+}
+
+/* Warning icon: amber, slightly larger to draw the eye immediately.            */
+.offline-banner__icon {
+    font-size: 20px;
+    color: #f59e0b;
+    flex-shrink: 0;
+}
+
+/* Text column: stacks title above the message with a small gap.               */
+.offline-banner__body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+/* Title: bold, primary color — first thing the visitor reads.                 */
+.offline-banner__title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+/* Message: secondary color — softer explanation below the title.              */
+.offline-banner__message {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin: 0;
+}
+
+/* ── Color-dot column — non-sortable first column in anomaly tables ──────────
+   Narrow, centered — visually matches the Plotly legend swatch size.           */
+
+/* Header: fixed narrow width; default cursor signals it is not clickable. */
+.dash-table th.color-dot-header {
+    width: 28px;
+    min-width: 28px;
+    cursor: default;
+    padding: 10px 6px;
+    text-align: center;
+}
+
+/* Prevent hover styles from making this header look interactive. */
+.dash-table th.color-dot-header:hover {
+    background-color: var(--bg-elevated);
+    color: var(--text-secondary);
+}
+
+/* Data cell: same narrow width, vertically and horizontally centered. */
+.dash-table td.color-dot-cell {
+    width: 28px;
+    min-width: 28px;
+    padding: 10px 6px;
+    text-align: center;
+    vertical-align: middle;
 }

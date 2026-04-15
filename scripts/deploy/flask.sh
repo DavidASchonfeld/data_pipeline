@@ -155,4 +155,17 @@ step_verify_flask() {
         echo "WARNING: Flask pod did not become Ready within 90s. Current state:"
         ssh "$EC2_HOST" "kubectl get pods -n default && echo '' && kubectl describe pod $FLASK_POD -n default | tail -20"
     }
+
+    # Verify public connectivity — catches cases where the pod is healthy but the security group blocks port 32147
+    _DASHBOARD_IP=$(ssh -G "$EC2_HOST" 2>/dev/null | awk '/^hostname / {print $2}')
+    if [ -n "$_DASHBOARD_IP" ]; then
+        if curl -fsSL -o /dev/null --connect-timeout 5 "http://$_DASHBOARD_IP:32147/health" 2>/dev/null; then
+            echo "✓ Dashboard publicly accessible at http://$_DASHBOARD_IP:32147/dashboard/"
+        else
+            echo ""
+            echo "WARNING: Flask pod is Ready but not publicly reachable at http://$_DASHBOARD_IP:32147/"
+            echo "  The AWS Security Group may not allow inbound traffic on port 32147."
+            echo "  Fix: ./scripts/deploy.sh --provision   (runs terraform apply to update the security group)"
+        fi
+    fi
 }

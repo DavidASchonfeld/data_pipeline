@@ -59,9 +59,11 @@ models:
   - name: fct_weather_hourly
     config:
       tags: ['weather']
-    description: "Dashboard-ready weather facts — deduplicated on observation_time + location"
+    description: "Dashboard-ready weather facts — multi-city pipeline, deduplicated on (observation_time, city_name)"
     columns:
       - name: observation_time
-        data_tests: [not_null, unique]
+        data_tests: [not_null]  # unique removed — multiple cities share the same timestamp
+      - name: city_name
+        data_tests: [not_null]  # new column: city identifier for dashboard dropdown filtering
       - name: temperature_f
         data_tests: [not_null]

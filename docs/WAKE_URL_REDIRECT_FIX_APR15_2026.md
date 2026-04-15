@@ -1,5 +1,7 @@
 # Dashboard Wake-Up: Connection Error Fix (April 15, 2026)
 
+> **Historical document (archived 2026-04-15).** The sleep/wake system and API Gateway described here were removed on the same day. The server now runs continuously on spot pricing, so the connection error this document describes no longer occurs. The direct Elastic IP URL (`http://52.70.211.1:32147/dashboard/`) is now the correct link to share. This document is kept for reference only.
+
 ## What Happened
 
 When visiting the dashboard in the morning after it had been idle overnight, the browser

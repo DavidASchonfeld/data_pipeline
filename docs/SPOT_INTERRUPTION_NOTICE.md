@@ -25,9 +25,7 @@ capable hardware.
 
 After the server goes offline, it automatically restarts within a few minutes — the
 underlying infrastructure is designed to recover without any manual intervention.
-(See [ON_DEMAND_ARCHITECTURE.md](ON_DEMAND_ARCHITECTURE.md) and
-[SLEEP_WAKE_IMPROVEMENTS_APR14_2026.md](SLEEP_WAKE_IMPROVEMENTS_APR14_2026.md) for
-details on how that recovery process works.)
+(See [ON_DEMAND_ARCHITECTURE.md](ON_DEMAND_ARCHITECTURE.md) for details on how that recovery process works.)
 
 ---
 
@@ -148,8 +146,7 @@ keeps serving the live dashboard uninterrupted for the full two-minute window.
 
 The moment AWS terminates the old server, a third function (`spot_restored`) moves the
 public IP address to the replacement, resets the server count back to one, and clears
-the in-progress flag. The Wake Lambda then picks up naturally, health-checks the new
-server, and redirects visitors once it is ready.
+the in-progress flag. The replacement server then starts serving traffic normally.
 
 ### Modularity
 
@@ -161,9 +158,6 @@ Each layer of this system is independently removable:
   parameters at runtime and fall back to their original behaviour — no Python code changes
   needed.
 
-- **To remove the sleep/wake system entirely:** delete `terraform/sleep_wake.tf` and run
-  a deploy. The spot replacement functions handle this gracefully — if no Auto Scaling
-  Group is found, they log a warning and exit cleanly.
+- **The sleep/wake system has been removed** (as of 2026-04-15). The server now runs continuously. The spot interruption Lambdas and toast notification remain active.
 
-In both cases, re-adding the feature later is simply a matter of restoring the Terraform
-file and running a deploy.
+Re-adding the spot interruption feature after switching to on-demand pricing is a matter of restoring `terraform/spot_preempt.tf` and running a deploy.

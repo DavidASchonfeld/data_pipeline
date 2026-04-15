@@ -25,10 +25,7 @@ output "ssh_connect_command" {
   value       = "ssh -i ~/path/to/${var.key_pair_name}.pem ubuntu@${aws_eip.pipeline_eip.public_ip}"
 }
 
-# ── Sleep/Wake ────────────────────────────────────────────────────────────────
-
-# The URL to share with people — visiting this link automatically wakes up the dashboard
 output "dashboard_url" {
-  description = "Public dashboard URL — share this link; it auto-wakes the instance when visited"
-  value       = aws_apigatewayv2_api.dashboard.api_endpoint
+  description = "CloudFront URL — share this with visitors instead of the raw EIP"
+  value       = "https://${aws_cloudfront_distribution.dashboard.domain_name}"
 }

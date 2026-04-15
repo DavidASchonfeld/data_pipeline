@@ -17,8 +17,6 @@ Everything you need to know about deploying this project lives here.
 | Only Airflow DAG `.py` files | `./scripts/deploy.sh --dags-only` |
 | Dashboard, Python files, CSS, or anything else | `./scripts/deploy.sh` |
 | Any file inside `terraform/` | `./scripts/deploy.sh --provision` |
-| Just want to turn the server on | `./scripts/deploy.sh --wake` |
-| Just want to turn the server off | `./scripts/deploy.sh --sleep` |
 
 ---
 
@@ -36,7 +34,7 @@ It validates your code, copies files to the server, builds the Docker image, res
 
 Run this whenever any file inside `terraform/` has changed — or when you're setting up a brand-new server for the first time.
 
-"Provisioning" means telling AWS to create or update the underlying infrastructure: the server, networking rules, Lambda functions, API Gateway, and so on. The `--provision` flag runs that step first, then continues with the standard deploy automatically. You don't need to run two commands.
+"Provisioning" means telling AWS to create or update the underlying infrastructure: the server, networking rules, Lambda functions, and so on. The `--provision` flag runs that step first, then continues with the standard deploy automatically. You don't need to run two commands.
 
 **If you're unsure whether you need `--provision`:** check if any files in `terraform/` appear in your git diff. If yes, use `--provision`. If no, use the standard deploy.
 
@@ -76,24 +74,6 @@ Much faster than a full redeploy when only the ML environment is broken.
 
 ---
 
-### `./scripts/deploy.sh --wake` — Turn the server on
-
-Run this when the server is asleep (scaled to zero by the auto-sleep system) and you need it running — for example, before SSHing in directly.
-
-This does **not** deploy any code. It just wakes the server and waits for it to be reachable.
-
-Note: visiting the dashboard URL in a browser also wakes the server automatically (via the API Gateway endpoint). `--wake` is for when you need command-line access before the server is up.
-
----
-
-### `./scripts/deploy.sh --sleep` — Turn the server off
-
-Run this to manually put the server to sleep (scales the ASG to zero, terminating the instance). The server's state is preserved in a golden AMI snapshot, so the next boot picks up where things left off.
-
-This saves money when you know you won't need the server for a while. The auto-sleep system handles this automatically after 45 minutes of inactivity, so you rarely need to run this manually.
-
----
-
 ### `./scripts/deploy.sh --bake-ami` — Snapshot the server (optional)
 
 Run this to create a fresh "golden AMI" — a saved snapshot of the server's current state. When the ASG launches a new instance (after waking from sleep), it boots from this snapshot instead of starting from scratch.
@@ -108,9 +88,8 @@ A new AMI is baked automatically in the background after every successful full d
 
 Here's what the script does, in plain language:
 
-1. **Wakes the server** if it's asleep (scales ASG 0 → 1, waits for SSH)
-2. **Marks itself as active** so the auto-sleep Lambda won't shut down the server mid-deploy
-3. **Validates Python syntax** in all DAG files — stops early if any file has a syntax error
+1. **Verifies SSH** — confirms the always-on server is reachable before proceeding
+2. **Validates Python syntax** in all DAG files — stops early if any file has a syntax error
 4. **Copies files to the server** via rsync (only sends files that actually changed)
 5. **Builds the Airflow Docker image** on the server (runs in the background)
 6. **Deploys Kafka and MLflow** (runs in the background, in parallel with step 5)
@@ -137,8 +116,6 @@ Here's what the script does, in plain language:
 | `./scripts/deploy.sh --dags-only` | 5–7 min |
 | `./scripts/deploy.sh --snowflake-setup` | 10–35 min |
 | `./scripts/deploy.sh --fix-ml-venv` | ~1 min |
-| `./scripts/deploy.sh --wake` | 2–5 min |
-| `./scripts/deploy.sh --sleep` | ~30 sec |
 | `./scripts/deploy.sh --bake-ami` | 15–25 min |
 
 The AMI bake after a full deploy runs in the background — the deploy itself is "done" before the bake finishes, so you can keep working.
@@ -164,7 +141,7 @@ Every deploy writes its full output to `/tmp/deploy-last.log`. If the summary is
 
 ## Related Docs
 
-- [COSTS.md](COSTS.md) — how the sleep/wake system saves money
+- [COSTS.md](COSTS.md) — how spot pricing keeps infrastructure costs low
 - [ON_DEMAND_ARCHITECTURE.md](ON_DEMAND_ARCHITECTURE.md) — how the server infrastructure is set up
 - [AWS_SSO_LOGIN.md](AWS_SSO_LOGIN.md) — AWS credential setup
 - [AMI_CANCEL_AND_REPLACE.md](AMI_CANCEL_AND_REPLACE.md) — how AMI baking and replacement works

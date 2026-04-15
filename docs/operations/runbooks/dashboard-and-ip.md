@@ -60,16 +60,17 @@ ssh -L 30080:localhost:30080 -L 32147:localhost:32147 ec2-stock
 **When:** Dashboard is showing old data and you need to find out why.
 
 ```bash
-# 1. Check how stale the data is
+# 1. Check how stale the data is (queries Snowflake MARTS tables)
 ssh ec2-stock kubectl exec -n airflow-my-namespace airflow-scheduler-0 -- python3 -c "
-from sqlalchemy import create_engine, text
-import os
-engine = create_engine(f'mysql+pymysql://{os.environ[\"DB_USER\"]}:{os.environ[\"DB_PASSWORD\"]}@{os.environ[\"DB_HOST\"]}/{os.environ[\"DB_NAME\"]}')
-with engine.connect() as c:
-    r = c.execute(text('SELECT MAX(filed_date) FROM company_financials')).scalar()
-    print(f'company_financials: latest filed = {r}')
-    r = c.execute(text('SELECT MAX(imported_at) FROM weather_hourly')).scalar()
-    print(f'weather_hourly: latest import = {r}')
+from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
+hook = SnowflakeHook(snowflake_conn_id='snowflake_default')
+with hook.get_conn() as conn:
+    cur = conn.cursor()
+    cur.execute('SELECT MAX(filed_date) FROM PIPELINE_DB.MARTS.FCT_COMPANY_FINANCIALS')
+    print(f'FCT_COMPANY_FINANCIALS: latest filed = {cur.fetchone()[0]}')
+    cur.execute('SELECT MAX(imported_at), COUNT(DISTINCT city_name) FROM PIPELINE_DB.MARTS.FCT_WEATHER_HOURLY')
+    row = cur.fetchone()
+    print(f'FCT_WEATHER_HOURLY: latest import = {row[0]}, cities loaded = {row[1]}')
 "
 
 # 2. Check if DAGs are paused

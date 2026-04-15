@@ -8,22 +8,23 @@ Everything this project costs to run, what's free, and how to shut down and rest
 
 | Service | Monthly Cost | Notes |
 |---------|-------------|-------|
-| EC2 t4g.large (spot, on-demand wake) | ~$0.30–1.00 | Only runs when someone visits (~16 hours/month) |
+| EC2 t4g.large (spot, always-on) | ~$14–15 | Continuous spot instance; AWS can reclaim with 2-min notice — handled automatically |
 | EBS snapshot (AMI storage) | ~$1.50 | 30 GiB snapshot preserves the full server state |
-| Elastic IP (mostly detached) | ~$3.55 | Stable IP address; costs apply when server is sleeping |
-| API Gateway HTTP API | $0 | Stable public URL; free tier covers all traffic |
-| Lambda (wake + sleep) | $0 | Under free tier (~3,000 invocations/month) |
-| EventBridge (sleep timer) | $0 | Checks for idle instances every 15 minutes |
-| SSM Parameter Store | $0 | Tracks last activity; standard parameters are free |
+| Elastic IP (attached) | ~$0 | No charge while attached to a running instance |
+| Lambda (spot-preempt / spot-restored / eip-reassociate) | $0 | Under free tier; only fires during spot interruptions |
+| EventBridge (spot rules) | $0 | Spot interruption event rules; no timer rule |
+| SSM Parameter Store | $0 | Spot replacement flags; standard parameters are free |
 | Auto Scaling Group | $0 | Free; manages spot lifecycle |
 | SNS topic | $0 | Free at this usage level |
+| CloudFront (dashboard proxy) | $0 | Free tier: 1 TB transfer + 10M requests/month; proxies to EC2 with S3 failover |
+| S3 (loading page) | ~$0 | One static HTML file; accessed only during spot transitions |
 | ECR (container registry) | ~$0.10 | One Docker image; lifecycle policy removes old versions |
 | Snowflake (XSMALL warehouse) | ~$2–5 | Auto-suspends after 60 seconds; batch gating limits use |
 | SEC EDGAR API | Free | U.S. government API |
 | Open-Meteo API | Free | Open-source weather API |
 | Apache Kafka / Airflow / dbt / MLflow / K3S | Free | Open-source, runs on EC2 |
 | GitHub | Free | Public repository |
-| **Total** | **~$7–11** | |
+| **Total** | **~$18–22** | |
 
 ---
 
@@ -34,26 +35,24 @@ Several deliberate choices keep costs low:
 - **Daily batch gate** — The stocks pipeline writes to Snowflake once per day, not on every hourly run. This prevents unnecessary warehouse activations.
 - **Weather deduplication** — Before writing, the weather pipeline checks which rows already exist in Snowflake and only writes net-new rows.
 - **Snowflake XSMALL warehouse with 60-second auto-suspend** — The warehouse spins down after one minute of inactivity and only spins up when a query runs.
-- **Dashboard query cache** — The Flask dashboard holds Snowflake query results in memory for 1 hour. Regardless of how many users load the page, Snowflake is queried roughly 4–5 times per hour. See [architecture/DASHBOARD_CACHE.md](architecture/DASHBOARD_CACHE.md).
+- **Dashboard query cache** — The Flask dashboard holds Snowflake query results in memory (1 hour for financials/anomalies/health, 15 minutes for weather). Regardless of how many users load the page, Snowflake is queried at most a handful of times per hour. See [architecture/DASHBOARD_CACHE.md](architecture/DASHBOARD_CACHE.md).
 - **Staleness monitor paused** — The staleness monitoring DAG is paused in production to avoid triggering Snowflake warehouse spin-ups every 30 minutes. It can be re-enabled on demand.
 - **ECR lifecycle policy** — Untagged images (old versions) are automatically deleted after 1 day.
 - **Airflow image imported directly into K3S** — The custom Airflow image is imported into the local containerd runtime instead of being pushed to ECR, avoiding storage charges for a 3+ GB image.
-- **On-demand architecture** — The EC2 instance sleeps when no one is using the dashboard. A Lambda function automatically shuts it down after 45 minutes of inactivity, and it wakes up in ~3–5 minutes when someone visits the public URL. See [ON_DEMAND_ARCHITECTURE.md](ON_DEMAND_ARCHITECTURE.md).
-- **Pre-cached dashboard image (`imagePullPolicy: IfNotPresent`)** — The dashboard container image is baked into the AMI snapshot. On wake-up, K3s uses the cached copy instead of re-downloading from ECR, saving ~30–60 seconds of boot time with no additional cost. The deploy script clears the cache on each new deploy so updates are always applied.
+- **Spot pricing** — The EC2 instance runs continuously on spot pricing, which is 70–80% cheaper than standard on-demand pricing. AWS can reclaim a spot instance with a 2-minute warning, but the infrastructure handles this automatically by booting a replacement before the old server goes offline. See [ON_DEMAND_ARCHITECTURE.md](ON_DEMAND_ARCHITECTURE.md).
+- **Pre-cached dashboard image (`imagePullPolicy: IfNotPresent`)** — The dashboard container image is baked into the AMI snapshot. On spot replacement, K3s uses the cached copy instead of re-downloading from ECR, saving ~30–60 seconds of boot time with no additional cost. The deploy script clears the cache on each new deploy so updates are always applied.
+- **CloudFront failover page** — CloudFront sits in front of the dashboard as a reverse proxy (no caching). During the brief window when a spot instance is being replaced, CloudFront automatically serves a static loading page from S3 instead of showing a browser error. Both CloudFront and S3 are within free-tier limits at this traffic level — $0/month additional.
 
 ---
 
 ## What Happens If You Shut Down
 
-### Stopping the EC2 instance (normal idle state)
+### Stopping the EC2 instance
 
-The instance automatically goes to sleep after 45 minutes of inactivity — this is the normal state for most of the month. When sleeping:
-- **EIP charges apply** — AWS charges for an Elastic IP not attached to a running instance (~$3.55/month)
+The server is designed to run continuously. Stopping it manually is not part of the normal workflow, but if needed:
+- **EIP charges apply** — AWS charges ~$3.55/month for an Elastic IP not attached to a running instance
 - **AMI snapshot charges apply** — the pre-baked AMI stores the full server state (~$1.50/month)
 - **No EBS charges** — the root volume is deleted on termination (`delete_on_termination=true`); the AMI snapshot preserves the server state instead
-- **Total idle cost: ~$5/month**
-
-The server wakes up automatically when someone visits the dashboard URL, or manually via `./scripts/deploy.sh --wake`.
 
 ### Full teardown (to $0/month)
 
@@ -101,7 +100,7 @@ The EC2 instance runs as a spot instance managed by an Auto Scaling Group (ASG) 
 
 **Why no ALB?** An Application Load Balancer costs a minimum of ~$16/month regardless of traffic — more than the EC2 instance itself at spot prices. Since this project has a single instance and no zero-downtime requirement, the instance's Elastic IP is used directly instead.
 
-**On-demand sleep/wake:** The ASG defaults to 0 instances (desired capacity). When a visitor hits the API Gateway URL while the server is sleeping, the Wake Lambda sets the desired capacity to 1 and the ASG launches a spot instance from the pre-baked AMI. The Sleep Lambda scales it back to 0 after the idle timeout.
+**Always-on spot:** The ASG keeps one spot instance running at all times (min=1, desired=1). If AWS reclaims the spot instance with a 2-minute warning, the spot-preempt Lambda immediately boots a replacement, and the EIP is transferred automatically after the old instance terminates.
 
 **Lambda lifecycle hook:** A small Lambda function is triggered on ASG `EC2_INSTANCE_LAUNCHING` events. It re-attaches the Elastic IP to the new instance and sends an SNS notification on interruption. This keeps the public IP stable across spot replacements without manual intervention.
 
@@ -126,6 +125,6 @@ The infrastructure went through three stages of cost optimization. Each stage pr
 
 | Configuration | Monthly Cost | How It Worked | Why It Changed |
 |---|---|---|---|
-| Standard on-demand | ~$70–75 | t3.large on-demand instance, always running | Correct and reliable, but the server was sitting idle most of the day — paying full price for compute that wasn't being used |
-| Spot instance (always on) | ~$19–20 | Switched to a t4g.large ARM spot instance managed by an Auto Scaling Group, which automatically replaces the instance if AWS reclaims it | Reduced compute cost by ~75%, but the server still ran 24/7 even when nobody was actively using the dashboard |
-| On-demand wake/sleep (current) | ~$7–11 | The server shuts down automatically after 45 minutes of inactivity and wakes up in ~3–5 minutes when someone visits the dashboard URL | Eliminates nearly all compute cost — the instance only runs during actual use, which amounts to a few hours per month |
+| Standard on-demand | ~$70–75 | t3.large on-demand instance, always running | Correct and reliable, but paying full price for idle compute most of the day |
+| Sleep/wake on-demand | ~$7–11 | Server shut down after 45 min of inactivity; woke up when someone visited the URL | Visitors had to wait 3–5 minutes for the server to start up on every first visit |
+| **Spot instance, always-on (current)** | **~$18–22** | t4g.large ARM spot, always running; automatic replacement if AWS reclaims it | Eliminates the wake-up wait; spot pricing keeps costs 70–80% below standard on-demand |

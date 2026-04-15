@@ -96,10 +96,7 @@ def stock_consumer_pipeline():
 
         # ─── Daily Batch Gate: write to Snowflake only once per day (cost optimization) ───
         today_iso = date.today().isoformat()
-        try:
-            last_write = Variable.get("SF_STOCKS_LAST_WRITE_DATE")
-        except KeyError:
-            last_write = ""  # Variable doesn't exist yet (first run)
+        last_write = Variable.get("SF_STOCKS_LAST_WRITE_DATE", default="")  # empty string = first run; Airflow 3.x SDK raises AirflowRuntimeError on missing var (not KeyError)
 
         if last_write == today_iso:
             writer.log(f"Daily batch gate: already wrote today ({today_iso}) — skipping")
