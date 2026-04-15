@@ -24,7 +24,9 @@ terraform/.terraform/
 terraform/.terraform.lock.hcl
 terraform/terraform.tfvars
 terraform/terraform.tfstate
-terraform/terraform.tfstate.backup
+terraform/terraform.tfstate*.backup
 # AWS installer binary — install from aws.amazon.com/cli instead
 AWSCLIV2.pkg
 AWSCLIV2.pkg
+# macOS metadata files — generated automatically by Finder
+**/.DS_Store

@@ -1,6 +1,5 @@
 import dash
 import flask
-import os
 import threading  # used to run cache pre-warming without blocking app startup
 from dash import dcc, html
 from flask import Flask
@@ -20,12 +19,13 @@ from flask import Flask
 from routes import register_routes
 from callbacks import register_callbacks, register_weather_callbacks  # weather callbacks added for the second Dash app
 from db import prewarm_cache  # imported here to fire pre-warming without going through the callback layer
-from security import init_security, ALLOWED_CITIES  # centralised security — rate limiting, headers, CORS; ALLOWED_CITIES for weather dropdown
+from security import init_security, ALLOWED_CITIES, ALLOWED_TICKERS  # centralised security — rate limiting, headers, CORS; allowlists for dropdowns
+from config import FLASK_SECRET_KEY  # centralised dashboard configuration
 from spot import build_spot_layout_components, register_spot_callbacks, build_offline_layout_components, register_offline_callbacks  # spot interruption + offline detection banners
 
 app = Flask(__name__)
 
-app.config["SECRET_KEY"] = os.environ.get("FLASK_SECRET_KEY", "")  # required for Flask sessions/cookies; loaded from K8s secret
+app.config["SECRET_KEY"] = FLASK_SECRET_KEY  # required for Flask sessions/cookies; loaded from K8s secret via config.py
 if not app.config["SECRET_KEY"]:
     raise RuntimeError("FLASK_SECRET_KEY env var is not set — refusing to start without a secret key")  # fail fast rather than silently run insecure
 
@@ -38,7 +38,7 @@ dash_app = dash.Dash(
     url_base_pathname="/dashboard/",
 )
 
-TICKERS = ["AAPL", "MSFT", "GOOGL"]  # must match the tickers loaded by the Airflow DAG
+TICKERS = sorted(ALLOWED_TICKERS)  # single source of truth — derived from the security allowlist
 
 dash_app.layout = html.Div(
     className="dash-page",  # CSS class handles max-width, centering, and padding

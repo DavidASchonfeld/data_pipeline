@@ -13,10 +13,15 @@ AWS Console screens and hope you remember every setting" to `./scripts/deploy/te
 
 | Resource | Terraform Name | Purpose |
 |---|---|---|
-| EC2 instance | `aws_instance.pipeline` | t3.large running K3s, Kafka, Airflow, MLflow, MariaDB, Flask |
+| Launch template | `aws_launch_template.pipeline` | Defines the blueprint for new instances: ARM Ubuntu 24.04, t4g.large spot (falls back to t4g.xlarge), 30 GB disk, startup script |
+| Auto Scaling Group | `aws_autoscaling_group.pipeline` | Keeps one spot instance running at all times (min=1, max=2); launches replacements automatically across multiple availability zones |
 | Security group | `aws_security_group.pipeline_sg` | SSH inbound from your IP only; all app ports blocked publicly (accessed via SSH tunnel) |
-| Elastic IP | `aws_eip.pipeline_eip` | Static IP so `~/.ssh/config` never needs updating after stop/start |
-| EIP association | `aws_eip_association.pipeline_eip_assoc` | Binds the Elastic IP to the EC2 instance |
+| Elastic IP | `aws_eip.pipeline_eip` | Static public IP so your SSH config and CloudFront never need updating after instance replacement |
+| CloudFront distribution | `aws_cloudfront_distribution.pipeline` | CDN in front of the EC2 instance; serves a static "switching servers" page from S3 during spot replacement |
+| S3 bucket (loading page) | `aws_s3_bucket.loading_page` | Holds the static page shown to dashboard visitors while a replacement instance is booting |
+| Lambda — EIP reassociate | `eip_reassociate` (in `cloudfront.tf`) | Runs automatically on every ASG launch event; moves the Elastic IP to the new instance |
+| Lambda — spot preempt | `spot_preempt` (in `cloudfront.tf`) | Triggered when AWS issues a 2-minute spot interruption warning; scales ASG to 2 so a replacement boots during the warning window |
+| Lambda — spot restored | `spot_restored` (in `cloudfront.tf`) | Triggered when the interrupted instance terminates; moves EIP to the replacement and resets ASG back to desired=1 |
 | ECR repository | `aws_ecr_repository.flask_app` | Private Docker registry for the Flask dashboard image |
 | ECR lifecycle policy | `aws_ecr_lifecycle_policy.flask_app_lifecycle` | Auto-removes untagged images after 1 day to prevent storage cost accumulation |
 | IAM role | `aws_iam_role.ec2_ecr_role` | Lets EC2 authenticate to ECR via instance metadata — no credentials stored on disk |
@@ -28,7 +33,7 @@ AWS Console screens and hope you remember every setting" to `./scripts/deploy/te
 
 | Thing | Where it lives instead |
 |---|---|
-| K3s, Airflow, Kafka, MLflow, MariaDB | Installed by `scripts/bootstrap_ec2.sh` over SSH |
+| K3s, Airflow, Kafka, MLflow, MariaDB | Baked into the AMI via `scripts/deploy.sh --bake-ami` |
 | K8s manifests, Helm values, DAG files | Deployed by `scripts/deploy.sh` |
 | Flask Docker image | Built and pushed by `scripts/deploy/flask.sh` |
 
@@ -44,10 +49,11 @@ These two tools solve different problems and should never be confused:
 | Tool | What it does | Touches the EC2 instance? |
 |---|---|---|
 | `deploy.sh` | SSHes in, rsyncs DAGs, builds a Docker image, runs Helm upgrade | Modifies software *on* the instance |
-| `terraform.sh` | Manages the AWS resources themselves (the instance, the IP, the security group) | Can create, modify, or destroy the instance |
+| `terraform.sh` | Manages the AWS resources themselves (the ASG, the IP, the security group, the Lambda functions) | Can create, modify, or destroy infrastructure |
 
-Running `deploy.sh` 100 times always uses the same instance. Running `terraform apply` 100 times
-with no changes to `main.tf` also does nothing — Terraform is idempotent and only acts on differences.
+Running `deploy.sh` 100 times always uses the same running instance. Running `terraform apply` 100
+times with no changes to the `.tf` files also does nothing — Terraform is idempotent and only acts
+on differences.
 
 ---
 
@@ -55,9 +61,15 @@ with no changes to `main.tf` also does nothing — Terraform is idempotent and o
 
 ```
 terraform/
-├── main.tf                   — all AWS resource definitions
-├── variables.tf              — input variable declarations (no actual values)
-├── outputs.tf                — values printed after apply (instance ID, EIP, ECR URL)
+├── main.tf               — EC2/ASG/EIP/IAM/ECR/security group/key pair resources
+├── cloudfront.tf         — CloudFront distribution, S3 loading page, Lambda functions, SNS topic, EventBridge rules
+├── variables.tf          — input variable declarations (no actual values)
+├── outputs.tf            — values printed after apply (EIP, ECR URL, CloudFront domain)
+├── user-data.sh.tpl      — instance boot script (starts K3s, refreshes ECR credentials)
+├── lambda/               — source code for the three Lambda functions
+│   ├── eip_reassociate.py
+│   ├── spot_preempt.py
+│   └── spot_restored.py
 └── terraform.tfvars.example  — template to copy to terraform.tfvars and fill in
 ```
 
@@ -70,9 +82,11 @@ terraform/
 | File | Why it is safe |
 |---|---|
 | `main.tf` | Resource definitions only — no secrets, no real IDs |
+| `cloudfront.tf` | Resource definitions only — no secrets, no real IDs |
 | `variables.tf` | Variable declarations only — no actual values |
 | `outputs.tf` | Output definitions only — no actual values |
 | `terraform.tfvars.example` | A blank template with no real values filled in |
+| `lambda/` | Lambda function source code — no secrets, no credentials |
 
 **Gitignored (stays on your machine only):**
 

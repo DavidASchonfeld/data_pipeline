@@ -65,3 +65,7 @@ jobs:
 ```
 
 No secrets stored in GitHub. The `configure-aws-credentials` action exchanges the GitHub OIDC token for temporary AWS credentials automatically.
+
+---
+
+*The auth strategy above applies equally to the current Auto Scaling Group setup — no changes needed when Terraform manages ASGs and Lambda functions instead of a single EC2 instance.*

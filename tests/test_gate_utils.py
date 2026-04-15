@@ -57,7 +57,8 @@ def test_gate_skips_when_already_written_today():
     today = date.today().isoformat()
     writer = _make_writer()
 
-    with patch("shared.gate_utils.Variable") as mock_var:
+    # Variable is a deferred import inside check_daily_gate — patch where it's resolved
+    with patch("airflow.sdk.Variable") as mock_var:
         mock_var.get.return_value = today  # simulate: gate was already set today
         result = check_daily_gate("SF_STOCKS_LAST_WRITE_DATE", writer)
 
@@ -69,7 +70,8 @@ def test_gate_proceeds_when_date_differs():
     """Returns 1 (proceed) when Variable holds a different date."""
     writer = _make_writer()
 
-    with patch("shared.gate_utils.Variable") as mock_var:
+    # Variable is a deferred import inside check_daily_gate — patch where it's resolved
+    with patch("airflow.sdk.Variable") as mock_var:
         mock_var.get.return_value = "2000-01-01"  # simulate: stale date from previous run
         result = check_daily_gate("SF_STOCKS_LAST_WRITE_DATE", writer)
 
@@ -80,8 +82,10 @@ def test_gate_proceeds_on_first_run():
     """Returns 1 (proceed) when Variable does not exist yet (first run)."""
     writer = _make_writer()
 
-    with patch("shared.gate_utils.Variable") as mock_var:
-        mock_var.get.side_effect = KeyError("SF_STOCKS_LAST_WRITE_DATE")  # variable not yet created
+    # Variable is a deferred import inside check_daily_gate — patch where it's resolved
+    # Variable.get uses default="" so a missing key returns "" (not KeyError) in Airflow 3.x
+    with patch("airflow.sdk.Variable") as mock_var:
+        mock_var.get.return_value = ""  # simulate: no variable set yet (first run)
         result = check_daily_gate("SF_STOCKS_LAST_WRITE_DATE", writer)
 
     assert result == 1  # first run should always proceed

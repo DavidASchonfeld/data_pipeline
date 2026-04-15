@@ -35,6 +35,7 @@ ALERT_COOLDOWN_MINUTES = int(os.environ.get("ALERT_COOLDOWN_MINUTES", "60"))
 LOCAL_LOG_PATH = os.environ.get("LOCAL_LOG_PATH", "/tmp/airflow_logs")
 
 # ── Weather ───────────────────────────────────────────────────────────────────
+# City names must match ALLOWED_CITIES in dashboard/security.py
 # Top 10 US cities by population — all fetched each DAG run so the dashboard never queries Snowflake per city click
 WEATHER_CITIES = {
     "New York":     (40.7128, -74.0060),
