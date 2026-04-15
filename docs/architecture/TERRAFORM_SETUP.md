@@ -96,11 +96,9 @@ Because the infrastructure already exists in AWS, you need to tell Terraform abo
 ./scripts/deploy/terraform.sh import
 ```
 
-This imports: IAM role, ECR repository, IAM instance profile, IAM policy attachment, EC2 instance
-(looked up automatically by its `Name=data-pipeline-ec2` tag), and EIP association (looked up by
-the `pipeline-eip` tag — skipped with a message if not yet associated, and created by `apply`).
-
-The security group and Elastic IP are already in state from initial setup and do not need importing.
+This imports: IAM role, ECR repository, IAM instance profile, IAM policy attachment, key pair, and
+Elastic IP. The Auto Scaling Group and its associated resources (launch template, Lambda functions,
+CloudFront distribution, S3 bucket) are created fresh by `apply` — they do not need importing.
 
 ---
 
@@ -116,18 +114,12 @@ After a successful import, the plan will show a few items — **all of them are 
 |---|---|---|
 | `~ update aws_security_group.pipeline_sg` | Your current IP differs from last apply | Run `apply` |
 | `+ create aws_ecr_lifecycle_policy.flask_app_lifecycle` | New resource — didn't exist before | Run `apply` |
-| `aws_instance.pipeline must be replaced` | EBS encryption + delete_on_termination changed — see note below | Run `apply` (auto-snapshot fires first) |
-| `+ create aws_eip_association.pipeline_eip_assoc` | EIP not yet bound to the instance | Run `apply` |
 
-**None of these require additional imports.** If you see `+ create aws_instance.pipeline` (without
-"must be replaced"), the instance was not imported — re-run `import`.
+**None of these require additional imports.** If you see resources marked `+ create` that should
+already exist (IAM role, ECR repository, Elastic IP), they were not imported — re-run `import`.
 
-**About the instance replacement:** `main.tf` sets `encrypted = true` and
-`delete_on_termination = false` on the root EBS volume. The existing live instance was created
-without these settings, so Terraform must replace it to apply them. Before replacing, `terraform.sh
-apply` automatically snapshots the root EBS volume (tagged `pipeline-pre-replace`) as a safety net.
-The volume itself is also preserved by `delete_on_termination = false`. See
-`TERRAFORM_DATA_LOSS_PROTECTION.md` for full details.
+**With the Auto Scaling Group setup,** `terraform apply` creates resources rather than replacing a
+single instance. The ASG launches its first spot instance automatically after `apply` completes.
 
 Once apply completes, re-run `plan` to confirm:
 

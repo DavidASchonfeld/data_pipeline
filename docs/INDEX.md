@@ -32,6 +32,7 @@ Navigate all project documentation from here. Each link goes to the single sourc
 | [Component Interactions](architecture/COMPONENT_INTERACTIONS.md) | Dependency graph, blast radius analysis, cascade failure chains |
 | [Failure Mode Map](architecture/FAILURE_MODE_MAP.md) | What can go wrong per component: symptoms, root causes, diagnostic rules |
 | [Dashboard Cache](architecture/DASHBOARD_CACHE.md) | How the query cache works, why it saves Snowflake costs |
+| [Spot Recovery](architecture/SPOT_RECOVERY.md) | How the server automatically recovers when AWS reclaims a spot instance |
 | [Alerting](architecture/ALERTING.md) | Failure alerts, staleness monitoring, Slack webhooks, cooldown system |
 
 ---

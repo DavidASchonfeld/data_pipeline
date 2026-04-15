@@ -1,9 +1,9 @@
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.colors as pc   # qualitative palette for per-company distinct colors
 from dash import html
 
 from theme import CHART_THEME as _CHART_THEME  # shared dark theme — keeps both dashboards in sync
+from chart_utils import build_color_map, anomaly_symbols, make_empty_figure  # shared helpers — avoids duplicating across chart modules
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -88,36 +88,17 @@ def build_stats_table(ticker: str, revenue_df: pd.DataFrame, net_income_df: pd.D
 
 # ── Anomaly detection charts ──────────────────────────────────────────────────
 
-def _build_color_map(tickers: list) -> dict:
-    """Maps each ticker to a distinct qualitative color."""
-    # Modulo wraps gracefully if there are ever more than 10 companies
-    palette = pc.qualitative.Plotly
-    return {t: palette[i % len(palette)] for i, t in enumerate(tickers)}
-
-
-def _anomaly_symbols(is_anomaly_col) -> list:
-    """Per-point symbol list: x for anomalies, circle for normal points."""
-    return ["x" if v else "circle" for v in is_anomaly_col]  # shape encodes anomaly status
-
-
 def build_anomaly_scatter(df: pd.DataFrame) -> go.Figure:
     """Scatter of Revenue YoY% vs Net Income YoY%, dual-encoded: color = company, shape = anomaly status.
 
     Circle = normal, x = anomaly. Two invisible shape-key traces document the convention in the legend.
     """
-    # Guard: return an annotated empty figure before the first DAG run populates the table
+    # Guard: return a themed empty figure before the first DAG run populates the table
     if df.empty:
-        fig = go.Figure()
-        # Apply dark theme so the empty state doesn't show a jarring white panel
-        fig.update_layout(**_CHART_THEME)
-        fig.add_annotation(
-            text="No data yet", showarrow=False,
-            font={"size": 14, "color": "#8892a4"},  # cool gray — muted placeholder text
-        )
-        return fig
+        return make_empty_figure("No data yet")
 
     tickers = sorted(df["ticker"].unique())   # sort for deterministic color assignment across refreshes
-    color_map = _build_color_map(tickers)     # one distinct color per company
+    color_map = build_color_map(tickers)      # one distinct color per company
 
     fig = go.Figure()
 
@@ -132,7 +113,7 @@ def build_anomaly_scatter(df: pd.DataFrame) -> go.Figure:
             marker={
                 "color": color_map[ticker],                        # company color
                 "size": 9,
-                "symbol": _anomaly_symbols(sub["is_anomaly"]),     # circle or x per point
+                "symbol": anomaly_symbols(sub["is_anomaly"]),      # circle or x per point
             },
             customdata=sub[["ticker", "fiscal_year", "anomaly_score"]].values,  # supplies hover fields
             hovertemplate=(

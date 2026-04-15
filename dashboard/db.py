@@ -1,36 +1,34 @@
 import concurrent.futures
-import os
 import threading
 import time
 
 import pandas as pd
-from dotenv import load_dotenv  # reads .env for local dev; no-op in production
 from sqlalchemy import create_engine, text
 
-load_dotenv()
+# All environment variables and constants come from config.py — this file never reads os.environ directly
+from config import (
+    SQL_USERNAME, SQL_PASSWORD, SQL_DATABASE, SQL_URL, DB_BACKEND,
+    SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_PASSWORD,
+    SNOWFLAKE_DATABASE, SNOWFLAKE_SCHEMA, SNOWFLAKE_WAREHOUSE, SNOWFLAKE_ROLE,
+    CACHE_TTL_FINANCIALS, CACHE_TTL_WEATHER,
+)
 
 # ── Database connection ───────────────────────────────────────────────────────
-# Credentials come from environment variables — this file never contains secrets.
+# Credentials come from config.py which reads environment variables — this file never contains secrets.
 # Local dev:   set values in a .env file at the repo root (gitignored)
 # Production:  set values in a Kubernetes Secret referenced by the Flask Deployment
 # Step 2 swap: only the env var values change — this code stays identical for Snowflake
-SQL_USERNAME = os.environ.get("DB_USER",     "airflow_user")
-SQL_PASSWORD = os.environ.get("DB_PASSWORD", "")
-SQL_DATABASE = os.environ.get("DB_NAME",     "database_one")
-SQL_URL      = os.environ.get("DB_HOST",     "")
-
-DB_BACKEND = os.environ.get("DB_BACKEND", "mariadb")  # "mariadb" (default) or "snowflake" — switch after validating Snowflake data
 if DB_BACKEND == "snowflake":
     # Snowflake engine — set DB_BACKEND=snowflake in the K8s secret to activate
     from snowflake.sqlalchemy import URL as SnowflakeURL
     DB_ENGINE = create_engine(SnowflakeURL(
-        account=os.environ.get("SNOWFLAKE_ACCOUNT"),
-        user=os.environ.get("SNOWFLAKE_USER"),
-        password=os.environ.get("SNOWFLAKE_PASSWORD"),
-        database=os.environ.get("SNOWFLAKE_DATABASE", "PIPELINE_DB"),
-        schema=os.environ.get("SNOWFLAKE_SCHEMA", "MARTS"),  # dashboard reads MARTS, not RAW
-        warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE", "PIPELINE_WH"),
-        role=os.environ.get("SNOWFLAKE_ROLE", "PIPELINE_ROLE"),  # explicit role — prevents default role from blocking MARTS table access
+        account=SNOWFLAKE_ACCOUNT,
+        user=SNOWFLAKE_USER,
+        password=SNOWFLAKE_PASSWORD,
+        database=SNOWFLAKE_DATABASE,
+        schema=SNOWFLAKE_SCHEMA,  # dashboard reads MARTS, not RAW
+        warehouse=SNOWFLAKE_WAREHOUSE,
+        role=SNOWFLAKE_ROLE,  # explicit role — prevents default role from blocking MARTS table access
     ))
 else:
     # MariaDB engine (default) — stays active until DB_BACKEND=snowflake is set
@@ -40,8 +38,6 @@ else:
         )
     except Exception:
         DB_ENGINE = None  # pymysql not installed locally — queries will return empty frames
-# Fully-qualified Snowflake name avoids session-schema ambiguity (mirrors FCT_ANOMALIES pattern)
-_FINANCIALS_TABLE = "PIPELINE_DB.MARTS.FCT_COMPANY_FINANCIALS" if DB_BACKEND == "snowflake" else "company_financials"
 
 # ── Snowflake table identifiers (centralized to avoid scattered hardcoded strings) ───
 _TBL_FINANCIALS = "PIPELINE_DB.MARTS.FCT_COMPANY_FINANCIALS"  # annual SEC EDGAR mart
@@ -50,9 +46,7 @@ _TBL_ANOMALIES  = "PIPELINE_DB.ANALYTICS.FCT_ANOMALIES"       # IsolationForest 
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Query cache (cost optimization #2) ───────────────────────────────────────
-CACHE_TTL_FINANCIALS = 3600   # 1 hour — SEC filings change at most daily
-CACHE_TTL_WEATHER    = 900    # 15 min — reserved for future weather queries
-_QUERY_CACHE: dict = {}       # {key: (dataframe, expires_at)}
+_QUERY_CACHE: dict = {}       # {key: (dataframe, expires_at)} — TTLs imported from config.py
 
 # Set by prewarm_cache() when all startup queries finish; /health/ready blocks on this
 _prewarm_event = threading.Event()
@@ -107,10 +101,11 @@ def _load_ticker_data(ticker: str) -> pd.DataFrame:
         return cached
 
     # :ticker is a SQLAlchemy named bind parameter; its value is supplied by params={"ticker": ticker} below
-    # _FINANCIALS_TABLE is a hardcoded constant (not user input) so f-string is safe here
+    # Use fully-qualified Snowflake name or short MariaDB table name depending on backend
+    table = _TBL_FINANCIALS if DB_BACKEND == "snowflake" else "company_financials"
     query = text(f"""
         SELECT metric, label, period_end, value, fiscal_year, fiscal_period
-        FROM {_FINANCIALS_TABLE}
+        FROM {table}
         WHERE ticker = :ticker
           AND metric IN ('Revenues', 'NetIncomeLoss')
           AND fiscal_period = 'FY'

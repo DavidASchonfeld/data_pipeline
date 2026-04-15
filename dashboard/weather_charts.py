@@ -1,10 +1,10 @@
 import numpy as np  # z-score computation for weather anomaly detection
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.colors as pc  # qualitative palette for per-city distinct colors
 from dash import html
 
 from theme import CHART_THEME as _CHART_THEME  # shared dark theme — single source of truth, no longer duplicated here
+from chart_utils import build_color_map, anomaly_symbols, make_empty_figure  # shared helpers — avoids duplicating across chart modules
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -14,16 +14,9 @@ def build_temperature_fig(df: pd.DataFrame, city: str = "") -> go.Figure:
     Single trace keeps the chart readable; blue matches the existing dashboard palette.
     city: optional city name shown in the chart title; omit to use the generic title.
     """
-    # Guard: return an annotated empty figure if no data has arrived from the pipeline yet
+    # Guard: return a themed empty figure if no data has arrived from the pipeline yet
     if df.empty:
-        fig = go.Figure()
-        # Apply dark theme so the empty state doesn't show a jarring white panel
-        fig.update_layout(**_CHART_THEME)
-        fig.add_annotation(
-            text="No weather data yet", showarrow=False,
-            font={"size": 14, "color": "#8892a4"},  # cool gray — muted placeholder text
-        )
-        return fig
+        return make_empty_figure("No weather data yet")
 
     fig = go.Figure(data=[go.Scatter(
         x=df["observation_time"],       # hourly timestamps on the x-axis
@@ -90,12 +83,6 @@ def build_weather_stats_table(df: pd.DataFrame):
 
 # ── Weather anomaly detection ─────────────────────────────────────────────────
 
-def _build_city_color_map(cities: list) -> dict:
-    """Maps each city to a distinct qualitative color — same pattern as stocks' _build_color_map."""
-    palette = pc.qualitative.Plotly
-    return {c: palette[i % len(palette)] for i, c in enumerate(cities)}
-
-
 def compute_weather_anomalies(df: pd.DataFrame, z_threshold: float = 2.0) -> pd.DataFrame:
     """Per-city z-score anomaly detection on hourly temperature readings.
 
@@ -136,25 +123,19 @@ def build_weather_anomaly_scatter(df: pd.DataFrame) -> go.Figure:
     Circle = normal reading, x = unusually high or low reading for that city.
     Shows all cities together so viewers can spot outliers at a glance.
     """
-    # Guard: empty figure with dark theme before any data arrives
+    # Guard: return a themed empty figure before any data arrives
     if df.empty or "is_anomaly" not in df.columns:
-        fig = go.Figure()
-        fig.update_layout(**_CHART_THEME)
-        fig.add_annotation(
-            text="No data yet", showarrow=False,
-            font={"size": 14, "color": "#8892a4"},
-        )
-        return fig
+        return make_empty_figure("No data yet")
 
     cities = sorted(df["city_name"].unique())  # sorted for deterministic color assignment
-    color_map = _build_city_color_map(cities)
+    color_map = build_color_map(cities)
 
     fig = go.Figure()
 
     # One trace per city — color encodes identity, per-point symbol encodes anomaly status
     for city in cities:
         sub = df[df["city_name"] == city].sort_values("is_anomaly")  # normals first so legend swatch shows circle
-        symbols = ["x" if v else "circle" for v in sub["is_anomaly"]]  # shape encodes anomaly flag
+        symbols = anomaly_symbols(sub["is_anomaly"])  # shape encodes anomaly flag
         # Pack hover fields: city name, city avg, diff from avg — keeps tooltip non-technical
         custom = sub[["city_name", "city_mean", "deviation"]].copy()
         fig.add_trace(go.Scatter(

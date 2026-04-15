@@ -25,7 +25,7 @@ capable hardware.
 
 After the server goes offline, it automatically restarts within a few minutes — the
 underlying infrastructure is designed to recover without any manual intervention.
-(See [ON_DEMAND_ARCHITECTURE.md](ON_DEMAND_ARCHITECTURE.md) for details on how that recovery process works.)
+(See [Server Architecture](../architecture/ON_DEMAND_ARCHITECTURE.md) for details on how that recovery process works.)
 
 ---
 

@@ -1,0 +1,23 @@
+name: pytest
+on:
+  push:
+  pull_request:
+    paths:
+      - 'dashboard/**'
+      - 'tests/**'
+      - '.github/workflows/test.yml'
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        # Install dashboard deps plus pytest; python-dotenv needed by config.py
+        run: pip install plotly pandas scikit-learn flask dash python-dotenv pytest
+      - name: Run tests
+        run: pytest tests/ -v
+        env:
+          DB_BACKEND: snowflake  # ensures Snowflake code paths are exercised in tests

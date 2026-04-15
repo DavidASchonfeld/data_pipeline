@@ -1,5 +1,4 @@
 import hmac
-import os
 from functools import wraps
 
 from flask import Flask, Response, request
@@ -7,6 +6,7 @@ from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_talisman import Talisman
+from config import ALLOWED_ORIGINS, VALIDATION_USER, VALIDATION_PASS  # centralised dashboard configuration
 
 # ── Rate Limiter ──────────────────────────────────────────────────────────────
 # Uses in-process memory storage — one counter per Gunicorn worker.
@@ -50,7 +50,7 @@ _CSP = {
 # frozenset for O(1) lookup and immutability — must match TICKERS in app.py.
 ALLOWED_TICKERS: frozenset = frozenset({"AAPL", "MSFT", "GOOGL"})
 
-# City allowlist for weather dashboard dropdown — must match WEATHER_CITIES keys in shared/config.py
+# City allowlist for weather dashboard dropdown — must match WEATHER_CITIES keys in airflow/dags/shared/config.py
 ALLOWED_CITIES: frozenset = frozenset({
     "New York", "Los Angeles", "Chicago", "Houston", "Phoenix",
     "Philadelphia", "San Antonio", "San Diego", "Dallas", "Austin",
@@ -63,8 +63,8 @@ def require_basic_auth(f):
     @wraps(f)  # preserves original function name so Flask's route registry stays correct
     def decorated(*args, **kwargs):
         auth = request.authorization                                     # Flask parses Authorization header
-        expected_user = os.environ.get("VALIDATION_USER", "").encode()  # credential from K8s secret
-        expected_pass = os.environ.get("VALIDATION_PASS", "").encode()  # credential from K8s secret
+        expected_user = VALIDATION_USER.encode()  # credential from config.py (K8s secret)
+        expected_pass = VALIDATION_PASS.encode()  # credential from config.py (K8s secret)
         # hmac.compare_digest prevents timing attacks when comparing credential strings
         user_ok = bool(auth) and hmac.compare_digest(auth.username.encode(), expected_user)
         pass_ok = bool(auth) and hmac.compare_digest(auth.password.encode(),  expected_pass)
@@ -113,5 +113,5 @@ def init_security(app: Flask) -> None:
     # a request includes an Origin header from a different domain.
     CORS(
         app,
-        resources={r"/*": {"origins": os.environ.get("ALLOWED_ORIGINS", "")}},
+        resources={r"/*": {"origins": ALLOWED_ORIGINS}},  # allowed origins from config.py
     )
