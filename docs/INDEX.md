@@ -15,6 +15,14 @@ Navigate all project documentation from here. Each link goes to the single sourc
 
 ---
 
+## Guides
+
+| Document | What it covers |
+|----------|---------------|
+| [Data Source Guide](DATA_SOURCE_GUIDE.md) | How to add, edit, remove, or replace a data source (API → Kafka → Snowflake → dbt → Dashboard) |
+
+---
+
 ## Verify Everything Works
 
 | Document | What it covers |
@@ -91,6 +99,7 @@ Navigate all project documentation from here. Each link goes to the single sourc
 
 | Question | Go to |
 |----------|-------|
+| How do I add a new data source? | [DATA_SOURCE_GUIDE.md](DATA_SOURCE_GUIDE.md) |
 | How do I deploy code changes? | [DEPLOY.md](DEPLOY.md) |
 | How much does this cost per month? | [COSTS.md](COSTS.md) |
 | How do I verify everything works after a deploy? | [VERIFICATION.md](VERIFICATION.md) |
