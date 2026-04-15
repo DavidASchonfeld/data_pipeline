@@ -6,6 +6,11 @@ spec:
   capacity:
     storage: 1Gi
   accessModes:
-   - ReadWriteOnce
+    - ReadWriteOnce
   hostPath:
     path: /opt/airflow/logs
+  persistentVolumeReclaimPolicy: Retain  # keeps data on disk if the PVC is deleted
+  storageClassName: manual  # "manual" opts out of the local-path provisioner so it never adds nodeAffinity
+  claimRef:  # pre-bind to log-pvc so no other PVC can claim this PV
+    namespace: airflow-my-namespace
+    name: log-pvc

@@ -19,3 +19,6 @@ snowflake-sqlalchemy==1.6.1       # 1.6.x+ required for SQLAlchemy 2.x compatibi
 flask-limiter==3.5.0    # per-IP rate limiting — prevents Snowflake query flooding
 flask-talisman==1.1.0   # HTTP security headers: CSP, X-Frame-Options, X-Content-Type-Options
 flask-cors==4.0.1       # CORS policy — restricts cross-origin requests to known origins
+
+# Spot instance interruption polling
+requests>=2.31.0        # HTTP client for EC2 IMDS spot termination check (also a transitive dep of dash)

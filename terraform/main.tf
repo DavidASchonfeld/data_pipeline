@@ -151,13 +151,19 @@ resource "aws_launch_template" "pipeline" {
     name = aws_iam_instance_profile.ec2_ecr_profile.name
   }
 
+  # Boot script that starts K3s and refreshes credentials when the instance wakes up from a baked AMI
+  user_data = base64encode(templatefile("${path.module}/user-data.sh.tpl", {
+    aws_region   = var.aws_region
+    ecr_registry = split("/", aws_ecr_repository.flask_app.repository_url)[0]
+  }))
+
   block_device_mappings {
     device_name = "/dev/sda1"
     ebs {
       volume_type           = "gp3"
       volume_size           = var.ebs_volume_size  # default 30 GiB — set in variables.tf
       encrypted             = true
-      delete_on_termination = false  # preserve root EBS volume if instance is terminated
+      delete_on_termination = true  # safe to delete — the baked AMI preserves all data between sleep cycles
     }
   }
 
@@ -179,14 +185,19 @@ resource "aws_launch_template" "pipeline" {
 
 # ── Auto Scaling Group ────────────────────────────────────────────────────────
 
-# Single-instance ASG — min=max=desired=1. Spot preferred; diversifies across two ARM pools
-# to reduce interruption probability. EIP is associated by Lambda on instance launch.
+# Sleep/wake ASG — starts at 0 (asleep) to save costs; Lambda sets desired=1 to wake it up
+# when a visitor hits the dashboard. EIP is associated by Lambda on instance launch.
 resource "aws_autoscaling_group" "pipeline" {
   name                = "pipeline-asg"
-  min_size            = 1
+  min_size            = 0   # allow the group to scale down to zero so the instance can sleep
   max_size            = 1
-  desired_capacity    = 1
+  desired_capacity    = 0   # start asleep — the wake Lambda scales this to 1 when someone visits
   vpc_zone_identifier = data.aws_subnets.default.ids  # multi-AZ spot availability
+
+  # Let the sleep/wake Lambdas control desired_capacity at runtime without Terraform resetting it
+  lifecycle {
+    ignore_changes = [desired_capacity]
+  }
 
   mixed_instances_policy {
     instances_distribution {
@@ -301,7 +312,11 @@ resource "aws_lambda_function" "eip_reassociate" {
 
   environment {
     variables = {
-      EIP_ALLOCATION_ID = aws_eip.pipeline_eip.id
+      EIP_ALLOCATION_ID   = aws_eip.pipeline_eip.id
+      # Hardcoded names (not references) so removing spot_preempt.tf needs no main.tf edit.
+      # eip_reassociate.py catches ParameterNotFound/AccessDenied and falls back to normal behaviour.
+      SSM_SPOT_REPLACING  = "/pipeline/spot-replacing"
+      SSM_NEW_INSTANCE_ID = "/pipeline/spot-new-instance-id"
     }
   }
 

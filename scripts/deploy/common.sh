@@ -44,7 +44,7 @@ ECR_IMAGE="$ECR_REGISTRY/my-flask-app:latest"
 # ── Warning/Error Summary ─────────────────────────────────────────────────────
 # Runs whenever the script exits — whether it succeeded, was stopped by an error, or called exit 1 directly.
 _print_deploy_summary() {
-    local exit_code=$?  # save before any other command can overwrite it
+    local exit_code="${_DEPLOY_EXIT:-$?}"  # prefer exit code captured by the trap before _mark_deploy_inactive ran
     set +e              # turn off 'stop on error' so the summary always finishes printing
     # Kill any background jobs still running so the terminal isn't frozen for minutes after a failure.
     # pkill -P kills child processes (SSH sessions) BEFORE killing the parent — if we killed
@@ -165,21 +165,41 @@ restart_pod() {
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── SSH readiness helper ──────────────────────────────────────────────────────
-# Waits for sshd to accept connections — a fresh spot instance can take 2-3 min to boot
-# and start sshd, so we retry for up to 3 minutes before giving up.
+# Waits for sshd to accept connections — a fresh spot instance can take 2-5 min to boot
+# and start sshd, so we retry for up to 6 minutes before giving up.
 # StrictHostKeyChecking=accept-new: automatically trusts a brand-new host key (safe after
 # deploy.sh clears known_hosts for the replaced instance) but still rejects unexpected
 # key changes on already-known hosts.
 _wait_ssh_ready() {
-    # 18 attempts × 10 s = 3 min — enough for a cold spot instance boot
-    for _attempt in $(seq 1 18); do
+    # 36 attempts × 10 s = 6 min — doubled from 3 min to handle slow spot instance boots
+    for _attempt in $(seq 1 36); do
         if ssh -o StrictHostKeyChecking=accept-new "$EC2_HOST" true 2>/dev/null; then
             return 0
         fi
-        echo "SSH not ready (attempt $_attempt/18), retrying in 10s..."
-        [ "$_attempt" -lt 18 ] && sleep 10
+        echo "SSH not ready (attempt $_attempt/36), retrying in 10s..."
+        [ "$_attempt" -lt 36 ] && sleep 10
     done
-    echo "✗ EC2 SSH unreachable after 18 attempts (3 min)"
+    echo "✗ EC2 SSH unreachable after 36 attempts (6 min)"
+    return 1
+}
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── K3s node readiness helper ─────────────────────────────────────────────────
+# SSH can succeed 2-3 min before K3s finishes starting — without this wait,
+# Helm and Kafka apply against a NotReady node and pods get stuck in Pending.
+_wait_k3s_ready() {
+    echo "=== Waiting for K3s node to be Ready (up to 5 minutes) ==="
+    # 30 attempts × 10s = 5 min — matches the wait in bootstrap.sh and user-data.sh.tpl
+    for _attempt in $(seq 1 30); do
+        if ssh "$EC2_HOST" "kubectl get nodes 2>/dev/null | grep -q ' Ready'"; then
+            echo "✓ K3s node is Ready (attempt $_attempt)"
+            ssh "$EC2_HOST" "kubectl get nodes"  # print node status so the log shows it
+            return 0
+        fi
+        echo "K3s not ready yet (attempt $_attempt/30), retrying in 10s..."
+        [ "$_attempt" -lt 30 ] && sleep 10
+    done
+    echo "✗ K3s node did not become Ready after 5 minutes"
     return 1
 }
 # ─────────────────────────────────────────────────────────────────────────────
@@ -197,5 +217,102 @@ _wait_bg() {
         echo "✗ $label FAILED"
         exit 1
     fi
+}
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Sleep/Wake helpers ────────────────────────────────────────────────────────
+# These functions let the deploy script wake up a sleeping instance, put it to sleep,
+# and prevent the auto-sleep Lambda from shutting down during an active deploy.
+# Use the same AWS SSO profile as terraform.sh for all AWS CLI calls
+export AWS_PROFILE="${AWS_PROFILE:-terraform-dev}"
+
+# Wake the instance by telling the ASG to launch a new server from the baked AMI
+step_wake() {
+    echo "=== Waking pipeline instance ==="
+    # Record activity so the auto-sleep timer resets
+    aws ssm put-parameter --name "/pipeline/last-activity-timestamp" \
+        --value "$(date +%s)" --type String --overwrite \
+        --region "$AWS_REGION" 2>/dev/null || true
+
+    # Check if the instance is already running
+    local desired
+    desired=$(aws autoscaling describe-auto-scaling-groups \
+        --auto-scaling-group-names pipeline-asg \
+        --region "$AWS_REGION" \
+        --query 'AutoScalingGroups[0].DesiredCapacity' --output text 2>/dev/null || echo "1")
+
+    if [ "$desired" = "0" ]; then
+        # Tell the ASG to launch an instance from the pre-baked AMI
+        echo "ASG desired=0 — scaling to 1..."
+        aws autoscaling set-desired-capacity \
+            --auto-scaling-group-name pipeline-asg \
+            --desired-capacity 1 \
+            --region "$AWS_REGION"
+        echo "ASG scaling initiated. Waiting for instance + SSH..."
+    else
+        echo "Instance is already running (desired=$desired)"
+    fi
+
+    # Wait until SSH is available so the deploy can proceed
+    _wait_ssh_ready
+    _wait_k3s_ready  # K3s takes 3-5 min after boot — wait before any kubectl/helm operations
+    echo "=== Instance is awake and SSH-ready ==="
+}
+
+# Scales ASG to 1 if sleeping, but does NOT wait for SSH.
+# Used by --provision so Terraform can update the SSH security group rule before we connect.
+_scale_asg_up_if_sleeping() {
+    local desired
+    desired=$(aws autoscaling describe-auto-scaling-groups \
+        --auto-scaling-group-names pipeline-asg \
+        --region "$AWS_REGION" \
+        --query 'AutoScalingGroups[0].DesiredCapacity' --output text 2>/dev/null || echo "1")
+    if [ "$desired" = "0" ]; then
+        echo "ASG desired=0 — scaling to 1 (Terraform will update security group before SSH)..."
+        aws autoscaling set-desired-capacity \
+            --auto-scaling-group-name pipeline-asg \
+            --desired-capacity 1 \
+            --region "$AWS_REGION"
+        # Reset activity timer so auto-sleep doesn't kill the instance right after launch
+        aws ssm put-parameter --name "/pipeline/last-activity-timestamp" \
+            --value "$(date +%s)" --type String --overwrite \
+            --region "$AWS_REGION" 2>/dev/null || true
+        echo "Instance launch initiated — booting while Terraform runs."
+    else
+        echo "Instance already running (desired=$desired)"
+    fi
+}
+
+# Put the instance to sleep by scaling the ASG to 0 (the instance terminates to save money)
+step_sleep() {
+    echo "=== Putting pipeline instance to sleep ==="
+    # Scale the ASG to 0 so the instance terminates and stops costing money
+    aws autoscaling set-desired-capacity \
+        --auto-scaling-group-name pipeline-asg \
+        --desired-capacity 0 \
+        --region "$AWS_REGION"
+    echo "ASG desired capacity set to 0. Instance will terminate shortly."
+}
+
+# Tell the auto-sleep Lambda that a deploy is running so it does not shut us down mid-deploy
+_mark_deploy_active() {
+    aws ssm put-parameter --name "/pipeline/deploy-active" \
+        --value "true" --type String --overwrite \
+        --region "$AWS_REGION" 2>/dev/null || true
+    # Also refresh the activity timer so the sleep countdown resets
+    aws ssm put-parameter --name "/pipeline/last-activity-timestamp" \
+        --value "$(date +%s)" --type String --overwrite \
+        --region "$AWS_REGION" 2>/dev/null || true
+}
+
+# Tell the auto-sleep Lambda that the deploy is done and normal sleep rules can resume
+_mark_deploy_inactive() {
+    aws ssm put-parameter --name "/pipeline/deploy-active" \
+        --value "false" --type String --overwrite \
+        --region "$AWS_REGION" 2>/dev/null || true
+    # Refresh the activity timer so the instance stays up for the full idle timeout after deploy
+    aws ssm put-parameter --name "/pipeline/last-activity-timestamp" \
+        --value "$(date +%s)" --type String --overwrite \
+        --region "$AWS_REGION" 2>/dev/null || true
 }
 # ─────────────────────────────────────────────────────────────────────────────

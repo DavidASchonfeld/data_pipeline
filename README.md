@@ -1,7 +1,7 @@
 # data_pipeline
 
-> **Live Dashboard: [http://52.70.211.1:32147/dashboard/](http://52.70.211.1:32147/dashboard/)**
-> The pipeline is running live — click to see it.
+> **Live Dashboard: [https://im6g5ue81k.execute-api.us-east-1.amazonaws.com/dashboard/](https://im6g5ue81k.execute-api.us-east-1.amazonaws.com/dashboard/)**
+> The pipeline is running live — click to see it. If the server is sleeping, a loading screen appears and wakes it automatically (~3–5 min).
 
 ---
 
@@ -191,9 +191,9 @@ ssh -L 30080:localhost:30080 -L 32147:localhost:32147 ec2-stock
 
 **Public dashboard (no tunnel required):**
 ```
-http://<ELASTIC_IP>:32147/dashboard/
+https://im6g5ue81k.execute-api.us-east-1.amazonaws.com/dashboard/
 ```
-> Get your Elastic IP: `terraform output elastic_ip` (run from `terraform/`)
+> This URL always works — it shows a loading screen if the server is sleeping and wakes it automatically. See [docs/PUBLIC_DASHBOARD_URL.md](docs/PUBLIC_DASHBOARD_URL.md) for why this URL is used instead of the Elastic IP.
 
 ---
 

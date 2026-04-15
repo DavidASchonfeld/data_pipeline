@@ -1,4 +1,6 @@
+import concurrent.futures
 import os
+import threading
 import time
 
 import pandas as pd
@@ -51,6 +53,9 @@ _TBL_ANOMALIES  = "PIPELINE_DB.ANALYTICS.FCT_ANOMALIES"       # IsolationForest 
 CACHE_TTL_FINANCIALS = 3600   # 1 hour — SEC filings change at most daily
 CACHE_TTL_WEATHER    = 900    # 15 min — reserved for future weather queries
 _QUERY_CACHE: dict = {}       # {key: (dataframe, expires_at)}
+
+# Set by prewarm_cache() when all startup queries finish; /health/ready blocks on this
+_prewarm_event = threading.Event()
 
 def _cache_get(key: str):
     """Return cached value if present and not expired, else None."""
@@ -134,25 +139,27 @@ def prewarm_cache(tickers: list) -> None:
     """Query Snowflake for all tickers + anomalies at startup so the first user request hits the cache, not the DB.
 
     Called in a background thread from app.py immediately after the Flask container starts.
+    Runs all queries in parallel to reduce wall time from ~3 min (sequential) to ~30–60s.
+    Sets _prewarm_event when done so /health/ready can signal Lambda that data is ready.
     Failures are silenced — a cache miss on first request is acceptable; a crash at startup is not.
     """
-    for ticker in tickers:
+    def _safe(fn, label, *args):
+        # Wrapper that catches and logs errors without crashing the thread pool
         try:
-            _load_ticker_data(ticker)  # populates the per-ticker financials cache entry
+            fn(*args)
         except Exception as e:
-            print(f"[prewarm_cache] WARNING: failed to warm 'financials:{ticker}': {e}", flush=True)  # log instead of silently swallowing
-    try:
-        load_anomalies()  # populates the anomalies cache entry
-    except Exception as e:
-        print(f"[prewarm_cache] WARNING: failed to warm 'anomalies': {e}", flush=True)
-    try:
-        load_weather_data()  # populates the weather cache entry so the weather page loads instantly
-    except Exception as e:
-        print(f"[prewarm_cache] WARNING: failed to warm 'weather': {e}", flush=True)
-    try:
-        load_pipeline_health()  # warms the 1-hour pipeline health cache entry
-    except Exception as e:
-        print(f"[prewarm_cache] WARNING: failed to warm 'pipeline_health': {e}", flush=True)
+            print(f"[prewarm_cache] WARNING: failed to warm '{label}': {e}", flush=True)
+
+    # Fire all Snowflake queries concurrently — one warehouse activation covers all
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        futs  = [pool.submit(_safe, _load_ticker_data, f"financials:{t}", t) for t in tickers]
+        futs += [pool.submit(_safe, load_anomalies,       "anomalies")]
+        futs += [pool.submit(_safe, load_weather_data,    "weather")]
+        futs += [pool.submit(_safe, load_pipeline_health, "pipeline_health")]
+        concurrent.futures.wait(futs)  # block until every query finishes or fails
+
+    _prewarm_event.set()  # unblock /health/ready — Lambda can now redirect safely
+    print("[prewarm_cache] complete — cache is warm", flush=True)
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Weather data ─────────────────────────────────────────────────────────────

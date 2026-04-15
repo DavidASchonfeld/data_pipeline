@@ -4,6 +4,7 @@ metadata:
   name: log-pvc
   namespace: airflow-my-namespace
 spec:
+  storageClassName: manual  # must match pv-airflow-logs.yaml so K8s binds statically (no provisioner involved)
   accessModes:
    - ReadWriteOnce
   resources:

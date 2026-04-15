@@ -129,6 +129,9 @@ print('ECR credential helper configured')
     fi
     rsync $RSYNC_FLAGS /tmp/pod-flask-rendered.yaml "$EC2_HOST:/tmp/pod-flask.yaml"
     rsync $RSYNC_FLAGS "$PROJECT_ROOT/dashboard/manifests/service-flask.yaml" "$EC2_HOST:/tmp/"
+    # Clear the cached Flask image from K3s containerd so it pulls the freshly-pushed version from ECR.
+    # Required because imagePullPolicy: IfNotPresent skips ECR pulls when any cached image exists.
+    ssh "$EC2_HOST" "sudo k3s crictl rmi $ECR_IMAGE 2>/dev/null || true"
     ssh "$EC2_HOST" "kubectl apply -f /tmp/service-flask.yaml && kubectl apply -f /tmp/pod-flask.yaml"
 }
 

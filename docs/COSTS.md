@@ -8,23 +8,22 @@ Everything this project costs to run, what's free, and how to shut down and rest
 
 | Service | Monthly Cost | Notes |
 |---------|-------------|-------|
-| EC2 t4g.large (spot, us-east-1) | ~$14–15 | 2 vCPU, 8 GB RAM ARM — managed by Auto Scaling Group |
-| EBS 30 GiB gp3 | ~$2.40 | Encrypted root volume |
+| EC2 t4g.large (spot, on-demand wake) | ~$0.30–1.00 | Only runs when someone visits (~16 hours/month) |
+| EBS snapshot (AMI storage) | ~$1.50 | 30 GiB snapshot preserves the full server state |
+| Elastic IP (mostly detached) | ~$3.55 | Stable IP address; costs apply when server is sleeping |
+| API Gateway HTTP API | $0 | Stable public URL; free tier covers all traffic |
+| Lambda (wake + sleep) | $0 | Under free tier (~3,000 invocations/month) |
+| EventBridge (sleep timer) | $0 | Checks for idle instances every 15 minutes |
+| SSM Parameter Store | $0 | Tracks last activity; standard parameters are free |
 | Auto Scaling Group | $0 | Free; manages spot lifecycle |
-| Lambda (lifecycle hook) | $0 | Under free tier at this invocation rate |
-| SNS topic (spot interruption alerts) | $0 | Effectively free at this usage level |
-| Elastic IP | $0 | Free while attached to a running instance |
-| ECR (container registry) | ~$0.10 | Stores one Docker image; lifecycle policy removes old tags |
-| Snowflake (XSMALL warehouse) | ~$2–5 | Auto-suspends after 60 seconds; batch gating limits activations |
-| SEC EDGAR API | Free | U.S. government API, no key required |
-| Open-Meteo API | Free | Open-source weather API, no key required |
-| Apache Kafka | Free | Open-source, runs on EC2 |
-| Apache Airflow | Free | Open-source, runs on EC2 |
-| dbt | Free | Open-source |
-| MLflow | Free | Open-source |
-| K3S (Kubernetes) | Free | Lightweight Kubernetes, runs on EC2 |
+| SNS topic | $0 | Free at this usage level |
+| ECR (container registry) | ~$0.10 | One Docker image; lifecycle policy removes old versions |
+| Snowflake (XSMALL warehouse) | ~$2–5 | Auto-suspends after 60 seconds; batch gating limits use |
+| SEC EDGAR API | Free | U.S. government API |
+| Open-Meteo API | Free | Open-source weather API |
+| Apache Kafka / Airflow / dbt / MLflow / K3S | Free | Open-source, runs on EC2 |
 | GitHub | Free | Public repository |
-| **Total** | **~$19–20** | |
+| **Total** | **~$7–11** | |
 
 ---
 
@@ -39,19 +38,22 @@ Several deliberate choices keep costs low:
 - **Staleness monitor paused** — The staleness monitoring DAG is paused in production to avoid triggering Snowflake warehouse spin-ups every 30 minutes. It can be re-enabled on demand.
 - **ECR lifecycle policy** — Untagged images (old versions) are automatically deleted after 1 day.
 - **Airflow image imported directly into K3S** — The custom Airflow image is imported into the local containerd runtime instead of being pushed to ECR, avoiding storage charges for a 3+ GB image.
+- **On-demand architecture** — The EC2 instance sleeps when no one is using the dashboard. A Lambda function automatically shuts it down after 45 minutes of inactivity, and it wakes up in ~3–5 minutes when someone visits the public URL. See [ON_DEMAND_ARCHITECTURE.md](ON_DEMAND_ARCHITECTURE.md).
+- **Pre-cached dashboard image (`imagePullPolicy: IfNotPresent`)** — The dashboard container image is baked into the AMI snapshot. On wake-up, K3s uses the cached copy instead of re-downloading from ECR, saving ~30–60 seconds of boot time with no additional cost. The deploy script clears the cache on each new deploy so updates are always applied.
 
 ---
 
 ## What Happens If You Shut Down
 
-### Stopping the EC2 instance (not terminating)
+### Stopping the EC2 instance (normal idle state)
 
-The instance stops running and EC2 charges stop, but:
-- **EBS charges continue** — the 30 GiB volume stays attached (~$2.40/month)
-- **Elastic IP charges begin** — AWS charges for an EIP not attached to a running instance (~$3.65/month)
-- **Total idle cost: ~$6/month**
+The instance automatically goes to sleep after 45 minutes of inactivity — this is the normal state for most of the month. When sleeping:
+- **EIP charges apply** — AWS charges for an Elastic IP not attached to a running instance (~$3.55/month)
+- **AMI snapshot charges apply** — the pre-baked AMI stores the full server state (~$1.50/month)
+- **No EBS charges** — the root volume is deleted on termination (`delete_on_termination=true`); the AMI snapshot preserves the server state instead
+- **Total idle cost: ~$5/month**
 
-All data on the EBS volume is preserved. Restarting the instance restores everything except the public IP (which stays the same because of the Elastic IP).
+The server wakes up automatically when someone visits the dashboard URL, or manually via `./scripts/deploy.sh --wake`.
 
 ### Full teardown (to $0/month)
 
@@ -99,6 +101,8 @@ The EC2 instance runs as a spot instance managed by an Auto Scaling Group (ASG) 
 
 **Why no ALB?** An Application Load Balancer costs a minimum of ~$16/month regardless of traffic — more than the EC2 instance itself at spot prices. Since this project has a single instance and no zero-downtime requirement, the instance's Elastic IP is used directly instead.
 
+**On-demand sleep/wake:** The ASG defaults to 0 instances (desired capacity). When a visitor hits the API Gateway URL while the server is sleeping, the Wake Lambda sets the desired capacity to 1 and the ASG launches a spot instance from the pre-baked AMI. The Sleep Lambda scales it back to 0 after the idle timeout.
+
 **Lambda lifecycle hook:** A small Lambda function is triggered on ASG `EC2_INSTANCE_LAUNCHING` events. It re-attaches the Elastic IP to the new instance and sends an SNS notification on interruption. This keeps the public IP stable across spot replacements without manual intervention.
 
 ---
@@ -107,4 +111,21 @@ The EC2 instance runs as a spot instance managed by an Auto Scaling Group (ASG) 
 
 The ASG launch template points to a pre-baked AMI that already contains the full software stack: K3S, Kafka, Airflow image imported into containerd, and all dependencies.
 
-This means a spot replacement goes from ~30–45 minutes (full bootstrap from a base AMI) down to ~3–5 minutes (mount EBS, start services). The AMI is rebuilt via Packer whenever a significant dependency changes and the launch template is updated in Terraform.
+This means a wake-up or spot replacement goes from ~30–45 minutes (full bootstrap from a base AMI) down to ~3–5 minutes (start services from snapshot). The AMI is managed as follows:
+
+- Bake a new AMI: `./scripts/deploy.sh --bake-ami`
+- The launch template is updated automatically after baking
+- Re-bake after significant deploys (Docker image changes, package updates)
+- Old AMIs are automatically cleaned up to avoid storage costs
+
+---
+
+## How We Got Here
+
+The infrastructure went through three stages of cost optimization. Each stage preserved full functionality while reducing what was being paid for idle time.
+
+| Configuration | Monthly Cost | How It Worked | Why It Changed |
+|---|---|---|---|
+| Standard on-demand | ~$70–75 | t3.large on-demand instance, always running | Correct and reliable, but the server was sitting idle most of the day — paying full price for compute that wasn't being used |
+| Spot instance (always on) | ~$19–20 | Switched to a t4g.large ARM spot instance managed by an Auto Scaling Group, which automatically replaces the instance if AWS reclaims it | Reduced compute cost by ~75%, but the server still ran 24/7 even when nobody was actively using the dashboard |
+| On-demand wake/sleep (current) | ~$7–11 | The server shuts down automatically after 45 minutes of inactivity and wakes up in ~3–5 minutes when someone visits the dashboard URL | Eliminates nearly all compute cost — the instance only runs during actual use, which amounts to a few hours per month |
