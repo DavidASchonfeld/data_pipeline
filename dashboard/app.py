@@ -21,6 +21,7 @@ from routes import register_routes
 from callbacks import register_callbacks, register_weather_callbacks  # weather callbacks added for the second Dash app
 from db import prewarm_cache  # imported here to fire pre-warming without going through the callback layer
 from security import init_security  # centralised security — rate limiting, headers, CORS
+from spot import build_spot_layout_components, register_spot_callbacks  # spot interruption banner — safe no-op on non-EC2
 
 app = Flask(__name__)
 
@@ -42,6 +43,8 @@ TICKERS = ["AAPL", "MSFT", "GOOGL"]  # must match the tickers loaded by the Airf
 dash_app.layout = html.Div(
     className="dash-page",  # CSS class handles max-width, centering, and padding
     children=[
+        # Spot interruption banner: invisible intervals + fixed-position toast; no-op on non-EC2
+        *build_spot_layout_components("stocks"),
 
         html.H1("Stock Market Analytics Pipeline"),  # color set globally in theme.css
         html.P(
@@ -119,6 +122,7 @@ dash_app.layout = html.Div(
 
 register_routes(app)
 register_callbacks(dash_app)
+register_spot_callbacks(dash_app, "stocks")  # wire spot interruption callbacks onto the stocks Dash app
 
 # ── Weather Dashboard — second Dash app mounted on the same Flask server ──────
 # Dash supports multiple Dash instances on one Flask app; each gets its own URL prefix
@@ -132,6 +136,8 @@ weather_dash_app = dash.Dash(
 weather_dash_app.layout = html.Div(
     className="dash-page",  # CSS class handles max-width, centering, and padding
     children=[
+        # Spot interruption banner: invisible intervals + fixed-position toast; no-op on non-EC2
+        *build_spot_layout_components("weather"),
 
         html.H1("Weather Analytics Pipeline"),  # color set globally in theme.css
         html.P(
@@ -169,6 +175,7 @@ weather_dash_app.layout = html.Div(
 )
 
 register_weather_callbacks(weather_dash_app)  # wire the weather callbacks onto the weather Dash app
+register_spot_callbacks(weather_dash_app, "weather")  # wire spot interruption callbacks onto the weather Dash app
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Pre-warm the cache in a background thread immediately after startup — Snowflake is queried

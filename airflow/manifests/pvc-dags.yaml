@@ -3,6 +3,7 @@ kind: PersistentVolumeClaim
 metadata:
   name: dag-pvc
 spec:
+  storageClassName: manual  # must match pv-dags.yaml so K8s binds statically (no provisioner involved)
   accessModes:
    - ReadWriteOnce  # ReadOnlyMany
   resources:

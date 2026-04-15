@@ -11,7 +11,7 @@ spec:
   hostPath:
     path: /home/ubuntu/airflow/dags  # updated path to match deploy.sh sync destination
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: local-path
+  storageClassName: manual  # "manual" opts out of the local-path provisioner so it never adds nodeAffinity
   claimRef:
     namespace: airflow-my-namespace
     name: dag-pvc

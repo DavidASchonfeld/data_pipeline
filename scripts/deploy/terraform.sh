@@ -147,6 +147,17 @@ case "$ACTION" in
                     else
                         echo "  WARNING: Snapshot creation failed — verify in AWS Console before proceeding."
                     fi
+                    # Delete old safety snapshots so they don't accumulate and add to storage costs (keep 2 most recent)
+                    OLD_SAFETY_SNAPS=$(aws ec2 describe-snapshots \
+                        --profile "$AWS_PROFILE" \
+                        --filters "Name=tag:Name,Values=pipeline-pre-replace" \
+                        --query "sort_by(Snapshots, &StartTime)[*].SnapshotId" \
+                        --output text 2>/dev/null | tr '\t' '\n' | head -n -2)
+                    for old_snap in $OLD_SAFETY_SNAPS; do
+                        [ -z "$old_snap" ] && continue
+                        aws ec2 delete-snapshot --profile "$AWS_PROFILE" --snapshot-id "$old_snap" --region "$AWS_REGION" 2>/dev/null || true
+                        echo "  Deleted old safety snapshot: $old_snap"
+                    done
                 else
                     echo "  WARNING: Root volume ID not found — skipping snapshot."
                 fi
@@ -225,6 +236,10 @@ case "$ACTION" in
         else
             echo "  aws_key_pair.pipeline not found in AWS — apply will register the public key from $SSH_KEY_PATH"
         fi
+
+        # Import SSM parameters if they exist in AWS but are missing from state (e.g. after a partial apply)
+        _import_if_missing aws_ssm_parameter.last_activity  /pipeline/last-activity-timestamp
+        _import_if_missing aws_ssm_parameter.deploy_active  /pipeline/deploy-active
 
         echo ""
         echo "Import complete. Run plan to verify."

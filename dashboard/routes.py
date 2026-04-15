@@ -3,8 +3,9 @@ import pandas as pd
 from flask import Flask
 from sqlalchemy import text
 
-from db import DB_ENGINE
+from db import DB_ENGINE, _prewarm_event  # _prewarm_event signals when cache is fully warm
 from security import limiter, require_basic_auth  # rate limiting decorators and basic-auth helper
+from spot import check_spot_interruption  # spot termination polling — safe no-op on non-EC2
 
 logger = logging.getLogger(__name__)  # module-level logger — writes to pod stdout (visible in kubectl logs)
 
@@ -28,6 +29,21 @@ def register_routes(app: Flask) -> None:
         # Health-check endpoint — useful for Kubernetes liveness probes
         # No DB call needed; fast, reliable signal that pod process is running
         return {"status": "ok"}, 200
+
+    @app.route('/health/ready')
+    @limiter.exempt  # polled by the wake Lambda every 3s — must never be rate-limited
+    def health_ready():
+        # Returns 200 only after prewarm_cache() has finished all Snowflake queries
+        # Wake Lambda uses this instead of /health so it redirects only when data is cached
+        if _prewarm_event.is_set():
+            return {"status": "ok"}, 200
+        return {"status": "warming"}, 503
+
+    @app.route('/api/spot-status')
+    @limiter.exempt  # monitoring endpoint — same pattern as /health, never rate-limit
+    def spot_status():
+        # Returns current spot interruption state; no sensitive data exposed
+        return check_spot_interruption(), 200
 
     @app.route('/validation')
     @limiter.limit("5 per minute")  # debug endpoint — tight cap; infrequent legitimate use only

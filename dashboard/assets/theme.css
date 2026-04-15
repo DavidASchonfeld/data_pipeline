@@ -268,3 +268,75 @@ tr.row-stale td {
 ._dash-loading-callback {
     background-color: rgba(15, 17, 23, 0.6) !important;  /* near-black at 60% opacity */
 }
+
+/* ── Spot Interruption Banner ────────────────────────────────────────────────
+   Fixed-position toast, bottom-right corner. Persistent — no auto-dismiss.
+   display:none by default (set via inline style); callback switches to flex
+   when AWS issues a spot termination notice.                                   */
+
+/* Outer container: flex row (icon left, text body right); floats above all content. */
+.spot-banner {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 9999;              /* above charts, dropdowns, and Dash loading overlays */
+    display: flex;              /* overridden to none via inline style by default      */
+    align-items: flex-start;
+    gap: 12px;
+    max-width: 320px;
+    background-color: #1c1810; /* very dark amber-tinted background to match dark theme */
+    border: 1px solid rgba(245, 158, 11, 0.55);  /* amber border at medium opacity     */
+    border-left: 4px solid #f59e0b;              /* solid amber left accent bar         */
+    border-radius: var(--radius);
+    padding: 16px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55); /* elevated shadow to separate from page */
+}
+
+/* Warning sign icon: large, amber, vertically aligned with the title text. */
+.spot-banner__icon {
+    font-size: 22px;
+    color: #f59e0b;             /* amber-400 — matches the accent bar and countdown     */
+    flex-shrink: 0;             /* prevents icon from collapsing when body text wraps   */
+    padding-top: 2px;           /* optical alignment with the title's cap height         */
+}
+
+/* Text column to the right of the icon. */
+.spot-banner__body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+/* Title: short, bold — establishes the visual hierarchy immediately. */
+.spot-banner__title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+/* Subtitle: secondary-color helper text sitting above the countdown. */
+.spot-banner__subtitle {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin: 0;
+}
+
+/* Countdown: large, bold, amber — the focal element of the whole banner. */
+.spot-banner__countdown {
+    font-size: 32px;
+    font-weight: 800;
+    color: #f59e0b;             /* amber — same as the icon for visual consistency      */
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;  /* digits stay fixed-width so M:SS doesn't jump */
+    line-height: 1.1;
+    margin: 4px 0;
+}
+
+/* Note: smallest text; muted; reassures the user their data is safe. */
+.spot-banner__note {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin: 0;
+    line-height: 1.4;
+}

@@ -2,6 +2,35 @@
 # Module: kafka — Kafka manifest sync, image pre-pull, StatefulSet deploy, and topic creation.
 # Sourced by deploy.sh; all variables from common.sh are available here.
 
+_cleanup_stale_kafka_pvc() {
+    # Delete kafka-data-kafka-0 PVC/PV if it is affined to a different node than the current Ready node.
+    # local-path provisioner pins PVs to the node where they were first created, so after an instance
+    # replacement the old PVC blocks kafka-0 from scheduling on the new node.
+    ssh "$EC2_HOST" "
+        PVC_PHASE=\$(kubectl get pvc kafka-data-kafka-0 -n kafka \
+            -o jsonpath='{.status.phase}' 2>/dev/null || echo '')
+        [ -z \"\$PVC_PHASE\" ] && echo 'No Kafka PVC found — nothing to clean.' && exit 0
+        [ \"\$PVC_PHASE\" != 'Bound' ] && echo \"Kafka PVC phase is '\$PVC_PHASE' — skipping stale check.\" && exit 0
+        PV_NAME=\$(kubectl get pvc kafka-data-kafka-0 -n kafka \
+            -o jsonpath='{.spec.volumeName}' 2>/dev/null || echo '')
+        [ -z \"\$PV_NAME\" ] && exit 0
+        PV_NODE=\$(kubectl get pv \"\$PV_NAME\" \
+            -o jsonpath='{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]}' \
+            2>/dev/null || echo '')
+        [ -z \"\$PV_NODE\" ] && echo \"Kafka PV '\$PV_NAME' has no node affinity — not a local-path PV, skipping.\" && exit 0
+        CURRENT_NODE=\$(kubectl get nodes --no-headers | awk '\$2 == \"Ready\" {print \$1}' | head -1)
+        if [ -n \"\$CURRENT_NODE\" ] && [ \"\$PV_NODE\" != \"\$CURRENT_NODE\" ]; then
+            echo \"Stale Kafka PVC: PV '\$PV_NAME' affined to '\$PV_NODE' but current node is '\$CURRENT_NODE'\"
+            echo 'Deleting stale Kafka PVC + PV so local-path can provision fresh storage on the correct node...'
+            kubectl delete pvc kafka-data-kafka-0 -n kafka --ignore-not-found=true
+            kubectl delete pv \"\$PV_NAME\" --ignore-not-found=true
+            sleep 2  # let K8s API record the deletion before StatefulSet apply
+        else
+            echo \"Kafka PVC OK — PV '\$PV_NAME' is on current node '\$CURRENT_NODE'\"
+        fi
+    "
+}
+
 step_deploy_kafka() {
     echo "=== Step 2b3: Syncing Kafka manifests to EC2 ==="
     # we use a plain Kubernetes manifest here instead of the old Bitnami Helm chart (simpler, no licensing issues)
@@ -15,13 +44,17 @@ step_deploy_kafka() {
         && echo 'Kafka image ready in K3s containerd.'
     "
 
+    # Create kafka namespace before PVC check — _cleanup_stale_kafka_pvc needs the namespace to exist
+    ssh "$EC2_HOST" "kubectl create namespace kafka --dry-run=client -o yaml | kubectl apply -f -"
+
+    # Clean up stale Kafka PVC before applying the StatefulSet — if PVC is affined to the old node,
+    # kafka-0 can't schedule anywhere and will time out. Same pattern as PostgreSQL PVC cleanup.
+    _cleanup_stale_kafka_pvc
+
     echo "=== Step 2b4: Deploying Kafka to K3s (safe to run multiple times) ==="
     # kubectl apply creates Kafka if it doesn't exist, or updates it if it does — safe to run every time.
     # Kafka lives in its own 'kafka' namespace, separate from airflow-my-namespace.
     ssh "$EC2_HOST" "
-        # Create kafka namespace if it doesn't exist
-        kubectl create namespace kafka --dry-run=client -o yaml | kubectl apply -f -
-
         # Apply StatefulSet + Services from the plain manifest
         kubectl apply -f $EC2_HOME/kafka/k8s/kafka.yaml \
         && echo 'Kafka manifests applied.'

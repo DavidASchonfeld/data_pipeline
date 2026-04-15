@@ -11,6 +11,9 @@
 #                                          Run once on a fresh Snowflake account or after a full project teardown.
 #                                          Requires SNOWFLAKE_ADMIN_USER, SNOWFLAKE_ADMIN_PASSWORD, SNOWFLAKE_PASSWORD in .env.deploy.
 #                                          Safe to re-run — all statements are CREATE IF NOT EXISTS.
+#   ./scripts/deploy.sh --wake           — wake the instance (scale ASG 0→1) and wait for SSH
+#   ./scripts/deploy.sh --sleep          — put the instance to sleep (scale ASG 1→0) to save money
+#   ./scripts/deploy.sh --bake-ami       — create a golden AMI snapshot from the running instance
 
 # Exit immediately if any command fails, unset variable is used, or pipe fails
 set -euo pipefail
@@ -49,8 +52,9 @@ source "$DEPLOY_DIR/kafka.sh"        # step_deploy_kafka
 source "$DEPLOY_DIR/mlflow.sh"       # step_deploy_mlflow, step_fix_mlflow_experiment, step_mlflow_portforward
 source "$DEPLOY_DIR/flask.sh"        # step_deploy_flask, step_verify_flask
 source "$DEPLOY_DIR/airflow_pods.sh" # step_helm_upgrade, step_verify_airflow_image, step_restart_airflow_pods, step_setup_ml_venv
+source "$DEPLOY_DIR/ami.sh" 2>/dev/null || true   # ami.sh may not exist yet on first deploy
 
-trap '_print_deploy_summary' EXIT  # print the summary whenever the script exits, whether it succeeds, fails, or is interrupted
+trap '_DEPLOY_EXIT=$?; _mark_deploy_inactive; _print_deploy_summary' EXIT  # capture exit code first so _mark_deploy_inactive cannot clobber it
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -62,12 +66,21 @@ PROVISION=false
 SNOWFLAKE_SETUP=false
 # --fix-ml-venv: repair a broken ml-venv in the running scheduler pod without a full redeploy (~60s)
 FIX_ML_VENV=false
+# --wake: just wake the sleeping instance and exit (no deploy)
+WAKE_ONLY=false
+# --sleep: put the instance to sleep and exit (no deploy)
+SLEEP_ONLY=false
+# --bake-ami: create a golden AMI from the running instance for fast future boots
+BAKE_AMI=false
 for _arg in "$@"; do
     case "$_arg" in
         --dags-only)       DAGS_ONLY=true ;;
         --provision)       PROVISION=true ;;
         --snowflake-setup) SNOWFLAKE_SETUP=true ;;
         --fix-ml-venv)     FIX_ML_VENV=true ;;
+        --wake)            WAKE_ONLY=true ;;
+        --sleep)           SLEEP_ONLY=true ;;
+        --bake-ami)        BAKE_AMI=true ;;
         *) echo "ERROR: Unknown argument: $_arg"; exit 1 ;;
     esac
 done
@@ -75,12 +88,33 @@ done
 [ "$PROVISION" = true ]       && echo "--- Mode: --provision (running Terraform before deploy) ---"
 [ "$SNOWFLAKE_SETUP" = true ] && echo "--- Mode: --snowflake-setup (bootstrapping Snowflake objects before deploy) ---"
 [ "$FIX_ML_VENV" = true ]     && echo "--- Mode: --fix-ml-venv (repairing ml-venv in running scheduler pod only) ---"
+[ "$WAKE_ONLY" = true ]       && echo "--- Mode: --wake (waking instance only, no deploy) ---"
+[ "$SLEEP_ONLY" = true ]      && echo "--- Mode: --sleep (putting instance to sleep) ---"
+[ "$BAKE_AMI" = true ]        && echo "--- Mode: --bake-ami (creating golden AMI snapshot) ---"
 
 # --fix-ml-venv: skip the full deploy and only rebuild the ml-venv in the running pod
 # Useful after a deploy where step_setup_ml_venv printed a WARNING — no pod restart or Docker build needed
 if [ "$FIX_ML_VENV" = true ]; then
     _wait_scheduler_exec  # confirm the scheduler container is exec-ready before attempting pip install
     step_setup_ml_venv
+    exit 0
+fi
+
+# --wake: just wake the instance and exit — useful before SSH or when you need the server running
+if [ "$WAKE_ONLY" = true ]; then
+    step_wake
+    exit 0
+fi
+
+# --sleep: put the instance to sleep to save money — the AMI preserves everything for next time
+if [ "$SLEEP_ONLY" = true ]; then
+    step_sleep
+    exit 0
+fi
+
+# --bake-ami: snapshot the running instance so future boots are fast (~3-5 min instead of ~60 min)
+if [ "$BAKE_AMI" = true ]; then
+    "$DEPLOY_DIR/ami.sh" bake
     exit 0
 fi
 # ─────────────────────────────────────────────────────────────────────────────
@@ -103,6 +137,40 @@ fi
 # so it always points to whatever was running before the current deploy started.
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ── Auto-wake ─────────────────────────────────────────────────────────────────
+# For --provision: start the instance first, run Terraform to update the SSH
+# security group with the current IP, THEN wait for SSH — prevents timeout when
+# the operator's IP changed since the last deploy (which is exactly why --provision exists).
+# For all other modes: wake normally (scale ASG + wait for SSH together).
+_desired=$(aws autoscaling describe-auto-scaling-groups \
+    --auto-scaling-group-names pipeline-asg \
+    --region "$AWS_REGION" \
+    --query 'AutoScalingGroups[0].DesiredCapacity' --output text 2>/dev/null || echo "1")
+if [ "$PROVISION" = true ]; then
+    # Start instance boot now so it runs in parallel with Terraform (~1-2 min overlap)
+    if [ "$_desired" = "0" ]; then
+        echo "=== Instance is sleeping — launching before Terraform ==="
+        _scale_asg_up_if_sleeping  # starts boot; SSH wait happens after Terraform updates security group
+    fi
+    # Protect against auto-sleep shutting down the instance during this deploy
+    _mark_deploy_active
+    echo "=== Phase 0: Provisioning infrastructure via Terraform ==="
+    "$SCRIPT_DIR/deploy/terraform.sh" apply  # updates SSH ingress rule to current IP
+    # SSH wait is now safe — security group allows current IP and instance has had extra boot time
+    echo "=== Waiting for SSH (security group updated) ==="
+    _wait_ssh_ready
+    _wait_k3s_ready  # K3s takes 3-5 min after boot — must be Ready before helm/kafka/mlflow
+    echo "=== Instance is awake and SSH-ready ==="
+else
+    if [ "$_desired" = "0" ]; then
+        echo "=== Instance is sleeping — waking up before deploy ==="
+        step_wake
+    fi
+    # Protect against auto-sleep shutting down the instance during this deploy
+    _mark_deploy_active
+fi
+# ─────────────────────────────────────────────────────────────────────────────
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Phase -1: Snowflake bootstrap (only with --snowflake-setup flag)
 # Runs first so all Snowflake objects exist before the pipeline DAGs are deployed.
@@ -111,15 +179,6 @@ fi
 if [ "$SNOWFLAKE_SETUP" = true ]; then
     echo "=== Phase -1: Bootstrapping Snowflake infrastructure ==="
     step_snowflake_setup  # creates warehouse, DB, schemas, role, user via scripts/snowflake_setup.sql
-fi
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Phase 0: Terraform provision (only with --provision flag)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-if [ "$PROVISION" = true ]; then
-    echo "=== Phase 0: Provisioning infrastructure via Terraform ==="
-    "$SCRIPT_DIR/deploy/terraform.sh" apply  # updates security group IP + no-ops if nothing else changed
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -141,6 +200,10 @@ if [ "$DAGS_ONLY" = false ]; then
     # Add a timestamp to the image tag so each deploy gets a unique name, forcing K3S to treat it as a new image
     BUILD_TAG="3.1.8-dbt-$(date +%Y%m%d%H%M%S)"
     echo "Build tag: $BUILD_TAG"
+
+    # Remove stale NotReady nodes BEFORE launching background jobs — Kafka and MLflow pods would otherwise
+    # get NoSchedule/NoExecute taints and sit Pending the full timeout (AMI replacement leaves old node in K3s etcd)
+    _cleanup_stale_nodes
 
     # Run three independent steps at the same time in the background — they don't depend on each other
     # Each step runs in its own background process and gets a copy of all the current variables
@@ -238,6 +301,52 @@ echo ""
 echo "=== SSH Tunnel (run on Mac before opening browser) ==="
 echo "  ssh -L 6443:localhost:6443 -L 30080:localhost:30080 -L 32147:localhost:32147 -L 5500:localhost:5500 ec2-stock"
 echo ""
+
+# ── Auto-bake AMI ─────────────────────────────────────────────────────────────
+# After a successful full deploy, silently snapshot the server so the next cold boot
+# uses the latest code and starts in 3-5 min instead of 60 min.
+# This block only runs if every deploy step above passed — so we never snapshot a broken state.
+if [ "$DAGS_ONLY" = false ] && declare -f step_bake_ami > /dev/null 2>&1; then
+    _AMI_LOCKFILE="/tmp/ami-bake.lock"
+
+    # If a previous bake is still running, cancel it — the new deploy has newer code,
+    # so we never want an older (potentially buggy) AMI to finish baking.
+    if [ -f "$_AMI_LOCKFILE" ]; then
+        _lock_age=$(( $(date +%s) - $(stat -f %m "$_AMI_LOCKFILE" 2>/dev/null || echo 0) ))
+        if [ "$_lock_age" -lt 3600 ]; then
+            # Previous bake is still active — cancel it so the latest deploy always wins
+            echo "=== Cancelling previous AMI bake (newer deploy takes priority) ==="
+            cancel_in_progress_bake
+        else
+            rm -f "$_AMI_LOCKFILE"  # stale lock from a crashed bake — clean it up
+        fi
+    fi
+
+    # Always start a fresh bake after any cancellation/cleanup
+    echo "=== Baking AMI in background ==="
+    echo "  A snapshot of the server is being saved silently (takes 15-25 min)."
+    echo "  Services will briefly restart (~60 sec) for a clean snapshot — the server stays usable."
+    echo "  Progress: tail -f /tmp/ami-bake.log"
+    > /tmp/ami-bake.log   # truncate previous bake log before starting new one
+    # Run the bake in a detached shell — nohup keeps it alive after this terminal closes
+    nohup bash -c "
+        trap 'rm -f $_AMI_LOCKFILE' EXIT
+        SCRIPT_DIR='$SCRIPT_DIR'
+        PROJECT_ROOT='$PROJECT_ROOT'
+        DEPLOY_DIR='$DEPLOY_DIR'
+        AWS_REGION='$AWS_REGION'
+        AWS_PROFILE='${AWS_PROFILE:-terraform-dev}'
+        EC2_HOST='$EC2_HOST'
+        source '$DEPLOY_DIR/common.sh'
+        source '$DEPLOY_DIR/ami.sh'
+        step_bake_ami
+    " >> /tmp/ami-bake.log 2>&1 &
+    # Record PID in lock file so a future deploy can kill this process if needed
+    echo "PID=$!" > "$_AMI_LOCKFILE"
+    disown $! 2>/dev/null || true  # detach from job control so this script can exit cleanly
+fi
+echo ""
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ACCESS NOTE — these URLs are NOT open to the public by default.
 # AWS Security Groups (AWS's firewall) block ALL inbound ports unless you explicitly allow them.

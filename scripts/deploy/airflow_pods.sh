@@ -21,6 +21,97 @@ _wait_scheduler_exec() {
     "
 }
 
+_cleanup_stale_nodes() {
+    # Remove NotReady nodes left over from a prior EC2 instance — prevents "untolerated taint" scheduling errors.
+    # AMI-baked K3s etcd retains the old node entry; the new instance registers as a second node until the old one is removed.
+    ssh "$EC2_HOST" "
+        STALE=\$(kubectl get nodes --no-headers 2>/dev/null | awk '\$2 == \"NotReady\" {print \$1}')
+        if [ -z \"\$STALE\" ]; then echo 'No stale NotReady nodes found.'; exit 0; fi
+        for NODE in \$STALE; do
+            echo \"Removing stale NotReady node: \$NODE\"
+            kubectl delete node \"\$NODE\" --ignore-not-found=true
+        done
+    "
+}
+
+_cleanup_stale_pg_pvc() {
+    # Delete PostgreSQL PVC/PV whose node affinity points to a different node — prevents pod Pending after instance replacement.
+    # local-path provisioner locks PVs to the hostname where they were created; a new AMI instance has a different hostname.
+    ssh "$EC2_HOST" "
+        PVC_PHASE=\$(kubectl get pvc data-airflow-postgresql-0 -n airflow-my-namespace \
+            -o jsonpath='{.status.phase}' 2>/dev/null || echo '')
+        [ \"\$PVC_PHASE\" != 'Bound' ] && exit 0  # no Bound PVC — nothing to check
+        PV_NAME=\$(kubectl get pvc data-airflow-postgresql-0 -n airflow-my-namespace \
+            -o jsonpath='{.spec.volumeName}' 2>/dev/null || echo '')
+        [ -z \"\$PV_NAME\" ] && exit 0
+        # local-path provisioner records the creating node's hostname in nodeAffinity
+        PV_NODE=\$(kubectl get pv \"\$PV_NAME\" \
+            -o jsonpath='{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]}' \
+            2>/dev/null || echo '')
+        [ -z \"\$PV_NODE\" ] && exit 0  # no node affinity — not a local-path PV, skip
+        CURRENT_NODE=\$(kubectl get nodes --no-headers | awk '\$2 == \"Ready\" {print \$1}' | head -1)
+        if [ -n \"\$CURRENT_NODE\" ] && [ \"\$PV_NODE\" != \"\$CURRENT_NODE\" ]; then
+            echo \"Stale PostgreSQL PVC: PV '\$PV_NAME' is affined to '\$PV_NODE' but current node is '\$CURRENT_NODE'\"
+            echo 'Deleting stale PVC + PV so Helm can provision fresh storage on the correct node...'
+            kubectl delete pvc data-airflow-postgresql-0 -n airflow-my-namespace --ignore-not-found=true
+            kubectl delete pv \"\$PV_NAME\" --ignore-not-found=true
+            sleep 2  # give K8s API a moment to record the deletion before Helm runs
+        else
+            echo \"PostgreSQL PVC OK — PV '\$PV_NAME' is on current node '\$CURRENT_NODE'\"
+        fi
+    "
+}
+
+_cleanup_stale_dag_log_pvcs() {
+    # Delete dag-pvc/dag-pv and log-pvc/log-pv if their bound PVs have nodeAffinity pointing to the wrong node.
+    # K3s etcd baked into the AMI retains PV objects from the baking instance; a replacement instance has a
+    # different hostname, so the provisioner-injected nodeAffinity no longer matches and pods sit Pending.
+    # This mirrors the same pattern used by _cleanup_stale_pg_pvc and _cleanup_stale_kafka_pvc.
+    local MANIFESTS_PATH="$EC2_HOME/airflow/manifests"
+    for ENTRY in \
+        "dag-pvc dag-pv pv-dags.yaml pvc-dags.yaml airflow-my-namespace" \
+        "log-pvc log-pv pv-airflow-logs.yaml pvc-airflow-logs.yaml airflow-my-namespace"; do
+        # Split the whitespace-separated entry into named variables
+        read -r PVC_NAME PV_MANIFEST_NAME PV_FILE PVC_FILE NS <<< "$ENTRY"
+        ssh "$EC2_HOST" "
+            PVC_PHASE=\$(kubectl get pvc '$PVC_NAME' -n '$NS' \
+                -o jsonpath='{.status.phase}' 2>/dev/null || echo '')
+            if [ -z \"\$PVC_PHASE\" ]; then
+                echo 'No $PVC_NAME found — nothing to check.'
+                exit 0
+            fi
+            if [ \"\$PVC_PHASE\" != 'Bound' ]; then
+                echo \"$PVC_NAME phase is '\$PVC_PHASE' — skipping stale check.\"
+                exit 0
+            fi
+            # Get the PV that is actually bound (may be a generated pvc-abc123 name, not dag-pv)
+            BOUND_PV=\$(kubectl get pvc '$PVC_NAME' -n '$NS' \
+                -o jsonpath='{.spec.volumeName}' 2>/dev/null || echo '')
+            [ -z \"\$BOUND_PV\" ] && exit 0
+            # local-path provisioner records the creating node's hostname in nodeAffinity
+            PV_NODE=\$(kubectl get pv \"\$BOUND_PV\" \
+                -o jsonpath='{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]}' \
+                2>/dev/null || echo '')
+            [ -z \"\$PV_NODE\" ] && echo \"$PVC_NAME PV '\$BOUND_PV' has no node affinity — not stale, skipping.\" && exit 0
+            CURRENT_NODE=\$(kubectl get nodes --no-headers | awk '\$2 == \"Ready\" {print \$1}' | head -1)
+            if [ -n \"\$CURRENT_NODE\" ] && [ \"\$PV_NODE\" != \"\$CURRENT_NODE\" ]; then
+                echo \"Stale $PVC_NAME: PV '\$BOUND_PV' affined to '\$PV_NODE' but current node is '\$CURRENT_NODE'\"
+                echo 'Deleting stale PVC + bound PV so fresh manifests can provision correct storage...'
+                kubectl delete pvc '$PVC_NAME' -n '$NS' --ignore-not-found=true
+                kubectl delete pv \"\$BOUND_PV\" --ignore-not-found=true
+                # Also remove the named manifest PV if it exists separately (may be stuck in Available state)
+                kubectl delete pv '$PV_MANIFEST_NAME' --ignore-not-found=true
+                sleep 2  # give K8s API a moment to record the deletion before re-applying
+                kubectl apply -f $MANIFESTS_PATH/$PV_FILE
+                kubectl apply -f $MANIFESTS_PATH/$PVC_FILE -n '$NS'
+                echo \"Recreated $PVC_NAME with fresh PV (no stale nodeAffinity)\"
+            else
+                echo \"$PVC_NAME OK — PV '\$BOUND_PV' is on current node '\$CURRENT_NODE'\"
+            fi
+        "
+    done
+}
+
 step_helm_upgrade() {
     echo "=== Step 2d: Applying Helm values to live Airflow release ==="
     # Copying values.yaml to EC2 (step 2b) just puts the file there — it does NOT update the live Airflow deployment.
@@ -40,6 +131,14 @@ step_helm_upgrade() {
     # so helm upgrade refuses to adopt them on subsequent runs. Safe: both jobs complete during first install.
     ssh "$EC2_HOST" "kubectl delete job airflow-create-user airflow-run-airflow-migrations \
         -n airflow-my-namespace --ignore-not-found=true"
+
+    _cleanup_stale_nodes          # remove NotReady nodes left over from prior EC2 instance
+    _cleanup_stale_pg_pvc         # remove PostgreSQL PVC/PV bound to wrong node before Helm provisions storage
+    _cleanup_stale_dag_log_pvcs   # remove dag-pvc/log-pvc PVs with stale nodeAffinity from AMI bake
+
+    # Ensure the log hostPath is group-writable by GID 0 (airflow's primary group) before Helm applies fsGroup=0;
+    # without this the dag-processor crashes on first start because it can't create /opt/airflow/logs/dag_processor/
+    ssh "$EC2_HOST" "sudo chown ubuntu:root /opt/airflow/logs 2>/dev/null; sudo chmod 775 /opt/airflow/logs"
 
     ssh "$EC2_HOST" "helm upgrade --install airflow apache-airflow/airflow \
         -n airflow-my-namespace \
@@ -86,16 +185,135 @@ step_helm_upgrade() {
     # (backoffLimit=6) and enters a permanent Failed state. Waiting for PostgreSQL first ensures the
     # database is accepting connections, so the migration job's next retry (or a recreated job) succeeds.
     ssh "$EC2_HOST" "
-        echo 'Waiting for PostgreSQL pod to be Ready (up to 300s)...'
-        kubectl wait pod/airflow-postgresql-0 \
-            -n airflow-my-namespace \
-            --for=condition=Ready \
-            --timeout=300s || {
-            echo 'ERROR: PostgreSQL pod did not become Ready within 300s.'
-            kubectl describe pod airflow-postgresql-0 -n airflow-my-namespace 2>/dev/null | tail -20 || true
-            exit 1
-        }
-        echo 'PostgreSQL pod is Ready.'
+        # Log state at the start so the deploy log shows what PostgreSQL was doing before we waited
+        echo 'PostgreSQL pod current status:'
+        kubectl get pod airflow-postgresql-0 -n airflow-my-namespace --no-headers 2>/dev/null || true
+
+        # Early-exit: a pod with DisruptionTarget=True or in Terminating phase can never become Ready —
+        # the node controller evicted it (e.g. after a NodeNotReady event). Waiting 600s would be wasted;
+        # force-delete now so the StatefulSet controller can start a fresh pod immediately.
+        DISRUPTION=\$(kubectl get pod airflow-postgresql-0 -n airflow-my-namespace \
+            -o jsonpath='{.status.conditions[?(@.type==\"DisruptionTarget\")].status}' 2>/dev/null || echo '')
+        POD_PHASE=\$(kubectl get pod airflow-postgresql-0 -n airflow-my-namespace \
+            --no-headers 2>/dev/null | awk '{print \$3}' || echo '')
+        if [ \"\$DISRUPTION\" = 'True' ] || echo \"\$POD_PHASE\" | grep -qi 'Terminating'; then
+            echo 'PostgreSQL pod is disrupted/terminating — force-deleting so Kubernetes can schedule a fresh pod immediately...'
+            kubectl delete pod airflow-postgresql-0 -n airflow-my-namespace \
+                --force --grace-period=0 2>/dev/null || true
+            sleep 3  # give the API server a moment to record the deletion before polling begins
+        fi
+
+        # Detect a stale PVC so the pod does not wait 600s before we notice it cannot mount storage
+        PVC_PHASE=\$(kubectl get pvc data-airflow-postgresql-0 -n airflow-my-namespace \
+            -o jsonpath='{.status.phase}' 2>/dev/null || echo '')
+        echo \"PostgreSQL PVC phase: \$PVC_PHASE\"
+        if [ \"\$PVC_PHASE\" = 'Lost' ]; then
+            # PVC is Lost — backing PV path is gone; delete so K3s provisions fresh storage on next pod start
+            echo 'PVC is in Lost state — deleting so K3s can provision fresh storage on the new pod...'
+            kubectl delete pvc data-airflow-postgresql-0 -n airflow-my-namespace --ignore-not-found=true
+            sleep 3  # let K3s reconcile before polling starts
+        elif [ \"\$PVC_PHASE\" = 'Bound' ]; then
+            # Bound PVC can still be stale if bound to a different node or if its backing directory is gone
+            PV_NAME=\$(kubectl get pvc data-airflow-postgresql-0 -n airflow-my-namespace \
+                -o jsonpath='{.spec.volumeName}' 2>/dev/null || echo '')
+            if [ -n \"\$PV_NAME\" ]; then
+                # Node-affinity check — local-path locks PVs to the node they were created on
+                PV_NODE=\$(kubectl get pv \"\$PV_NAME\" \
+                    -o jsonpath='{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]}' \
+                    2>/dev/null || echo '')
+                READY_NODE=\$(kubectl get nodes --no-headers | awk '\$2 == \"Ready\" {print \$1}' | head -1)
+                # Path check — local-path uses spec.hostPath.path (not spec.local.path which was wrong before)
+                PV_PATH=\$(kubectl get pv \"\$PV_NAME\" \
+                    -o jsonpath='{.spec.hostPath.path}' 2>/dev/null || echo '')
+                STALE=false
+                if [ -n \"\$PV_NODE\" ] && [ -n \"\$READY_NODE\" ] && [ \"\$PV_NODE\" != \"\$READY_NODE\" ]; then
+                    # PV is affined to a different node — stale from an AMI-based instance replacement
+                    echo \"PV \$PV_NAME is affined to '\$PV_NODE' but current node is '\$READY_NODE' — stale PVC\"
+                    STALE=true
+                elif [ -n \"\$PV_PATH\" ] && ! sudo test -d \"\$PV_PATH\"; then
+                    # PV directory missing on this node — stale from a prior instance or spot rebuild
+                    echo \"PV \$PV_NAME points to missing path \$PV_PATH — stale PVC\"
+                    STALE=true
+                fi
+                if [ \"\$STALE\" = true ]; then
+                    echo 'Deleting stale PVC + PV to force fresh provisioning on the correct node...'
+                    kubectl delete pvc data-airflow-postgresql-0 -n airflow-my-namespace --ignore-not-found=true
+                    kubectl delete pv \"\$PV_NAME\" --ignore-not-found=true
+                    sleep 3  # let K3s reconcile before polling starts
+                fi
+            fi
+        fi
+
+        # Poll readiness with progress every 30s — kubectl wait is completely silent during its timeout,
+        # making the deploy appear frozen. This loop shows the user the script is still running. 20×30s=600s.
+        echo 'Polling PostgreSQL pod readiness (up to 600s)...'
+        PG_READY=false
+        for i in \$(seq 1 20); do
+            READY=\$(kubectl get pod airflow-postgresql-0 -n airflow-my-namespace \
+                -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' 2>/dev/null || echo '')
+            if [ \"\$READY\" = 'True' ]; then
+                echo \"PostgreSQL pod is Ready (attempt \$i/20).\"
+                PG_READY=true
+                break
+            fi
+            PHASE=\$(kubectl get pod airflow-postgresql-0 -n airflow-my-namespace \
+                --no-headers 2>/dev/null | awk '{print \$3}' || echo 'not found')
+            echo \"  Attempt \$i/20 — PostgreSQL not Ready yet (phase: \$PHASE) — waiting 30s...\"
+            # On attempt 1, print cluster state so the deploy log immediately shows why the pod is Pending
+            if [ \"\$i\" -eq 1 ] && [ \"\$PHASE\" = 'Pending' ]; then
+                echo '--- Node status ---'
+                kubectl get nodes --no-headers 2>/dev/null || true
+                echo '--- PVC status ---'
+                kubectl get pvc data-airflow-postgresql-0 -n airflow-my-namespace 2>/dev/null || true
+                echo '--- Pod events (last 8 lines) ---'
+                kubectl describe pod airflow-postgresql-0 -n airflow-my-namespace 2>/dev/null \
+                    | grep -A 10 'Events:' | tail -8 || true
+            fi
+            # On attempt 3, if PVC still not Bound after 90s, force-reprovision to recover from race conditions
+            if [ \"\$i\" -eq 3 ] && [ \"\$PHASE\" = 'Pending' ]; then
+                PVC_PHASE_NOW=\$(kubectl get pvc data-airflow-postgresql-0 -n airflow-my-namespace \
+                    -o jsonpath='{.status.phase}' 2>/dev/null || echo '')
+                if [ \"\$PVC_PHASE_NOW\" != 'Bound' ]; then
+                    echo \"Force-reprovisioning: PVC phase is '\$PVC_PHASE_NOW' after 3 attempts — deleting pod + PVC to restart storage binding...\"
+                    kubectl delete pod airflow-postgresql-0 -n airflow-my-namespace \
+                        --force --grace-period=0 2>/dev/null || true
+                    kubectl delete pvc data-airflow-postgresql-0 -n airflow-my-namespace \
+                        --ignore-not-found=true 2>/dev/null || true
+                    sleep 5  # let StatefulSet and K3s local-path provisioner reconcile
+                fi
+            fi
+            sleep 30
+        done
+
+        if [ \"\$PG_READY\" = false ]; then
+            # Pod stuck after 600s — readiness probe never recovered; restart to unstick it
+            echo 'WARNING: PostgreSQL not Ready after 600s — restarting pod to force a clean recovery...'
+            kubectl describe pod airflow-postgresql-0 -n airflow-my-namespace 2>/dev/null | tail -30 || true
+            kubectl delete pod airflow-postgresql-0 -n airflow-my-namespace --ignore-not-found=true
+            # Wait for old pod to be fully gone before watching for the new one
+            kubectl wait --for=delete pod/airflow-postgresql-0 \
+                -n airflow-my-namespace --timeout=30s 2>/dev/null || true
+            # Poll the restarted pod — another silent kubectl wait here would appear frozen again. 10×30s=300s.
+            echo 'Polling restarted PostgreSQL pod readiness (up to 300s)...'
+            PG_READY2=false
+            for i in \$(seq 1 10); do
+                READY=\$(kubectl get pod airflow-postgresql-0 -n airflow-my-namespace \
+                    -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' 2>/dev/null || echo '')
+                if [ \"\$READY\" = 'True' ]; then
+                    echo \"PostgreSQL pod is Ready after restart (attempt \$i/10).\"
+                    PG_READY2=true
+                    break
+                fi
+                PHASE=\$(kubectl get pod airflow-postgresql-0 -n airflow-my-namespace \
+                    --no-headers 2>/dev/null | awk '{print \$3}' || echo 'not found')
+                [ \$i -lt 10 ] && echo \"  Attempt \$i/10 — PostgreSQL still starting (phase: \$PHASE) — waiting 30s...\" && sleep 30
+            done
+            if [ \"\$PG_READY2\" = false ]; then
+                echo 'ERROR: PostgreSQL pod did not become Ready even after restart.'
+                kubectl describe pod airflow-postgresql-0 -n airflow-my-namespace 2>/dev/null | tail -30 || true
+                exit 1
+            fi
+        fi
     "
 
     # Phase 2: poll migration job for both Complete and Failed conditions.
@@ -136,6 +354,8 @@ step_helm_upgrade() {
                     RETRIED=true
                     echo 'Retry job created — continuing to poll...'
                 fi
+                # Print progress every 3 iterations (every ~30s) so the terminal doesn't appear frozen
+                [ \$(( i % 3 )) -eq 0 ] && echo \"  Still waiting for migration job (attempt \$i/60, \${i}0s elapsed)...\"
                 sleep 10
             done
             echo 'ERROR: Migration job did not complete within 600s.'

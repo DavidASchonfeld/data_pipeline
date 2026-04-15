@@ -13,7 +13,7 @@ spec:
   containers:
   - name: flask-container-inside-pod
     image: ${ECR_REGISTRY}/my-flask-app:latest  # deploy.sh substitutes real ECR URI at deploy time
-    imagePullPolicy: Always  # Always pull latest image from ECR to ensure up-to-date code
+    imagePullPolicy: IfNotPresent  # Use AMI-cached image on boot (saves ~30-60s); deploy.sh clears cache before each new deploy
     envFrom:
     - secretRef:
         name: db-credentials  # injects DB_USER, DB_PASSWORD, DB_HOST, DB_NAME

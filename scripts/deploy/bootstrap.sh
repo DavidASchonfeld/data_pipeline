@@ -40,6 +40,22 @@ step_auto_bootstrap() {
     # Add ubuntu to docker group so deploy.sh can run docker commands without sudo
     ssh "$EC2_HOST" "sudo usermod -aG docker ubuntu"
 
+    # ── Swap file ─────────────────────────────────────────────────────────────
+    echo "=== Bootstrap: Creating 4 GB swap file (prevents OOM during Docker image builds) ==="
+    # pip install of dbt-core + dbt-snowflake spikes RAM to 2-4 GB; without swap the OOM killer fires and kills the Docker build
+    ssh "$EC2_HOST" "
+        if [ ! -f /swapfile ]; then
+            sudo fallocate -l 4G /swapfile \
+            && sudo chmod 600 /swapfile \
+            && sudo mkswap /swapfile \
+            && sudo swapon /swapfile \
+            && echo '/swapfile swap swap defaults 0 0' | sudo tee -a /etc/fstab \
+            && echo '✓ 4 GB swap file created and active'
+        else
+            echo '✓ Swap file already exists — skipping'
+        fi
+    "
+
     # ── AWS CLI v2 ────────────────────────────────────────────────────────────
     echo "=== Bootstrap: Installing AWS CLI v2 ==="
     # apt install awscli gives CLI v1 (deprecated); use the official v2 installer

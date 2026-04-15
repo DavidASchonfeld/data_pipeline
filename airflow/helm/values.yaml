@@ -1,5 +1,11 @@
 executor: LocalExecutor
 
+# Airflow containers run as uid=50000, gid=0(root); fsGroup=0 tells K3s to chown the log hostPath mount
+# to gid=0 at pod start so the container can create log subdirectories (e.g. dag_processor/)
+securityContexts:
+  pods:
+    fsGroup: 0
+
 # Override base Airflow image to use official Apache image (bitnami/airflow:3.0.5 was removed from Docker Hub)
 # Also override Redis image — bitnami/redis:8.2.1 doesn't exist on Docker Hub; use official Redis
 images:
