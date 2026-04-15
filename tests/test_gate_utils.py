@@ -16,7 +16,10 @@ sys.modules.setdefault("file_logger", _file_logger)
 # Stub the airflow.sdk.Variable used inside check_daily_gate (deferred import)
 _airflow_sdk = types.ModuleType("airflow.sdk")
 _airflow_sdk.Variable = MagicMock()
-sys.modules.setdefault("airflow", types.ModuleType("airflow"))
+# patch("airflow.sdk.Variable") resolves via getattr(airflow_mod, 'sdk'), so sdk must be
+# set as an attribute on the airflow module object — not just in sys.modules
+_airflow_mod = sys.modules.setdefault("airflow", types.ModuleType("airflow"))
+_airflow_mod.sdk = _airflow_sdk  # attach sdk attr so patch() can walk the dotted path
 sys.modules.setdefault("airflow.sdk", _airflow_sdk)
 
 # Ensure sys.path includes the dags directory so 'shared' is importable

@@ -56,6 +56,7 @@ Navigate all project documentation from here. Each link goes to the single sourc
 | [K3S Risks](infrastructure/K3S_RISKS.md) | Single-node tradeoffs, containerd, Helm state, security |
 | [Persistence](infrastructure/PERSISTENCE.md) | PV/PVC deep dive: hostPath risks, filesystem cache, recovery |
 | [ECR Setup](infrastructure/ECR_SETUP.md) | AWS ECR configuration, image push workflow |
+| [Automated Tests](infrastructure/CICD_TESTS.md) | What the CI checks do, when they run, how to read results, cost impact |
 
 ---
 
