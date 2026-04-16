@@ -21,15 +21,27 @@ from config import (
 if DB_BACKEND == "snowflake":
     # Snowflake engine — set DB_BACKEND=snowflake in the K8s secret to activate
     from snowflake.sqlalchemy import URL as SnowflakeURL
-    DB_ENGINE = create_engine(SnowflakeURL(
-        account=SNOWFLAKE_ACCOUNT,
-        user=SNOWFLAKE_USER,
-        password=SNOWFLAKE_PASSWORD,
-        database=SNOWFLAKE_DATABASE,
-        schema=SNOWFLAKE_SCHEMA,  # dashboard reads MARTS, not RAW
-        warehouse=SNOWFLAKE_WAREHOUSE,
-        role=SNOWFLAKE_ROLE,  # explicit role — prevents default role from blocking MARTS table access
-    ))
+    DB_ENGINE = create_engine(
+        SnowflakeURL(
+            account=SNOWFLAKE_ACCOUNT,
+            user=SNOWFLAKE_USER,
+            password=SNOWFLAKE_PASSWORD,
+            database=SNOWFLAKE_DATABASE,
+            schema=SNOWFLAKE_SCHEMA,  # dashboard reads MARTS, not RAW
+            warehouse=SNOWFLAKE_WAREHOUSE,
+            role=SNOWFLAKE_ROLE,  # explicit role — prevents default role from blocking MARTS table access
+        ),
+        pool_pre_ping=True,  # verify each connection is alive before use — prevents stale-connection hangs after spot replacement
+        connect_args={
+            "login_timeout": 10,  # cap authentication handshake to 10 s
+            "session_parameters": {
+                # Kill any query running longer than 60 s — prevents Gunicorn workers
+                # from blocking indefinitely when the Snowflake warehouse is resuming
+                # after auto-suspend (wake-up normally takes 10–30 s, so 60 s is generous)
+                "STATEMENT_TIMEOUT_IN_SECONDS": "60",
+            },
+        },
+    )
 else:
     # MariaDB engine (default) — stays active until DB_BACKEND=snowflake is set
     try:

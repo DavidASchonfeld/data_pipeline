@@ -25,6 +25,8 @@ step_sync_helm_dockerfile() {
 }
 
 step_sync_manifests_secrets() {
+    # Verify K3s API server is accepting connections before kubectl apply runs
+    _wait_k3s_api_ready
     echo "=== Step 2c: Syncing Kubernetes manifests to EC2 ==="
     # These copies let you run kubectl commands directly on EC2 if you ever need to
     # (Git is still the master copy — these are just for convenience on the EC2 side)

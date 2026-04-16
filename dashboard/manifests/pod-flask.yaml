@@ -8,6 +8,7 @@ metadata:
   labels:
     app: dancing-flask-pod
 spec:
+  terminationGracePeriodSeconds: 60  # gives Gunicorn time to finish in-flight requests before SIGKILL; must be > graceful_timeout in gunicorn.conf.py (30 s)
   imagePullSecrets:
   - name: ecr-credentials  # K8s secret created/refreshed by deploy.sh Step 5; allows containerd to pull from ECR
   containers:
@@ -37,11 +38,13 @@ spec:
         cpu: "500m"
     # Liveness probe: restart pod if health endpoint fails (prevents hung processes)
     # Detects "zombie" processes that appear running but are actually stuck; auto-heals via restart
+    # initialDelaySeconds=120: --preload runs prewarm_cache() synchronously before workers start (~60s);
+    # probing before workers are up causes timeouts that incorrectly trigger a restart loop
     livenessProbe:
       httpGet:
         path: /health  # Calls Flask /health endpoint; expects 200 status + response
         port: 5000    # Flask port inside pod
-      initialDelaySeconds: 30  # Wait 30s after pod starts before first check (allow startup)
+      initialDelaySeconds: 120 # Wait 120s — covers --preload prewarm window (~60s) with a safe buffer
       periodSeconds: 10        # Check every 10 seconds
       timeoutSeconds: 5        # Fail probe if no response within 5 seconds (indicates freeze)
       failureThreshold: 3      # Restart pod after 3 consecutive failures (30s hung = restart)
@@ -49,7 +52,7 @@ spec:
     # Removes pod from load balancer while initializing; re-adds once healthy
     readinessProbe:
       httpGet:
-        path: /health  # Same health check endpoint
+        path: /health/ready  # waits until prewarm_cache() finishes — blocks traffic while cache is cold
         port: 5000
       initialDelaySeconds: 10  # Wait 10s before first check (faster than liveness)
       periodSeconds: 5         # Check every 5 seconds (frequent, catches issues quickly)

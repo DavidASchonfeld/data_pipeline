@@ -129,16 +129,17 @@ _print_deploy_summary() {
 # produce a transient "failed commit on ref" race condition on the first attempt.
 import_image_to_k3s() {
     local image_name="$1" grep_term="$2"
-    for _attempt in 1 2; do
+    # 5 retries with 15s delay — containerd lease errors on large images need more breathing room
+    for _attempt in 1 2 3 4 5; do
         if ssh "$EC2_HOST" "
-            echo 'Importing $image_name into K3S containerd (attempt $_attempt/2)...' &&
+            echo 'Importing $image_name into K3S containerd (attempt $_attempt/5)...' &&
             docker save '$image_name' | sudo k3s ctr images import - &&
             echo 'Verifying image is visible to K3S...' &&
             sudo k3s ctr images ls | grep '$grep_term'
         "; then
             return 0
         fi
-        [ "$_attempt" -lt 2 ] && echo "K3S import attempt $_attempt failed, retrying in 5s..." && sleep 5
+        [ "$_attempt" -lt 5 ] && echo "K3S import attempt $_attempt failed, retrying in 15s..." && sleep 15
     done
     return 1
 }
@@ -201,6 +202,32 @@ _wait_k3s_ready() {
         [ "$_attempt" -lt 30 ] && sleep 10
     done
     echo "✗ K3s node did not become Ready after 5 minutes"
+    return 1
+}
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── K3s API server readiness helper ──────────────────────────────────────────
+# kubectl apply fetches /openapi/v2 before doing anything — that endpoint
+# initializes later than kubectl get nodes, so we verify it explicitly.
+# /healthz returns "ok" when the API server is fully ready.
+_wait_k3s_api_ready() {
+    echo "=== Waiting for K3s API server to be ready (up to 6 minutes) ==="
+    # 36 attempts × 10s = 6 min; uses kubectl's own kubeconfig so no curl/TLS issues
+    for _attempt in $(seq 1 36); do
+        if ssh "$EC2_HOST" "kubectl get --raw /healthz 2>/dev/null | grep -q 'ok'"; then
+            echo "✓ K3s API server ready (attempt $_attempt)"
+            return 0
+        fi
+        # After 5 failed attempts (~50s), actively restart k3s to break out of a stuck/crashed state
+        if [ "$_attempt" -eq 5 ]; then
+            echo "K3s API unresponsive after 50s — restarting k3s service to recover..."
+            ssh "$EC2_HOST" "sudo systemctl restart k3s" || true
+            echo "K3s restarted — waiting for it to come back up..."
+        fi
+        echo "K3s API not ready yet (attempt $_attempt/36), retrying in 10s..."
+        [ "$_attempt" -lt 36 ] && sleep 10
+    done
+    echo "✗ K3s API server did not become ready after 6 minutes"
     return 1
 }
 # ─────────────────────────────────────────────────────────────────────────────

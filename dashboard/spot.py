@@ -215,13 +215,25 @@ def register_offline_callbacks(dash_app, prefix: str) -> None:
     When the fetch fails, the banner is shown; when it succeeds, it stays hidden.
     """
     # Clientside callback: runs entirely in the browser every 15 s — no server round-trip needed
-    # fetch('/health') catches both HTTP errors and total network failures (server fully down)
+    # Differentiates 503 (cache warming — normal at startup) from a true outage or network failure
     dash_app.clientside_callback(
         """
         function(n_intervals) {
-            return fetch('/health', {cache: 'no-store'})
-                .then(function(r) { return r.ok ? {'display': 'none'} : {'display': 'flex'}; })
-                .catch(function()  { return {'display': 'flex'}; });
+            return fetch('/health/ready', {cache: 'no-store'})
+                .then(function(r) {
+                    // 200 — server is up and cache is warm; keep banner hidden
+                    if (r.ok) return {'display': 'none'};
+                    // 503 — server is still pre-warming its data cache; this is normal at startup
+                    // and during spot replacement — recovery.js handles the reload, so hide the
+                    // banner here to avoid a false "server offline" alarm for the user
+                    if (r.status === 503) return {'display': 'none'};
+                    // any other error code (502, 504, etc.) — unexpected problem; show banner
+                    return {'display': 'flex'};
+                })
+                .catch(function() {
+                    // fetch failed entirely — server is unreachable; show banner
+                    return {'display': 'flex'};
+                });
         }
         """,
         Output(f"{prefix}-offline-banner", "style"),
