@@ -1,6 +1,5 @@
 import dash
 import flask
-import threading  # used to run cache pre-warming without blocking app startup
 from dash import dcc, html
 from flask import Flask
 
@@ -289,10 +288,10 @@ register_spot_callbacks(weather_dash_app, "weather")  # wire spot interruption c
 register_offline_callbacks(weather_dash_app, "weather")  # wire offline detection banner onto the weather Dash app
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Pre-warm the cache in a background thread immediately after startup — Snowflake is queried
-# once here so every subsequent user request hits the in-memory cache instead of the DB.
-# daemon=True means this thread won't block the process from shutting down if it's still running.
-threading.Thread(target=lambda: prewarm_cache(TICKERS), daemon=True).start()
+# Pre-warm the cache synchronously before Gunicorn forks workers (requires --preload in Dockerfile).
+# Running this here means every forked worker inherits a hot _QUERY_CACHE via copy-on-write,
+# so the very first user callback hits the in-memory cache instead of waiting on Snowflake.
+prewarm_cache(TICKERS)
 
 
 # Runs if you call the script directly

@@ -326,9 +326,10 @@ step_helm_upgrade() {
     ssh "$EC2_HOST" "
         if kubectl get job airflow-run-airflow-migrations -n airflow-my-namespace \
                 --ignore-not-found --no-headers 2>/dev/null | grep -q .; then
-            echo 'Migration job found — polling for completion (up to 600s)...'
+            echo 'Migration job found — polling for completion (up to 900s)...'
             RETRIED=false
-            for i in \$(seq 1 60); do
+            POD_RESTARTED=false
+            for i in \$(seq 1 90); do
                 STATUS=\$(kubectl get job airflow-run-airflow-migrations -n airflow-my-namespace \
                     -o jsonpath='{.status.conditions[?(@.status==\"True\")].type}' 2>/dev/null || echo '')
                 if echo \"\$STATUS\" | grep -q 'Complete'; then
@@ -354,11 +355,51 @@ step_helm_upgrade() {
                     RETRIED=true
                     echo 'Retry job created — continuing to poll...'
                 fi
+                # Detect pod stuck in an unrecoverable image error — fail fast instead of waiting 900s
+                MIG_POD=\$(kubectl get pods -n airflow-my-namespace \
+                    -l job-name=airflow-run-airflow-migrations --no-headers 2>/dev/null | awk '{print \$1}' | head -1)
+                if [ -n \"\$MIG_POD\" ]; then
+                    WAIT_REASON=\$(kubectl get pod \"\$MIG_POD\" -n airflow-my-namespace \
+                        -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null || echo '')
+                    if echo \"\$WAIT_REASON\" | grep -qE 'CrashLoopBackOff|ErrImageNeverPull|ImagePullBackOff'; then
+                        echo \"Migration pod stuck in \$WAIT_REASON — printing logs and forcing recreation...\"
+                        kubectl logs \"\$MIG_POD\" -n airflow-my-namespace --tail=20 2>/dev/null || true
+                        if [ \"\$RETRIED\" = false ]; then
+                            kubectl delete job airflow-run-airflow-migrations -n airflow-my-namespace --ignore-not-found=true
+                            helm template airflow apache-airflow/airflow \
+                                -n airflow-my-namespace \
+                                --version 1.20.0 \
+                                --set images.airflow.tag=$BUILD_TAG \
+                                -f $EC2_HELM_PATH/values.yaml \
+                                -s templates/jobs/migrate-database-job.yaml \
+                                | kubectl apply -f -
+                            RETRIED=true
+                            echo 'Retry job created after image/crash error — continuing to poll...'
+                        else
+                            echo 'ERROR: Recreated migration job pod also stuck in error state.'
+                            exit 1
+                        fi
+                    fi
+                    # If the pod has been Running for 6 minutes with no completion, it is likely hanging
+                    # on a stale PostgreSQL lock or connection — restart the pod to get a fresh connection
+                    if [ \$i -eq 36 ] && [ \"\$POD_RESTARTED\" = false ]; then
+                        POD_PHASE=\$(kubectl get pod \"\$MIG_POD\" -n airflow-my-namespace \
+                            --no-headers 2>/dev/null | awk '{print \$3}' || echo '')
+                        if [ \"\$POD_PHASE\" = 'Running' ]; then
+                            echo \"Migration pod has been Running for 360s with no completion — restarting pod to clear stale DB lock...\"
+                            kubectl logs \"\$MIG_POD\" -n airflow-my-namespace --tail=20 2>/dev/null || true
+                            kubectl delete pod \"\$MIG_POD\" -n airflow-my-namespace \
+                                --force --grace-period=0 2>/dev/null || true
+                            POD_RESTARTED=true
+                            echo 'Pod restarted — Kubernetes will create a replacement, continuing to poll...'
+                        fi
+                    fi
+                fi
                 # Print progress every 3 iterations (every ~30s) so the terminal doesn't appear frozen
-                [ \$(( i % 3 )) -eq 0 ] && echo \"  Still waiting for migration job (attempt \$i/60, \${i}0s elapsed)...\"
+                [ \$(( i % 3 )) -eq 0 ] && echo \"  Still waiting for migration job (attempt \$i/90, \${i}0s elapsed)...\"
                 sleep 10
             done
-            echo 'ERROR: Migration job did not complete within 600s.'
+            echo 'ERROR: Migration job did not complete within 900s.'
             kubectl describe job airflow-run-airflow-migrations -n airflow-my-namespace 2>/dev/null | tail -20 || true
             kubectl logs job/airflow-run-airflow-migrations -n airflow-my-namespace --tail=30 2>/dev/null || true
             exit 1
@@ -449,7 +490,6 @@ step_restart_airflow_pods() {
                 -n airflow-my-namespace --no-headers 2>/dev/null | grep -c .)
             [ \"\$COUNT\" -le 1 ] && break
             if [ \"\$i\" -eq 60 ]; then
-                echo 'WARNING: still '\$COUNT' dag-processor pods after 5 min — old RS may not have scaled down'
                 # Force-scale ALL old RSes to 0 — after multiple deploys several stale RSes can exist;
                 # only the newest RS (last by creation time) should have desired > 0
                 RS_LIST=\$(kubectl get rs -l component=dag-processor \
@@ -465,7 +505,22 @@ step_restart_airflow_pods() {
                         echo \"Force-scaling old RS \$OLD_RS to 0 to prevent ErrImageNeverPull on recreation...\"
                         kubectl scale rs \"\$OLD_RS\" --replicas=0 -n airflow-my-namespace 2>/dev/null || true
                     done
+                fi
+                # Secondary wait: give the pod up to 60s to honour its graceful shutdown after force-scale
+                # (default Kubernetes grace period is 30s, so 60s is ample headroom)
+                for j in \$(seq 1 12); do
+                    NEW_COUNT=\$(kubectl get pods -l component=dag-processor \
+                        -n airflow-my-namespace --no-headers 2>/dev/null | grep -c .)
+                    [ \"\$NEW_COUNT\" -le 1 ] && break
                     sleep 5
+                done
+                # Warn only if both the 5-min natural wait AND force-scale failed to clear the old pod
+                FINAL_COUNT=\$(kubectl get pods -l component=dag-processor \
+                    -n airflow-my-namespace --no-headers 2>/dev/null | grep -c .)
+                if [ \"\$FINAL_COUNT\" -gt 1 ]; then
+                    echo 'WARNING: still '\$FINAL_COUNT' dag-processor pods after force-scale — Phase A deletion will proceed anyway'
+                else
+                    echo 'Old dag-processor RS force-scaled to 0 — pod terminated cleanly.'
                 fi
             fi
             sleep 5

@@ -138,6 +138,8 @@ def build_weather_anomaly_scatter(df: pd.DataFrame) -> go.Figure:
         symbols = anomaly_symbols(sub["is_anomaly"])  # shape encodes anomaly flag
         # Pack hover fields: city name, city avg, diff from avg — keeps tooltip non-technical
         custom = sub[["city_name", "city_mean", "deviation"]].copy()
+        # Pre-format deviation with sign (+/-) in Python — Plotly's d3 parser rejects the :+.1f spec
+        custom["deviation_str"] = custom["deviation"].apply(lambda v: f"{v:+.1f}")
         fig.add_trace(go.Scatter(
             x=sub["observation_time"],    # time on X — intuitive for all viewers
             y=sub["temperature_f"],       # temperature on Y — concrete physical quantity
@@ -148,13 +150,13 @@ def build_weather_anomaly_scatter(df: pd.DataFrame) -> go.Figure:
                 "size":   9,
                 "symbol": symbols,
             },
-            customdata=custom[["city_name", "city_mean", "deviation"]].values,
+            customdata=custom[["city_name", "city_mean", "deviation_str"]].values,
             hovertemplate=(
                 "<b>%{customdata[0]}</b><br>"
                 "Time: %{x|%Y-%m-%d %H:%M}<br>"
                 "Temp: %{y:.1f}°F<br>"
                 "City Avg: %{customdata[1]:.1f}°F<br>"
-                "Diff from Avg: %{customdata[2]:+.1f}°F"
+                "Diff from Avg: %{customdata[2]}°F"
                 "<extra></extra>"  # suppresses the trace-name box
             ),
         ))

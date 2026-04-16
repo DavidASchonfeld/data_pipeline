@@ -117,6 +117,14 @@ For the failure mode catalog (what *can* go wrong, not what *did* go wrong), see
 | 2026-04-11 | Financials Snowflake role issue | [snowflake-role](dashboard/2026-04-11-dashboard-financials-snowflake-role.md) |
 | 2026-04-11 | Loading spinner | [loading-spinner](dashboard/2026-04-11-dashboard-loading-spinner.md) |
 | 2026-04-11 | Snowflake cache strategy | [cache-strategy](dashboard/2026-04-11-dashboard-snowflake-cache-strategy.md) |
+| 2026-04-15 | Dashboard goes blank during spot replacement (recovery.js added) | [blank-page-spot](dashboard/2026-04-15-dashboard-blank-page-spot-replacement.md) |
+| 2026-04-15 | recovery.js syntax error preventing overlay | [recovery-js-syntax](dashboard/2026-04-15-recovery-js-syntax-error.md) |
+| 2026-04-15 | Offline banner showing incorrectly on startup | [offline-banner-startup](dashboard/2026-04-15-offline-banner-on-startup.md) |
+| 2026-04-15 | "Reconnecting" overlay not appearing during spot replacement | [overlay-not-showing](dashboard/2026-04-15-recovery-js-overlay-not-showing.md) |
+| 2026-04-15 | Slow startup + "Callback failed" on cold worker cache | [slow-startup-callbacks](dashboard/2026-04-15-slow-startup-callback-failures.md) |
+| 2026-04-15 | "Callback failed" on weather nav: console.error not caught by window listener | [weather-nav-callback](dashboard/2026-04-15-weather-nav-callback-failed.md) |
+| 2026-04-15 | recovery.js reload loop on callback fail during navigation | [reload-loop](dashboard/2026-04-15-weather-nav-callback-reload-loop.md) |
+| 2026-04-16 | "encountered bad format: +.1f" in weather chart hover tooltip | [weather-chart-bad-format](dashboard/2026-04-16-weather-chart-bad-format-deviation.md) |
 
 ### Features
 
@@ -134,6 +142,9 @@ For the failure mode catalog (what *can* go wrong, not what *did* go wrong), see
 | 2026-04-13 | Spot + ASG + ARM cost optimization (73% reduction) | [spot-asg-arm](infrastructure/2026-04-13-spot-asg-arm-cost-optimization.md) |
 | 2026-04-15 | Dashboard not publicly reachable after deploy | [not-publicly-reachable](infrastructure/2026-04-15-dashboard-not-publicly-reachable.md) |
 | 2026-04-15 | CloudFront showing empty graphs + SyntaxError (4 fixes) | [cloudfront-empty-graphs](infrastructure/2026-04-15-cloudfront-empty-graphs-syntax-error.md) |
+| 2026-04-16 | K3s API server "connection refused" on rapid redeploy | [k3s-api-connection-refused](infrastructure/2026-04-16-k3s-api-server-connection-refused-on-redeploy.md) |
+| 2026-04-16 | Migration job timeout + image import lease error | [migration-timeout-lease-error](infrastructure/2026-04-16-migration-job-timeout-and-image-lease-error.md) |
+| 2026-04-16 | dag-processor "still 2 pods after 5 min" warning on rapid redeploy | [dag-processor-pods-not-scaled-down](infrastructure/2026-04-16-dag-processor-pods-not-scaled-down.md) |
 
 ---
 

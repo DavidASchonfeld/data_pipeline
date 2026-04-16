@@ -10,7 +10,7 @@ Navigate all project documentation from here. Each link goes to the single sourc
 |----------|---------------|
 | [README](../README.md) | What this project does, architecture, tech stack, design decisions |
 | [Setup Guide](../SETUP.md) | Local development, production deployment, how code flows from Mac to EC2 to pods |
-| [Deploy Guide](DEPLOY.md) | How `deploy.sh` works, Terraform, and how to restore the project after shutdown |
+| [Deploy Guide](DEPLOY_GUIDE.md) | How `deploy.sh` works, Terraform, and how to restore the project after shutdown |
 | [Costs](COSTS.md) | Monthly cost breakdown per service, cost controls, shutdown and restoration |
 
 ---
@@ -87,20 +87,12 @@ Navigate all project documentation from here. Each link goes to the single sourc
 
 ---
 
-## Roadmap
-
-| Document | What it covers |
-|----------|---------------|
-| [Backlog](BACKLOG.md) | Ordered task checklist: what's done, what's next |
-
----
-
 ## Common Questions
 
 | Question | Go to |
 |----------|-------|
 | How do I add a new data source? | [DATA_SOURCE_GUIDE.md](DATA_SOURCE_GUIDE.md) |
-| How do I deploy code changes? | [DEPLOY.md](DEPLOY.md) |
+| How do I deploy code changes? | [DEPLOY_GUIDE.md](DEPLOY_GUIDE.md) |
 | How much does this cost per month? | [COSTS.md](COSTS.md) |
 | How do I verify everything works after a deploy? | [VERIFICATION.md](VERIFICATION.md) |
 | Something broke — how do I debug it? | [operations/TROUBLESHOOTING.md](operations/TROUBLESHOOTING.md) |

@@ -26,7 +26,10 @@ COPY --chown=appuser:appuser . .
 EXPOSE 5000
 
 # app:app matches renamed flask entrypoint app.py
+# --preload: loads app.py once in the master process before forking workers so prewarm_cache()
+#   runs once and all workers inherit a hot cache (prevents cold-cache Snowflake hits on first callbacks)
+# --config: loads gunicorn.conf.py which disposes inherited DB connections in each worker (post_fork hook)
 # --limit-request-line: rejects excessively long URLs — limits certain injection vectors
 # --limit-request-fields: caps HTTP header count — mitigates header-injection amplification
 # --workers=2: distributes load across 2 workers; --timeout=120: restarts worker on timeout instead of crashing
-CMD ["gunicorn", "--workers=2", "--bind", "0.0.0.0:5000", "--timeout=120", "--limit-request-line", "4096", "--limit-request-fields", "100", "app:app"]
+CMD ["gunicorn", "--workers=2", "--bind", "0.0.0.0:5000", "--timeout=120", "--preload", "--config", "/app/gunicorn.conf.py", "--limit-request-line", "4096", "--limit-request-fields", "100", "app:app"]
