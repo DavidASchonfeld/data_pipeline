@@ -3,6 +3,8 @@
 > **Live Dashboard: [https://d17husnpvzzqit.cloudfront.net/dashboard/](https://d17husnpvzzqit.cloudfront.net/dashboard/)**
 > The pipeline is running live — click to see it. The server runs continuously; no loading screen or wait time. If the server is briefly switching over to a new instance, you'll see a loading page instead of a browser error.
 
+This project is an automated system that collects public financial filings and weather data from the internet, processes and cleans that data, checks it for anything unusual, and displays the results on a live web dashboard — all without any manual intervention. Behind the scenes, it pulls official company reports (for Apple, Microsoft, and Google) and hourly weather forecasts, runs them through a series of automated steps that organize and validate the data, and stores everything in a cloud database. A machine learning model then reviews the financial data and flags anything that looks out of the ordinary. The entire system runs 24/7 on a single cloud server for about $20 a month, and the dashboard updates itself as new data comes in.
+
 ---
 
 This is a data pipeline that runs continuously on AWS, pulling real financial filings and weather data, processing them through a streaming architecture, and surfacing the results on a live interactive dashboard — all for about $18–22 a month.

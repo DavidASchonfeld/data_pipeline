@@ -79,6 +79,10 @@ For the failure mode catalog (what *can* go wrong, not what *did* go wrong), see
 | 2026-04-14 | Docker daemon not running: pre-flight only checked plugin, not service | [docker-daemon-not-running](deploy/2026-04-14-docker-daemon-not-running-no-precheck.md) |
 | 2026-04-14 | Docker daemon down between pre-flight check and build + terminal freeze | [docker-daemon-down-between](deploy/2026-04-14-docker-daemon-down-between-precheck-and-build.md) |
 | 2026-04-14 | Kafka offset reset Java TimeoutException for non-existent consumer groups | [kafka-offset-nonexistent-group](deploy/2026-04-14-kafka-offset-reset-timeout-nonexistent-group.md) |
+| 2026-04-17 | Deploy appears frozen after "Migration job complete." (_wait_bg silent wait) | [frozen-after-migration](deploy/2026-04-17-deploy-frozen-after-migration-complete.md) |
+| 2026-04-17 | Docker build failed: server overloaded by 3 parallel jobs (BuildKit EOF + containerd socket reset) | [docker-build-containerd-overload](deploy/2026-04-17-docker-build-failed-containerd-overload-parallel-jobs.md) |
+| 2026-04-17 | MLflow deploy failed: Docker layer extraction corruption + kubectl permission denied (parallel job overload) | [mlflow-deploy-failed-parallel-overload](deploy/2026-04-17-mlflow-kubectl-permission-denied-k3s-restart.md) |
+| 2026-04-17 | Deploy warnings: stale containerd lease error + port 5500 already in use on port-forward restart | [containerd-lease-port5500](deploy/2026-04-17-containerd-lease-error-and-port5500-in-use.md) |
 
 ### Snowflake
 
@@ -145,6 +149,7 @@ For the failure mode catalog (what *can* go wrong, not what *did* go wrong), see
 | 2026-04-16 | K3s API server "connection refused" on rapid redeploy | [k3s-api-connection-refused](infrastructure/2026-04-16-k3s-api-server-connection-refused-on-redeploy.md) |
 | 2026-04-16 | Migration job timeout + image import lease error | [migration-timeout-lease-error](infrastructure/2026-04-16-migration-job-timeout-and-image-lease-error.md) |
 | 2026-04-16 | dag-processor "still 2 pods after 5 min" warning on rapid redeploy | [dag-processor-pods-not-scaled-down](infrastructure/2026-04-16-dag-processor-pods-not-scaled-down.md) |
+| 2026-04-17 | Deploy fails: SSH unreachable after 36 attempts (stale host key after spot replacement) | [ssh-host-key-mismatch](infrastructure/2026-04-17-ssh-host-key-mismatch-spot-replacement.md) |
 
 ---
 

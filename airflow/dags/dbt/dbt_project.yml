@@ -9,11 +9,37 @@ test-paths: ["tests"]
 macro-paths: ["macros"]
 clean-targets: ["/tmp/dbt_target"]  # dbt 1.8+: target-path/log-path set via DBT_TARGET_PATH/DBT_LOG_PATH env vars in BashOperator
 
+# ── RAW, STAGING, MARTS: why these names ─────────────────────────────────────
+# These are the standard three-layer schema names used across the data engineering
+# industry. Each name was chosen because it accurately describes what that step
+# does — any data engineer reading this would immediately know the role of each.
+#
+#   RAW     -- data exactly as it arrived from the source, nothing modified.
+#              Best practice is to never alter the original: if a downstream
+#              step ever produces wrong output, RAW is the ground truth to
+#              fall back on. Nothing in this pipeline touches or deletes from it.
+#
+#   STAGING -- the cleanup layer between raw and final. In data engineering,
+#              "staging" means the same as staging a release: work is being
+#              prepared and made ready before it moves somewhere permanent.
+#              This layer fixes types and column names only — no business logic.
+#              Stored as a VIEW (zero cost) because RAW already holds the data.
+#
+#   MARTS   -- short for "data marts," the standard name for final subject-
+#              specific tables in a data warehouse. Each mart is pre-computed
+#              and covers one topic (financials, weather). The dashboard and
+#              ML model read from here because the work is already done.
+#
+# Full flow: APIs -> RAW (store as-is) -> STAGING (fix format) ->
+#            MARTS (apply business rules) -> Dashboard + ML model.
+#
 models:
   pipeline_dbt:
     staging:
       +schema: staging        # resolved to PIPELINE_DB.STAGING by generate_schema_name macro
-      +materialized: view     # views cost zero Snowflake storage credits
+      +materialized: view     # VIEW = no stored data; prep-station work costs nothing to store
+                              # because the ingredients (RAW) are already there unchanged.
     marts:
       +schema: marts          # resolved to PIPELINE_DB.MARTS by generate_schema_name macro
-      +materialized: table    # tables are what the dashboard queries
+      +materialized: table    # TABLE = pre-computed and stored. Business-logic work (dedup,
+                              # filters) is done once at pipeline run time, not on every query.
