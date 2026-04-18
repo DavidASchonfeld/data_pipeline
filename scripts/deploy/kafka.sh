@@ -44,6 +44,9 @@ step_deploy_kafka() {
         && echo 'Kafka image ready in K3s containerd.'
     "
 
+    # Re-apply kubectl permissions — same reason as mlflow.sh: K3s can restart under load and reset k3s.yaml to 600
+    _ensure_kubectl_accessible
+
     # Create kafka namespace before PVC check — _cleanup_stale_kafka_pvc needs the namespace to exist
     ssh "$EC2_HOST" "kubectl create namespace kafka --dry-run=client -o yaml | kubectl apply -f -"
 
@@ -107,15 +110,23 @@ step_deploy_kafka() {
 
         # Create topics — --if-not-exists means Kafka skips creation if the topic is already there — safe to run every time
         # the kafka-topics.sh script is at /opt/kafka/bin/ in this image — it's not on the PATH the way it was in the old Bitnami image
-        kubectl exec kafka-0 -n kafka -- /opt/kafka/bin/kafka-topics.sh \
-            --bootstrap-server localhost:9092 --create --if-not-exists \
-            --topic stocks-financials-raw --partitions 1 --replication-factor 1 \
-        && echo 'Topic stocks-financials-raw ready.'
+        # Retry loop: K3S containerd can briefly report "container not found" right after a pod turns Ready
+        # when the server is under heavy load — waiting and retrying recovers without any config changes
+        for _t in 1 2 3; do
+            kubectl exec kafka-0 -n kafka -- /opt/kafka/bin/kafka-topics.sh \
+                --bootstrap-server localhost:9092 --create --if-not-exists \
+                --topic stocks-financials-raw --partitions 1 --replication-factor 1 \
+            && echo 'Topic stocks-financials-raw ready.' && break
+            [ \"\$_t\" -lt 3 ] && echo \"Topic create attempt \$_t failed, retrying in 10s...\" && sleep 10
+        done
 
-        kubectl exec kafka-0 -n kafka -- /opt/kafka/bin/kafka-topics.sh \
-            --bootstrap-server localhost:9092 --create --if-not-exists \
-            --topic weather-hourly-raw --partitions 1 --replication-factor 1 \
-        && echo 'Topic weather-hourly-raw ready.'
+        for _t in 1 2 3; do
+            kubectl exec kafka-0 -n kafka -- /opt/kafka/bin/kafka-topics.sh \
+                --bootstrap-server localhost:9092 --create --if-not-exists \
+                --topic weather-hourly-raw --partitions 1 --replication-factor 1 \
+            && echo 'Topic weather-hourly-raw ready.' && break
+            [ \"\$_t\" -lt 3 ] && echo \"Topic create attempt \$_t failed, retrying in 10s...\" && sleep 10
+        done
 
         echo 'Kafka topics:'
         kubectl exec kafka-0 -n kafka -- /opt/kafka/bin/kafka-topics.sh \

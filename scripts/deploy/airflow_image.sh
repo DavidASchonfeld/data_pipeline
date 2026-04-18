@@ -51,14 +51,32 @@ step_build_airflow_image() {
         echo 'Pruning old airflow-dbt Docker images before build to free disk space...' ;
         docker images --format '{{.Repository}}:{{.Tag}}' | grep 'airflow-dbt' | xargs -r docker rmi 2>/dev/null || true ;
         echo 'Pruning dangling Docker images to free disk space...' ;
-        docker image prune -f || true
+        for _p in 1 2 3 4 5; do
+            out=\$(docker image prune -f 2>&1) && echo \"\$out\" && break ;
+            echo \"\$out\" | grep -q 'prune operation is already running' \
+                && echo \"Prune already running (attempt \$_p/5) — waiting 10s...\" && sleep 10 \
+                || { echo \"\$out\"; break; }
+        done || true
     "
 
-    # Build the new image — DOCKER_BUILDKIT=1 uses the modern BuildKit engine
-    ssh "$EC2_HOST" "
-        echo 'Building airflow-dbt:$BUILD_TAG image...' &&
-        DOCKER_BUILDKIT=1 docker build -t airflow-dbt:$BUILD_TAG $EC2_HOME/airflow/docker/
-    " || return 1
+    # Build the new image — retry up to 3 times; Docker's BuildKit can lose its connection to its
+    # internal container runtime when the server is under heavy load from parallel background jobs
+    for _build_attempt in 1 2 3; do
+        if ssh "$EC2_HOST" "
+            echo 'Building airflow-dbt:$BUILD_TAG image (attempt $_build_attempt/3)...' &&
+            DOCKER_BUILDKIT=1 docker build -t airflow-dbt:$BUILD_TAG $EC2_HOME/airflow/docker/
+        "; then
+            break  # build succeeded — exit the retry loop
+        fi
+        if [ "$_build_attempt" -lt 3 ]; then
+            echo "Docker build attempt $_build_attempt failed — restarting Docker daemon and retrying in 20s..."
+            ssh "$EC2_HOST" "sudo systemctl restart docker" || true  # restart to reset BuildKit connection
+            sleep 20
+        else
+            echo "✗ Docker build failed after 3 attempts"
+            return 1
+        fi
+    done
 
     # Purge stale K3S containerd snapshots AFTER the build so no old version is reused
     ssh "$EC2_HOST" "

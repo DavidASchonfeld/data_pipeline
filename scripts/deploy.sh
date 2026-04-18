@@ -127,6 +127,11 @@ if [ "$PROVISION" = true ]; then
     echo "=== SSH ready ==="
 else
     echo "=== Verifying SSH connectivity ==="
+    # Clear stale known_hosts entry — spot replacement gives the instance a new host key,
+    # and StrictHostKeyChecking=accept-new silently fails when the old key is still cached.
+    _EC2_IP=$(ssh -G "$EC2_HOST" 2>/dev/null | awk '/^hostname/ {print $2; exit}')
+    ssh-keygen -R "$EC2_HOST" &>/dev/null || true  # remove alias entry
+    [ -n "$_EC2_IP" ] && ssh-keygen -R "$_EC2_IP" &>/dev/null || true  # remove IP entry
     _wait_ssh_ready
     _wait_k3s_ready
     echo "=== SSH ready ==="

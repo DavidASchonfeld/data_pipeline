@@ -1,6 +1,39 @@
 -- Fact table for annual SEC EDGAR financials — this is what the dashboard queries via PIPELINE_DB.MARTS
 -- Deduplicates in case the same ticker/metric/period appears in multiple XBRL frames
 -- tag:stocks — dag_stocks.py runs `dbt run --select tag:stocks` after writing to RAW
+--
+-- ── WHY IT'S CALLED "MARTS" ──────────────────────────────────────────────────
+-- Short for "data marts" — the standard name for final, subject-specific tables
+-- in a data warehouse. Each mart covers one topic; this one is company financials.
+-- The name fits: the dashboard and ML model come here to get exactly what they
+-- need, pre-built and ready. See dbt_project.yml for the full three-layer pattern.
+--
+-- ── WHY MARTS EXISTS ─────────────────────────────────────────────────────────
+-- Staging produced a clean, correctly typed view of the data. Marts is the next
+-- step: it applies the actual business rules that turn that clean data into
+-- something the dashboard and ML model can query directly.
+--
+-- Two specific rules this model enforces:
+--   1. Annual filings only (fiscal_period = 'FY'). SEC filings include quarterly
+--      data (Q1, Q2, Q3) as well as full-year. The anomaly model and dashboard
+--      only care about full-year figures. Filtering here means every downstream
+--      consumer gets FY data automatically — they don't need to remember to filter.
+--   2. Deduplication. A company can amend its SEC filing weeks or months after the
+--      original submission. That creates two rows in RAW for the same company/year/
+--      metric — the original and the amended version. The ROW_NUMBER() window
+--      function keeps only the most recently filed row, so no downstream model
+--      accidentally reads stale, superseded numbers.
+--
+-- Marts is materialised as a TABLE (not a view), meaning Snowflake pre-computes
+-- and stores the result. The dashboard never runs deduplication logic at query
+-- time — it just reads pre-built rows. That's what makes dashboard queries fast.
+--
+-- ── THE TWO-LAYER CONTRACT ────────────────────────────────────────────────────
+-- Staging is read by marts (via {{ ref('stg_company_financials') }}).
+-- Marts is read by the dashboard and the anomaly detector.
+-- Nothing outside this pipeline reads RAW or STAGING directly.
+-- That separation means: the source API format can change without touching
+-- marts, and business rules can change without touching staging.
 {{
     config(
         materialized='table',

@@ -15,19 +15,41 @@ step_deploy_mlflow() {
     #   Same pattern used for the airflow-dbt image (Step 2b2).
     #   We pull the image using Docker (which caches layers), then pipe it directly into K3S's image store.
     #   On repeat deploys this is fast because Docker only downloads what's changed.
-    # Prune stale copies and pull the latest image — kept in one SSH session so Docker layer cache is warm
+    # Prune stale images first — separate from the pull so the retry loop below only covers the pull
     ssh "$EC2_HOST" "
         echo 'Pruning old MLflow images from K3S containerd to free ephemeral storage...' &&
         sudo k3s ctr images ls | grep 'mlflow' | awk '{print \$1}' | xargs -r sudo k3s ctr images rm 2>/dev/null || true &&
         echo 'Pruning dangling Docker images to free disk space...' &&
-        docker image prune -f || true &&
-        echo 'Pulling MLflow image via Docker...' &&
-        docker pull $MLFLOW_IMAGE
+        docker image prune -f || true
     "
+
+    # Retry the pull up to 3 times — Docker's overlay layer extraction can fail under heavy parallel load
+    # (three background jobs writing to the same container runtime on a 2GB instance overwhelms it)
+    for _pull_attempt in 1 2 3; do
+        if ssh "$EC2_HOST" "
+            echo 'Pulling MLflow image via Docker (attempt $_pull_attempt/3)...' &&
+            docker pull $MLFLOW_IMAGE
+        "; then
+            break  # pull succeeded — exit retry loop
+        fi
+        if [ "$_pull_attempt" -lt 3 ]; then
+            echo "MLflow docker pull attempt $_pull_attempt failed — removing partial image and retrying in 15s..."
+            # Remove the partial/corrupted image so Docker downloads it completely fresh next attempt
+            ssh "$EC2_HOST" "docker rmi '$MLFLOW_IMAGE' 2>/dev/null || true"
+            sleep 15
+        else
+            echo "✗ MLflow docker pull failed after 3 attempts"
+            return 1
+        fi
+    done
+
     # Import the pulled image into K3S — shared helper in common.sh handles save+import+verify
     import_image_to_k3s "$MLFLOW_IMAGE" "mlflow"
 
     echo "=== Step 2b6: Deploying MLflow to K3s (safe to run multiple times) ==="
+    # Re-apply kubectl permissions before any kubectl call — K3s resets k3s.yaml to root-only
+    # if it restarts during the parallel image import above, causing "permission denied" failures
+    _ensure_kubectl_accessible
     # Print node taints and pressure conditions before deploy — catches scheduling blockers early
     ssh "$EC2_HOST" "
         echo '--- Node taints and pressure conditions pre-MLflow-rollout ---'
@@ -154,8 +176,11 @@ pkill -f 'kubectl port-forward svc/mlflow' || true
 # >/dev/null 2>&1 suppresses the killed PID that fuser prints to stdout (no trailing newline),
 # which would otherwise bleed into the next deploy-log line and corrupt the summary grep.
 fuser -k 5500/tcp >/dev/null 2>&1 || true
-
-sleep 1
+# Wait up to 5s for the OS to release the port — SIGKILL is instant but socket close is async
+for _wait in 1 2 3 4 5; do
+    fuser 5500/tcp >/dev/null 2>&1 || break
+    sleep 1
+done
 
 # Forward port 5500 on EC2's localhost to the MLflow service inside the cluster,
 # so your SSH tunnel (-L 5500:localhost:5500) can reach it from your Mac.

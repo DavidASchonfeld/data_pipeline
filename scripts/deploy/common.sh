@@ -133,13 +133,26 @@ import_image_to_k3s() {
     for _attempt in 1 2 3 4 5; do
         if ssh "$EC2_HOST" "
             echo 'Importing $image_name into K3S containerd (attempt $_attempt/5)...' &&
+            # Clear stale containerd leases before import — leftover leases from interrupted imports
+            # cause 'lease does not exist: not found' when a new import tries to claim the same content
+            sudo k3s ctr leases ls -q 2>/dev/null | xargs -r sudo k3s ctr leases delete 2>/dev/null || true &&
             docker save '$image_name' | sudo k3s ctr images import - &&
             echo 'Verifying image is visible to K3S...' &&
             sudo k3s ctr images ls | grep '$grep_term'
         "; then
             return 0
         fi
-        [ "$_attempt" -lt 5 ] && echo "K3S import attempt $_attempt failed, retrying in 15s..." && sleep 15
+        if [ "$_attempt" -lt 5 ]; then
+            echo "K3S import attempt $_attempt failed, retrying in 15s..."
+            # If containerd's socket was reset (happens under heavy parallel load), verify the socket
+            # is responsive before retrying — a non-responsive socket means the import will fail again immediately
+            if ssh "$EC2_HOST" "sudo k3s ctr version >/dev/null 2>&1"; then
+                sleep 15  # socket is fine — brief pause is enough
+            else
+                echo "K3S containerd socket unresponsive — waiting 30s for it to recover..."
+                sleep 30  # socket is down — give it more time before retrying
+            fi
+        fi
     done
     return 1
 }
@@ -239,12 +252,21 @@ _wait_k3s_api_ready() {
 # would keep running as if nothing went wrong. This function catches that.
 _wait_bg() {
     local pid=$1 label=$2
+    # Print before waiting so the terminal doesn't appear frozen during long background jobs
+    echo "Waiting for $label..."
     if wait "$pid"; then
         echo "✓ $label done"
     else
         echo "✗ $label FAILED"
         exit 1
     fi
+}
+
+# Re-applies read permission on the K3s config file — K3s resets it to root-only whenever
+# the k3s service restarts (e.g., due to memory/IO pressure during heavy parallel builds).
+# Called before any kubectl commands in background jobs to ensure they can actually connect.
+_ensure_kubectl_accessible() {
+    ssh "$EC2_HOST" "sudo chmod 644 /etc/rancher/k3s/k3s.yaml 2>/dev/null || true"
 }
 # ─────────────────────────────────────────────────────────────────────────────
 
