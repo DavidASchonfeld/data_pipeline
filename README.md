@@ -48,6 +48,7 @@ Each tool in this stack has a single job, chosen because that job mattered enoug
 
 | Tool | Role in this project |
 |---|---|
+| **Terraform** | The infrastructure-as-code layer. Every AWS resource — spot EC2 ASG, EBS, Elastic IP, CloudFront, IAM roles, ECR, and the Lambda/EventBridge wiring for spot-preemption — is declared in `terraform/*.tf`, so the entire stack can be destroyed and recreated from one `terraform apply`. |
 | **Airflow** | The scheduler and orchestrator. It wakes up on a schedule, runs tasks in order, passes data between them, and triggers other DAGs. Think of it as the conductor of the pipeline. |
 | **Kafka** | A message queue that sits between "fetch data" and "store data." The producer DAG drops a message into a Kafka topic (like a mailbox); the consumer DAG picks it up. This decouples the two sides — the producer doesn't need to know or care where the data ends up. |
 | **Snowflake** | The cloud data warehouse. It's the permanent home for all cleaned data. Raw API data lands in the `RAW` schema; dbt-built tables live in `STAGING` and `MARTS`. |
