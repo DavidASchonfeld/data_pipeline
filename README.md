@@ -17,6 +17,7 @@ The [Design Decisions](#design-decisions) section explains why each architectura
 
 ## What This Demonstrates
 
+- **Infrastructure-as-Code (IaC)** — All AWS resources (EC2 spot ASG, EBS, Elastic IP, CloudFront, IAM roles, Lambda for spot-preemption) defined in [Terraform](terraform/); the entire stack can be torn down and rebuilt from a single `terraform apply`
 - **[Streaming architecture](#how-everything-connects)** — Apache Kafka decouples data collection from data storage; each side can fail and restart independently
 - **[Cloud data warehousing + transformation](#what-the-snowflake-layers-mean)** — Snowflake for storage, dbt for repeatable SQL transformations with built-in data quality tests
 - **[ML integration with reproducibility](#key-features)** — IsolationForest anomaly detection with every run logged to MLflow so any result can be traced back to the exact model and data that produced it
@@ -153,6 +154,7 @@ flowchart LR
 
 | Layer | Technology |
 |---|---|
+| Infrastructure-as-Code (IaC) | Terraform (AWS provider) — EC2 spot ASG, EBS, Elastic IP, CloudFront + S3 failover, security groups, IAM roles, ECR, and Lambda/EventBridge for spot-preemption handling, all provisioned declaratively ([`terraform/`](terraform/)) |
 | Language | Python 3.12 |
 | Orchestration | Apache Airflow 3.1.8 (TaskFlow API, LocalExecutor, Helm 1.20.0) |
 | Streaming | Apache Kafka 4.0 (KRaft mode, plain K8s StatefulSet) |
@@ -181,8 +183,9 @@ The pipeline runs on EC2 in production and can be run locally for development.
 
 **Production deploy:**
 ```bash
-cp .env.deploy.example .env.deploy   # fill in AWS values
-./scripts/deploy.sh                  # validates, syncs, builds, restarts
+cp .env.deploy.example .env.deploy                    # fill in AWS values
+cd terraform && terraform init && terraform apply     # provisions AWS infrastructure (one-time)
+cd .. && ./scripts/deploy.sh                          # deploys application to the instance
 ```
 
 **Access (via SSH tunnel):**
@@ -215,6 +218,9 @@ https://d17husnpvzzqit.cloudfront.net/dashboard/
 ---
 
 ## Design Decisions
+
+**Terraform over Clicking to set up Infrastructure**
+Every AWS resource in this stack — the spot EC2 ASG, EBS volume, Elastic IP, CloudFront distribution with S3 failover, security groups, IAM roles, ECR repo, and the Lambda + EventBridge wiring that handles spot-preemption — is defined in Terraform (`terraform/*.tf`) rather than clicked together in the AWS console. The entire infrastructure can be destroyed and recreated in one command, production state is version-controlled alongside the application code, and any change to infrastructure goes through the same review process as code. It also makes experiments cheap: a parallel environment to test a configuration change is a `terraform workspace` away, not a weekend of manual console work.
 
 **Kafka: plain StatefulSet over Strimzi Operator**
 On a single EC2 t4g.large already running K3S, Airflow, Postgres, and Flask, every megabyte of RAM is a real cost. Strimzi — the standard Kafka operator for Kubernetes — adds ~200 MB overhead that this instance can't spare. Instead, Kafka runs as a hand-rolled Kubernetes StatefulSet using `apache/kafka:4.0.0` (KRaft mode, no ZooKeeper). The plain StatefulSet keeps Kubernetes primitives transparent and can be migrated to Strimzi without touching the Kafka client code.
