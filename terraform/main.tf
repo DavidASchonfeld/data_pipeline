@@ -295,6 +295,12 @@ resource "aws_iam_role_policy" "lambda_eip" {
         Effect   = "Allow"
         Action   = "autoscaling:CompleteLifecycleAction"
         Resource = "*"
+      },
+      {
+        # ASG capacity reset — needed for edge case where old spot instance dies before the defer window
+        Effect   = "Allow"
+        Action   = ["autoscaling:UpdateAutoScalingGroup", "autoscaling:SetDesiredCapacity"]
+        Resource = "*"
       }
     ]
   })
@@ -317,6 +323,7 @@ resource "aws_lambda_function" "eip_reassociate" {
       # eip_reassociate.py catches ParameterNotFound/AccessDenied and falls back to normal behaviour.
       SSM_SPOT_REPLACING  = "/pipeline/spot-replacing"
       SSM_NEW_INSTANCE_ID = "/pipeline/spot-new-instance-id"
+      ASG_NAME            = aws_autoscaling_group.pipeline.name
     }
   }
 

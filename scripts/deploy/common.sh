@@ -136,7 +136,12 @@ import_image_to_k3s() {
             # Clear stale containerd leases before import — leftover leases from interrupted imports
             # cause 'lease does not exist: not found' when a new import tries to claim the same content
             sudo k3s ctr leases ls -q 2>/dev/null | xargs -r sudo k3s ctr leases delete 2>/dev/null || true &&
-            docker save '$image_name' | sudo k3s ctr images import - &&
+            # Save to a temp tar first — piping docker save directly to ctr import truncates large images
+            # (ctr reports 'short read: expected N bytes but got M') because the SSH pipe can drop data mid-stream
+            _tmp_tar=\$(mktemp /tmp/k3s-import-XXXXXX.tar) &&
+            docker save '$image_name' > \"\$_tmp_tar\" &&
+            sudo k3s ctr images import \"\$_tmp_tar\" &&
+            rm -f \"\$_tmp_tar\" &&
             echo 'Verifying image is visible to K3S...' &&
             sudo k3s ctr images ls | grep '$grep_term'
         "; then
@@ -144,6 +149,8 @@ import_image_to_k3s() {
         fi
         if [ "$_attempt" -lt 5 ]; then
             echo "K3S import attempt $_attempt failed, retrying in 15s..."
+            # Clean up any partial temp tar left by a failed save or import
+            ssh "$EC2_HOST" "rm -f /tmp/k3s-import-*.tar 2>/dev/null || true"
             # If containerd's socket was reset (happens under heavy parallel load), verify the socket
             # is responsive before retrying — a non-responsive socket means the import will fail again immediately
             if ssh "$EC2_HOST" "sudo k3s ctr version >/dev/null 2>&1"; then
@@ -181,21 +188,58 @@ restart_pod() {
 
 # ── SSH readiness helper ──────────────────────────────────────────────────────
 # Waits for sshd to accept connections — a fresh spot instance can take 2-5 min to boot
-# and start sshd, so we retry for up to 6 minutes before giving up.
+# and start sshd, so we retry before giving up.
+# Pass an attempt count: default 36 (6 min); use 90 (15 min) after --provision since
+# fresh instances run a full user-data bootstrap (Docker, K3s, apt) before sshd starts.
 # StrictHostKeyChecking=accept-new: automatically trusts a brand-new host key (safe after
 # deploy.sh clears known_hosts for the replaced instance) but still rejects unexpected
 # key changes on already-known hosts.
 _wait_ssh_ready() {
-    # 36 attempts × 10 s = 6 min — doubled from 3 min to handle slow spot instance boots
-    for _attempt in $(seq 1 36); do
+    local _max="${1:-36}"  # attempts × 10s; default 6 min
+    local _mins=$(( _max * 10 / 60 ))
+    for _attempt in $(seq 1 "$_max"); do
         if ssh -o StrictHostKeyChecking=accept-new "$EC2_HOST" true 2>/dev/null; then
             return 0
         fi
-        echo "SSH not ready (attempt $_attempt/36), retrying in 10s..."
-        [ "$_attempt" -lt 36 ] && sleep 10
+        echo "SSH not ready (attempt $_attempt/$_max), retrying in 10s..."
+        [ "$_attempt" -lt "$_max" ] && sleep 10
     done
-    echo "✗ EC2 SSH unreachable after 36 attempts (6 min)"
+    echo "✗ EC2 SSH unreachable after $_max attempts (${_mins} min)"
     return 1
+}
+
+# ── SSH pre-flight check ──────────────────────────────────────────────────────
+# Before waiting 6 minutes, quickly detect whether the security group is blocking
+# SSH because the deployer's public IP changed since the last terraform apply.
+# Fails fast with an actionable message instead of silently timing out.
+# Skips silently if aws CLI or credentials are unavailable (graceful degradation).
+_check_ssh_prereqs() {
+    local _profile="${AWS_PROFILE:-terraform-dev}"
+    # Require aws CLI and a valid session — skip check if either is missing
+    if ! command -v aws &>/dev/null; then return 0; fi
+    if ! aws sts get-caller-identity --profile "$_profile" &>/dev/null; then return 0; fi
+
+    # Fetch the SSH ingress CIDR from the pipeline security group
+    local _sg_cidr
+    _sg_cidr=$(aws ec2 describe-security-groups \
+        --profile "$_profile" --region "$AWS_REGION" \
+        --filters "Name=tag:Name,Values=pipeline-sg" \
+        --query "SecurityGroups[0].IpPermissions[?FromPort==\`22\`].IpRanges[0].CidrIp" \
+        --output text 2>/dev/null)
+
+    if [ -z "$_sg_cidr" ] || [ "$_sg_cidr" = "None" ]; then return 0; fi  # can't determine SG — proceed
+
+    # Get current public IP
+    local _my_ip
+    _my_ip=$(curl -fsSL --max-time 5 ifconfig.me 2>/dev/null)
+    if [ -z "$_my_ip" ]; then return 0; fi  # can't reach ifconfig.me — proceed
+
+    local _my_cidr="${_my_ip}/32"
+    if [ "$_my_cidr" != "$_sg_cidr" ]; then
+        echo "✗ Security group SSH rule allows ${_sg_cidr} but your current IP is ${_my_ip}"
+        echo "  Run:  ./scripts/deploy.sh --provision   (updates the security group and retries SSH)"
+        return 1
+    fi
 }
 # ─────────────────────────────────────────────────────────────────────────────
 

@@ -122,7 +122,7 @@ if [ "$PROVISION" = true ]; then
     echo "=== Phase 0: Provisioning infrastructure via Terraform ==="
     "$SCRIPT_DIR/deploy/terraform.sh" apply  # updates SSH ingress rule to current IP
     echo "=== Waiting for SSH (security group updated) ==="
-    _wait_ssh_ready
+    _wait_ssh_ready 90  # fresh instance needs up to 15 min for user-data bootstrap (Docker, K3s, apt)
     _wait_k3s_ready
     echo "=== SSH ready ==="
 else
@@ -132,9 +132,25 @@ else
     _EC2_IP=$(ssh -G "$EC2_HOST" 2>/dev/null | awk '/^hostname/ {print $2; exit}')
     ssh-keygen -R "$EC2_HOST" &>/dev/null || true  # remove alias entry
     [ -n "$_EC2_IP" ] && ssh-keygen -R "$_EC2_IP" &>/dev/null || true  # remove IP entry
+    _check_ssh_prereqs  # fast-fail if security group IP has drifted since last --provision
     _wait_ssh_ready
     _wait_k3s_ready
     echo "=== SSH ready ==="
+fi
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Early AMI bake cancellation ───────────────────────────────────────────────
+# Cancel any bake from the previous deploy before launching parallel jobs.
+# The bake runs docker system prune and stops k3s mid-flight, which disrupts
+# concurrent docker build, containerd, and kubectl operations in this deploy.
+if declare -f cancel_in_progress_bake > /dev/null 2>&1 && [ -f "${_AMI_LOCKFILE:-/tmp/ami-bake.lock}" ]; then
+    _bake_lock_age=$(( $(date +%s) - $(stat -f %m "${_AMI_LOCKFILE:-/tmp/ami-bake.lock}" 2>/dev/null || echo 0) ))
+    if [ "$_bake_lock_age" -lt 3600 ]; then
+        echo "=== AMI bake in progress — cancelling before deploy to prevent Docker/K3s conflicts ==="
+        cancel_in_progress_bake
+    else
+        rm -f "${_AMI_LOCKFILE:-/tmp/ami-bake.lock}"  # stale lock from a crashed bake
+    fi
 fi
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -172,13 +188,13 @@ if [ "$DAGS_ONLY" = false ]; then
     # get NoSchedule/NoExecute taints and sit Pending the full timeout (AMI replacement leaves old node in K3s etcd)
     _cleanup_stale_nodes
 
-    # Run three independent steps at the same time in the background — they don't depend on each other
-    # Each step runs in its own background process and gets a copy of all the current variables
+    # Run the heaviest step (apt + 2 pip venvs) FIRST in the foreground — running it in
+    # parallel with Kafka+MLflow on a t4g.large (8GB/2vCPU) starves the host and drops SSH.
+    # Kafka and MLflow are k8s manifest applies (idempotent, light), so 2-way parallel after is safe.
+    step_build_airflow_image  # Step 2b2: Docker build + K3S import (~10-30s with cached layers, 2-5 min from scratch)
+
+    # Run the two remaining independent steps in parallel — both are mostly idempotent kubectl applies
     # _wait_bg checks whether each one succeeded — bash's built-in error checking doesn't catch background job failures
-
-    step_build_airflow_image &  # Step 2b2: Docker build + K3S import (~10-30s with cached layers, 2-5 min from scratch)
-    AIRFLOW_BUILD_PID=$!
-
     step_deploy_kafka &  # Steps 2b3-2b4: Kafka manifest rsync + image pull + StatefulSet deploy (~7-10 min)
     KAFKA_PID=$!
 
@@ -204,9 +220,7 @@ if [ "$DAGS_ONLY" = false ]; then
     step_deploy_flask &  # Steps 3-6: dashboard rsync, ECR setup, Flask build/push, Flask pod restart
     FLASK_PID=$!
 
-    # Helm upgrade only needs the Airflow image — wait for that, not Kafka/MLflow
-    _wait_bg $AIRFLOW_BUILD_PID "Airflow Docker build + K3S import (Step 2b2)"
-
+    # Airflow image build already finished in Phase 2 (now serialized) — no wait needed before Helm upgrade
     step_helm_upgrade  # Steps 2d + 2e: helm upgrade + apply Airflow service manifest
 fi
 
@@ -292,10 +306,25 @@ if [ "$DAGS_ONLY" = false ] && declare -f step_bake_ami > /dev/null 2>&1; then
         fi
     fi
 
+    # Refresh AWS SSO up front so any browser login prompt appears here in the foreground
+    # rather than ~30 sec after "DEPLOY COMPLETE" prints from the detached background bake.
+    # The bake calls AWS from its very first step (ASG lookup) through its last (AMI cleanup),
+    # so without a valid session the bake cannot even start.
+    echo "=== Checking AWS SSO session for AMI bake ==="
+    echo "  The bake uses AWS CLI throughout its full 15-25 min run:"
+    echo "    - before it starts: look up the EC2 instance ID from the ASG"
+    echo "    - during:           create the AMI, poll its state, update the launch template"
+    echo "    - after:             deregister old AMIs and their snapshots to save cost"
+    echo "  Logging in now (if needed) avoids a delayed browser prompt after deploy finishes."
+    if declare -f _ensure_aws_auth > /dev/null 2>&1; then
+        _ensure_aws_auth || echo "WARNING: AWS auth refresh failed — background bake may prompt again or fail"
+    fi
+
     # Always start a fresh bake after any cancellation/cleanup
     echo "=== Baking AMI in background ==="
     echo "  A snapshot of the server is being saved silently (takes 15-25 min)."
     echo "  Services will briefly restart (~60 sec) for a clean snapshot — the server stays usable."
+    echo "  AWS SSO was refreshed above, so no further login prompt is expected during the bake."
     echo "  Progress: tail -f /tmp/ami-bake.log"
     > /tmp/ami-bake.log   # truncate previous bake log before starting new one
     # Run the bake in a detached shell — nohup keeps it alive after this terminal closes

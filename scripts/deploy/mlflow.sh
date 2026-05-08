@@ -20,7 +20,12 @@ step_deploy_mlflow() {
         echo 'Pruning old MLflow images from K3S containerd to free ephemeral storage...' &&
         sudo k3s ctr images ls | grep 'mlflow' | awk '{print \$1}' | xargs -r sudo k3s ctr images rm 2>/dev/null || true &&
         echo 'Pruning dangling Docker images to free disk space...' &&
-        docker image prune -f || true
+        for _p in 1 2 3 4 5; do
+            out=\$(docker image prune -f 2>&1) && echo \"\$out\" && break
+            echo \"\$out\" | grep -q 'prune operation is already running' \
+                && echo \"Prune already running (attempt \$_p/5) — waiting 10s...\" && sleep 10 \
+                || { echo \"\$out\"; break; }
+        done || true
     "
 
     # Retry the pull up to 3 times — Docker's overlay layer extraction can fail under heavy parallel load

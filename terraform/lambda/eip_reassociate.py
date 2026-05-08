@@ -57,10 +57,16 @@ def handler(event, context):
 
         if eip_association:
             # EIP belongs to the still-running old instance — defer the move so users stay connected
-            # Store this new instance's ID so spot_restored Lambda knows where to send the EIP
+            # Only store the first replacement instance — if two instances launch during a spot event
+            # (ASG briefly at desired=2), a second deferral must not overwrite the first so that
+            # spot_restored moves the EIP to the surviving instance, not the one ASG will scale down.
             ssm_new_id_name = os.environ.get("SSM_NEW_INSTANCE_ID", "/pipeline/spot-new-instance-id")
-            ssm.put_parameter(Name=ssm_new_id_name, Value=instance_id, Overwrite=True)
-            print(f"Spot replacement in progress — deferring EIP; stored replacement instance {instance_id} in SSM")
+            current_target = ssm.get_parameter(Name=ssm_new_id_name)["Parameter"]["Value"]
+            if current_target == "none":
+                ssm.put_parameter(Name=ssm_new_id_name, Value=instance_id, Overwrite=True)
+                print(f"Spot replacement in progress — deferring EIP; stored replacement instance {instance_id} in SSM")
+            else:
+                print(f"Spot replacement in progress — deferring EIP; replacement already stored ({current_target}), ignoring {instance_id}")
             # Complete lifecycle hook so the new instance enters InService (without EIP for now)
             asg_client.complete_lifecycle_action(
                 LifecycleHookName=message["LifecycleHookName"],
@@ -69,7 +75,26 @@ def handler(event, context):
                 LifecycleActionResult="CONTINUE",
             )
             return
-        # EIP is not attached to anyone (edge case: old instance already gone) — fall through to normal reassociation
+        # EIP is not attached to anyone (edge case: old spot instance died before the 2-min defer window expired).
+        # Without cleanup, the ASG (still at desired=2) launches a second instance which incorrectly defers the EIP,
+        # causing spot_restored to move it away from this instance and orphan it when the second is terminated.
+        # Fix: clear SSM flags + reset ASG now so no second instance launches and enters the defer path.
+        try:
+            ssm_new_id_name = os.environ.get("SSM_NEW_INSTANCE_ID", "/pipeline/spot-new-instance-id")
+            ssm.put_parameter(Name=ssm_flag_name, Value="false", Overwrite=True)
+            ssm.put_parameter(Name=ssm_new_id_name, Value="none", Overwrite=True)
+            print("Cleared spot-replacing SSM flags — old instance already gone before defer window")
+        except Exception as e:
+            print(f"Warning: could not clear SSM flags in edge case: {e}")
+
+        try:
+            asg_name = os.environ.get("ASG_NAME")
+            if asg_name:
+                asg_client.update_auto_scaling_group(AutoScalingGroupName=asg_name, MaxSize=2)
+                asg_client.set_desired_capacity(AutoScalingGroupName=asg_name, DesiredCapacity=1)
+                print(f"ASG {asg_name} reset to desired=1 — prevents second instance from launching")
+        except Exception as e:
+            print(f"Warning: could not reset ASG in edge case: {e}")
 
     print(f"Associating EIP to instance {instance_id}")
 

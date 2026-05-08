@@ -59,21 +59,22 @@ step_build_airflow_image() {
         done || true
     "
 
-    # Build the new image — retry up to 3 times; Docker's BuildKit can lose its connection to its
-    # internal container runtime when the server is under heavy load from parallel background jobs
-    for _build_attempt in 1 2 3; do
+    # Build the new image — retry once on failure to absorb transient Docker daemon hiccups.
+    # The build now runs serialized (not in parallel with Kafka/MLflow), so SSH-drop-from-host-starvation
+    # is no longer the expected failure mode; one extra attempt is enough for routine flakes.
+    for _build_attempt in 1 2; do
         if ssh "$EC2_HOST" "
-            echo 'Building airflow-dbt:$BUILD_TAG image (attempt $_build_attempt/3)...' &&
+            echo 'Building airflow-dbt:$BUILD_TAG image (attempt $_build_attempt/2)...' &&
             DOCKER_BUILDKIT=1 docker build -t airflow-dbt:$BUILD_TAG $EC2_HOME/airflow/docker/
         "; then
             break  # build succeeded — exit the retry loop
         fi
-        if [ "$_build_attempt" -lt 3 ]; then
+        if [ "$_build_attempt" -lt 2 ]; then
             echo "Docker build attempt $_build_attempt failed — restarting Docker daemon and retrying in 20s..."
             ssh "$EC2_HOST" "sudo systemctl restart docker" || true  # restart to reset BuildKit connection
             sleep 20
         else
-            echo "✗ Docker build failed after 3 attempts"
+            echo "✗ Docker build failed after 2 attempts"
             return 1
         fi
     done
