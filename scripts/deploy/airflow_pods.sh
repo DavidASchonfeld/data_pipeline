@@ -32,6 +32,23 @@ _cleanup_stale_nodes() {
             kubectl delete node \"\$NODE\" --ignore-not-found=true
         done
     "
+    _ensure_disk_space
+}
+
+_ensure_disk_space() {
+    # Prune Docker + K3s images if disk > 80% — prevents node.kubernetes.io/disk-pressure:NoSchedule taint.
+    # After failed deploys accumulate layers, disk pressure blocks pod scheduling regardless of PVC state.
+    ssh "$EC2_HOST" "
+        DISK_USE=\$(df / | awk 'NR==2 {gsub(/%/,\"\",\$5); print \$5}')
+        if [ \"\${DISK_USE:-0}\" -gt 80 ]; then
+            echo \"Disk at \${DISK_USE}% — pruning to prevent disk-pressure taint...\"
+            docker system prune -f 2>/dev/null || true
+            sudo k3s crictl rmi --prune 2>/dev/null || true
+            echo \"Disk after prune: \$(df -h / | awk 'NR==2 {print \$5}')\"
+        else
+            echo \"Disk at \${DISK_USE}% — OK\"
+        fi
+    "
 }
 
 _cleanup_stale_pg_pvc() {
@@ -40,9 +57,23 @@ _cleanup_stale_pg_pvc() {
     ssh "$EC2_HOST" "
         PVC_PHASE=\$(kubectl get pvc data-airflow-postgresql-0 -n airflow-my-namespace \
             -o jsonpath='{.status.phase}' 2>/dev/null || echo '')
-        [ \"\$PVC_PHASE\" != 'Bound' ] && exit 0  # no Bound PVC — nothing to check
+        [ -z \"\$PVC_PHASE\" ] && exit 0  # no PVC at all — nothing to check
         PV_NAME=\$(kubectl get pvc data-airflow-postgresql-0 -n airflow-my-namespace \
             -o jsonpath='{.spec.volumeName}' 2>/dev/null || echo '')
+        if [ \"\$PVC_PHASE\" = 'Lost' ]; then
+            # Lost PVC: backing PV path is gone but the PV object may still be in Released/Available state
+            # with stale nodeAffinity. Deleting only the PVC lets the new PVC bind to that Released PV,
+            # perpetuating the nodeAffinity mismatch. Delete both to force fresh provisioning.
+            echo \"PostgreSQL PVC is Lost — deleting PVC\${PV_NAME:+ and stale PV \$PV_NAME}...\"
+            kubectl delete pvc data-airflow-postgresql-0 -n airflow-my-namespace --ignore-not-found=true
+            if [ -n \"\$PV_NAME\" ]; then
+                kubectl patch pv \"\$PV_NAME\" -p '{\"metadata\":{\"finalizers\":null}}' 2>/dev/null || true
+                kubectl delete pv \"\$PV_NAME\" --ignore-not-found=true
+            fi
+            sleep 2
+            exit 0
+        fi
+        [ \"\$PVC_PHASE\" != 'Bound' ] && exit 0  # Pending or other transient state — nothing to check
         [ -z \"\$PV_NAME\" ] && exit 0
         # local-path provisioner records the creating node's hostname in nodeAffinity
         PV_NODE=\$(kubectl get pv \"\$PV_NAME\" \
@@ -54,6 +85,7 @@ _cleanup_stale_pg_pvc() {
             echo \"Stale PostgreSQL PVC: PV '\$PV_NAME' is affined to '\$PV_NODE' but current node is '\$CURRENT_NODE'\"
             echo 'Deleting stale PVC + PV so Helm can provision fresh storage on the correct node...'
             kubectl delete pvc data-airflow-postgresql-0 -n airflow-my-namespace --ignore-not-found=true
+            kubectl patch pv \"\$PV_NAME\" -p '{\"metadata\":{\"finalizers\":null}}' 2>/dev/null || true
             kubectl delete pv \"\$PV_NAME\" --ignore-not-found=true
             sleep 2  # give K8s API a moment to record the deletion before Helm runs
         else
@@ -136,6 +168,12 @@ step_helm_upgrade() {
     _cleanup_stale_pg_pvc         # remove PostgreSQL PVC/PV bound to wrong node before Helm provisions storage
     _cleanup_stale_dag_log_pvcs   # remove dag-pvc/log-pvc PVs with stale nodeAffinity from AMI bake
 
+    # Ensure airflow-dbt:$BUILD_TAG is still in K3s containerd after _ensure_disk_space may have pruned it.
+    # _cleanup_stale_nodes → _ensure_disk_space runs `crictl rmi --prune` when disk > 80%, which deletes
+    # the freshly-imported image (no running container holds a reference yet). Helm creates the migration
+    # pod immediately after; if the image is missing the pod gets ErrImageNeverPull → 900s timeout.
+    step_verify_airflow_image
+
     # Ensure the log hostPath is group-writable by GID 0 (airflow's primary group) before Helm applies fsGroup=0;
     # without this the dag-processor crashes on first start because it can't create /opt/airflow/logs/dag_processor/
     ssh "$EC2_HOST" "sudo chown ubuntu:root /opt/airflow/logs 2>/dev/null; sudo chmod 775 /opt/airflow/logs"
@@ -208,9 +246,17 @@ step_helm_upgrade() {
             -o jsonpath='{.status.phase}' 2>/dev/null || echo '')
         echo \"PostgreSQL PVC phase: \$PVC_PHASE\"
         if [ \"\$PVC_PHASE\" = 'Lost' ]; then
-            # PVC is Lost — backing PV path is gone; delete so K3s provisions fresh storage on next pod start
-            echo 'PVC is in Lost state — deleting so K3s can provision fresh storage on the new pod...'
+            # PVC is Lost — backing PV path is gone; delete PVC + PV to force fresh provisioning.
+            # Deleting only the PVC leaves the Released PV in etcd; the new PVC may bind to it and inherit
+            # its stale nodeAffinity, keeping the pod Pending indefinitely.
+            LOST_PV=\$(kubectl get pvc data-airflow-postgresql-0 -n airflow-my-namespace \
+                -o jsonpath='{.spec.volumeName}' 2>/dev/null || echo '')
+            echo 'PVC is in Lost state — deleting PVC and stale PV to force fresh provisioning...'
             kubectl delete pvc data-airflow-postgresql-0 -n airflow-my-namespace --ignore-not-found=true
+            if [ -n \"\$LOST_PV\" ]; then
+                kubectl patch pv \"\$LOST_PV\" -p '{\"metadata\":{\"finalizers\":null}}' 2>/dev/null || true
+                kubectl delete pv \"\$LOST_PV\" --ignore-not-found=true
+            fi
             sleep 3  # let K3s reconcile before polling starts
         elif [ \"\$PVC_PHASE\" = 'Bound' ]; then
             # Bound PVC can still be stale if bound to a different node or if its backing directory is gone
@@ -345,13 +391,20 @@ step_helm_upgrade() {
                     echo 'Migration job failed (likely started before PostgreSQL was ready).'
                     echo 'Deleting failed job and recreating from Helm template...'
                     kubectl delete job airflow-run-airflow-migrations -n airflow-my-namespace --ignore-not-found=true
+                    # Poll until job is fully gone — kubectl wait --for=delete silently times out and || true hides it,
+                    # causing kubectl create to race against a still-terminating job and hit AlreadyExists.
+                    for _dw in \$(seq 1 18); do
+                        kubectl get job airflow-run-airflow-migrations -n airflow-my-namespace \
+                            --ignore-not-found --no-headers 2>/dev/null | grep -q . || break
+                        [ \$_dw -lt 18 ] && echo \"  Waiting for migration job deletion (attempt \$_dw/18)...\" && sleep 5
+                    done
                     helm template airflow apache-airflow/airflow \
                         -n airflow-my-namespace \
                         --version 1.20.0 \
                         --set images.airflow.tag=$BUILD_TAG \
                         -f $EC2_HELM_PATH/values.yaml \
                         -s templates/jobs/migrate-database-job.yaml \
-                        | kubectl apply -f -
+                        | kubectl create -f -
                     RETRIED=true
                     echo 'Retry job created — continuing to poll...'
                 fi
@@ -366,13 +419,27 @@ step_helm_upgrade() {
                         kubectl logs \"\$MIG_POD\" -n airflow-my-namespace --tail=20 2>/dev/null || true
                         if [ \"\$RETRIED\" = false ]; then
                             kubectl delete job airflow-run-airflow-migrations -n airflow-my-namespace --ignore-not-found=true
+                            # Poll until job is fully gone — same fix as Failed path above.
+                            for _dw in \$(seq 1 18); do
+                                kubectl get job airflow-run-airflow-migrations -n airflow-my-namespace \
+                                    --ignore-not-found --no-headers 2>/dev/null | grep -q . || break
+                                [ \$_dw -lt 18 ] && echo \"  Waiting for migration job deletion (attempt \$_dw/18)...\" && sleep 5
+                            done
+                            # ErrImageNeverPull means the image was evicted from K3s containerd — re-import
+                            # it from Docker before creating the retry job, or the new pod will also fail.
+                            if echo \"\$WAIT_REASON\" | grep -q 'ErrImageNeverPull'; then
+                                echo 'Re-importing airflow-dbt:$BUILD_TAG into K3S containerd...'
+                                docker save 'airflow-dbt:$BUILD_TAG' | sudo k3s ctr images import - \
+                                    && echo 'Image re-import complete.' \
+                                    || echo 'WARNING: image re-import failed — retry job may also get ErrImageNeverPull'
+                            fi
                             helm template airflow apache-airflow/airflow \
                                 -n airflow-my-namespace \
                                 --version 1.20.0 \
                                 --set images.airflow.tag=$BUILD_TAG \
                                 -f $EC2_HELM_PATH/values.yaml \
                                 -s templates/jobs/migrate-database-job.yaml \
-                                | kubectl apply -f -
+                                | kubectl create -f -
                             RETRIED=true
                             echo 'Retry job created after image/crash error — continuing to poll...'
                         else
@@ -477,6 +544,18 @@ step_restart_airflow_pods() {
     ssh "$EC2_HOST" "
         kubectl rollout status deployment/airflow-dag-processor \
             -n airflow-my-namespace --timeout=300s 2>/dev/null || true
+    " || true
+
+    # Prune stale dag-processor ReplicaSets (desired=0) left by prior Helm deploys before waiting
+    echo "Pruning stale dag-processor ReplicaSets..."
+    ssh "$EC2_HOST" "
+        kubectl get rs -l component=dag-processor -n airflow-my-namespace \
+            --no-headers -o custom-columns='NAME:.metadata.name,DESIRED:.spec.replicas' \
+            2>/dev/null | awk '\$2 == 0 {print \$1}' | while read -r OLD_RS; do
+            [ -z \"\$OLD_RS\" ] && continue
+            echo \"Deleting stale RS \$OLD_RS (replicas=0)...\"
+            kubectl delete rs \"\$OLD_RS\" -n airflow-my-namespace --ignore-not-found=true 2>/dev/null || true
+        done
     " || true
 
     # Even after rollout status returns, the old RS pod can still be Terminating for 30-60s.

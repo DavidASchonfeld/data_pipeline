@@ -93,6 +93,8 @@ def _cached_query(key: str, ttl: int, columns: list, query_fn) -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+FINANCIALS_COLUMNS = ["metric", "label", "period_end", "value", "fiscal_year", "fiscal_period"]  # shared schema for empty-frame fallbacks
+
 def _load_ticker_data(ticker: str) -> pd.DataFrame:
     """Query MariaDB for annual Revenue and Net Income rows from company_financials.
 
@@ -104,7 +106,7 @@ def _load_ticker_data(ticker: str) -> pd.DataFrame:
     """
     # Return empty frame if no engine is available (e.g. pymysql not installed locally)
     if DB_ENGINE is None:
-        return pd.DataFrame(columns=["metric", "label", "period_end", "value", "fiscal_year", "fiscal_period"])
+        return pd.DataFrame(columns=FINANCIALS_COLUMNS)
 
     # Return cached result if still fresh
     cache_key = f"financials:{ticker}"
@@ -123,10 +125,15 @@ def _load_ticker_data(ticker: str) -> pd.DataFrame:
           AND fiscal_period = 'FY'
         ORDER BY period_end ASC
     """)
-    with DB_ENGINE.connect() as conn:
-        df = pd.read_sql(query, conn, params={"ticker": ticker})
-    # Cast period_end to datetime so Plotly renders the x-axis correctly
-    df["period_end"] = pd.to_datetime(df["period_end"])
+    try:
+        with DB_ENGINE.connect() as conn:
+            df = pd.read_sql(query, conn, params={"ticker": ticker})
+        # Cast period_end to datetime so Plotly renders the x-axis correctly
+        df["period_end"] = pd.to_datetime(df["period_end"])
+    except Exception:
+        # Snowflake may be briefly unavailable (warehouse resume, spot replacement) — return empty frame
+        # Don't cache the failure: next request should retry, not stay cold for the full TTL
+        return pd.DataFrame(columns=FINANCIALS_COLUMNS)
     _cache_set(cache_key, df, CACHE_TTL_FINANCIALS)
     return df
 
@@ -150,12 +157,17 @@ def prewarm_cache(tickers: list) -> None:
     Sets _prewarm_event when done so /health/ready can signal Lambda that data is ready.
     Failures are silenced — a cache miss on first request is acceptable; a crash at startup is not.
     """
-    def _safe(fn, label, *args):
-        # Wrapper that catches and logs errors without crashing the thread pool
-        try:
-            fn(*args)
-        except Exception as e:
-            print(f"[prewarm_cache] WARNING: failed to warm '{label}': {e}", flush=True)
+    def _safe(fn, label, *args, attempts=3):
+        # Retry each prewarm task so a transient warehouse-resume miss doesn't leave the cache cold
+        for i in range(attempts):
+            try:
+                fn(*args)
+                return
+            except Exception as e:
+                if i == attempts - 1:
+                    print(f"[prewarm_cache] WARNING: failed to warm '{label}' after {attempts} attempts: {e}", flush=True)
+                else:
+                    time.sleep(2 * (i + 1))  # 2s, 4s backoff — short enough to stay within readiness window
 
     # Fire all Snowflake queries concurrently — one warehouse activation covers all
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:

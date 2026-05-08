@@ -1,6 +1,5 @@
 import logging
 import pandas as pd  # needed to parse JSON data from dcc.Store back into DataFrames
-import plotly.graph_objects as go
 from dash import html, ClientsideFunction  # ClientsideFunction wires JS functions to Dash callbacks
 from dash.dependencies import Input, Output, State  # State reads values without triggering callbacks
 
@@ -8,6 +7,7 @@ logger = logging.getLogger(__name__)  # module-level logger — writes to pod st
 
 from db import _load_ticker_data, load_anomalies, load_weather_data, load_stock_health, load_weather_health  # split health loaders: stocks page uses load_stock_health, weather page uses load_weather_health
 from charts import build_revenue_net_income_fig, build_net_income_fig, build_stats_table, build_anomaly_scatter, build_health_table  # build_health_table added for the health panel
+from chart_utils import make_empty_figure  # shared themed empty-figure helper — keeps fallback figures on-brand
 from weather_charts import build_temperature_fig, build_weather_stats_table, compute_weather_anomalies, build_weather_anomaly_scatter  # weather chart builders; anomaly functions added for anomaly detection section
 from security import ALLOWED_TICKERS, ALLOWED_CITIES  # import centralised allowlists — avoids duplicating the sets here
 from anomaly_table import (  # shared table logic so both dashboards use identical column definitions
@@ -71,15 +71,13 @@ def register_callbacks(dash_app) -> None:
         Output components defined above — order matters.
         """
         if ticker not in ALLOWED_TICKERS:                                                              # reject unknown tickers before any DB call — prevents strangers cache-busting Snowflake queries
-            empty_fig = go.Figure()                                                                     # blank figure returned for both chart slots so Dash has a valid object to render
-            empty_fig.add_annotation(text="Invalid ticker", showarrow=False, font={"size": 14})        # surface the rejection reason visually instead of silently showing an empty chart
+            empty_fig = make_empty_figure("Invalid ticker")                                            # themed empty figure keeps the dashboard on-brand even in the error path
             return empty_fig, empty_fig, html.P("Invalid ticker selection.", style={"color": "red"})   # return all three outputs so Dash's positional mapping doesn't raise a mismatch error
         try:
             df = _load_ticker_data(ticker)
         except Exception:
             logger.exception("Failed to load ticker data for %s", ticker)  # full traceback to pod stdout
-            empty_fig = go.Figure()
-            empty_fig.add_annotation(text="Data temporarily unavailable", showarrow=False, font={"size": 14})
+            empty_fig = make_empty_figure("Data temporarily unavailable")  # themed placeholder instead of raw unstyled Plotly figure
             return empty_fig, empty_fig, html.P("Data temporarily unavailable. Please try again later.", style={"color": "red"})
 
         # Split into per-metric DataFrames for separate traces
@@ -106,8 +104,7 @@ def register_callbacks(dash_app) -> None:
             df = load_anomalies()  # query Snowflake (or return empty frame for non-Snowflake backends)
         except Exception:
             logger.exception("Failed to load anomaly data")  # full traceback to pod stdout
-            empty_fig = go.Figure()
-            empty_fig.add_annotation(text="Data temporarily unavailable", showarrow=False, font={"size": 14})
+            empty_fig = make_empty_figure("Data temporarily unavailable")  # themed placeholder instead of raw unstyled Plotly figure
             return empty_fig, None  # None clears the store so the table shows its empty-state message
         # Serialize to JSON so the table callback can re-render on legend clicks without re-querying
         return build_anomaly_scatter(df), df.to_json(orient="records", date_format="iso")
@@ -184,8 +181,7 @@ def register_weather_callbacks(weather_dash_app) -> None:
     def update_weather(n_clicks, city):
         """Re-render temperature chart and stats for selected city on page load, refresh, or city change."""
         if city not in ALLOWED_CITIES:  # validate against allowlist — prevents cache-busting with arbitrary strings
-            empty_fig = go.Figure()
-            empty_fig.add_annotation(text="Invalid city selection", showarrow=False, font={"size": 14})
+            empty_fig = make_empty_figure("Invalid city selection")  # themed placeholder instead of raw unstyled Plotly figure
             return empty_fig, html.P("Invalid city selection.", style={"color": "red"})
         try:
             df = load_weather_data()  # full dataset for all cities (cached 15 min); filter below
@@ -193,8 +189,7 @@ def register_weather_callbacks(weather_dash_app) -> None:
                 df = df[df["city_name"] == city]  # filter to selected city — no extra Snowflake query needed
         except Exception:
             logger.exception("Failed to load weather data")  # full traceback to pod stdout
-            empty_fig = go.Figure()
-            empty_fig.add_annotation(text="Data temporarily unavailable", showarrow=False, font={"size": 14})
+            empty_fig = make_empty_figure("Data temporarily unavailable")  # themed placeholder instead of raw unstyled Plotly figure
             return empty_fig, html.P("Data temporarily unavailable. Please try again later.", style={"color": "red"})
         return build_temperature_fig(df, city), build_weather_stats_table(df)  # chart + stats rendered from the filtered DataFrame
 
@@ -227,8 +222,7 @@ def register_weather_callbacks(weather_dash_app) -> None:
             df = load_weather_data()  # full dataset, all cities (cached 15 min) — no extra Snowflake query
         except Exception:
             logger.exception("Failed to load weather data for anomaly detection")  # full traceback to pod stdout
-            empty_fig = go.Figure()
-            empty_fig.add_annotation(text="Data temporarily unavailable", showarrow=False, font={"size": 14})
+            empty_fig = make_empty_figure("Data temporarily unavailable")  # themed placeholder instead of raw unstyled Plotly figure
             return empty_fig, None  # None clears the store so the table shows its empty-state message
         df = compute_weather_anomalies(df)  # z-score per city, in-memory — no DB call
         # Serialize to JSON so the table callback can re-render on legend clicks without recomputing

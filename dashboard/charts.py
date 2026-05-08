@@ -13,6 +13,9 @@ def build_revenue_net_income_fig(ticker: str, revenue_df: pd.DataFrame, net_inco
     Values divided by 1e9 to display in billions (e.g. 394_328_000_000 → 394.33).
     barmode="group" places bars for the same x position next to each other (not stacked).
     """
+    # Guard: show a themed placeholder when both series are empty (e.g. transient Snowflake miss)
+    if revenue_df.empty and net_income_df.empty:
+        return make_empty_figure(f"No data yet for {ticker}")
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=revenue_df["fiscal_year"],
@@ -42,6 +45,9 @@ def build_net_income_fig(ticker: str, net_income_df: pd.DataFrame) -> go.Figure:
 
     Separate chart lets the user compare net income magnitude without Revenue dwarfing it.
     """
+    # Guard: show a themed placeholder when the series is empty (e.g. transient Snowflake miss)
+    if net_income_df.empty:
+        return make_empty_figure(f"No data yet for {ticker}")
     fig = go.Figure(data=[go.Bar(
         x=net_income_df["fiscal_year"],
         y=net_income_df["value"] / 1e9,

@@ -10,9 +10,21 @@ _cleanup_stale_kafka_pvc() {
         PVC_PHASE=\$(kubectl get pvc kafka-data-kafka-0 -n kafka \
             -o jsonpath='{.status.phase}' 2>/dev/null || echo '')
         [ -z \"\$PVC_PHASE\" ] && echo 'No Kafka PVC found — nothing to clean.' && exit 0
-        [ \"\$PVC_PHASE\" != 'Bound' ] && echo \"Kafka PVC phase is '\$PVC_PHASE' — skipping stale check.\" && exit 0
         PV_NAME=\$(kubectl get pvc kafka-data-kafka-0 -n kafka \
             -o jsonpath='{.spec.volumeName}' 2>/dev/null || echo '')
+        if [ \"\$PVC_PHASE\" = 'Lost' ]; then
+            # Lost PVC: delete both PVC and PV — leaving the Released PV causes new PVC to bind to it and
+            # inherit its stale nodeAffinity, keeping kafka-0 Pending indefinitely.
+            echo \"Kafka PVC is Lost — deleting PVC\${PV_NAME:+ and stale PV \$PV_NAME}...\"
+            kubectl delete pvc kafka-data-kafka-0 -n kafka --ignore-not-found=true
+            if [ -n \"\$PV_NAME\" ]; then
+                kubectl patch pv \"\$PV_NAME\" -p '{\"metadata\":{\"finalizers\":null}}' 2>/dev/null || true
+                kubectl delete pv \"\$PV_NAME\" --ignore-not-found=true
+            fi
+            sleep 2
+            exit 0
+        fi
+        [ \"\$PVC_PHASE\" != 'Bound' ] && echo \"Kafka PVC phase is '\$PVC_PHASE' — skipping stale check.\" && exit 0
         [ -z \"\$PV_NAME\" ] && exit 0
         PV_NODE=\$(kubectl get pv \"\$PV_NAME\" \
             -o jsonpath='{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]}' \
@@ -23,6 +35,7 @@ _cleanup_stale_kafka_pvc() {
             echo \"Stale Kafka PVC: PV '\$PV_NAME' affined to '\$PV_NODE' but current node is '\$CURRENT_NODE'\"
             echo 'Deleting stale Kafka PVC + PV so local-path can provision fresh storage on the correct node...'
             kubectl delete pvc kafka-data-kafka-0 -n kafka --ignore-not-found=true
+            kubectl patch pv \"\$PV_NAME\" -p '{\"metadata\":{\"finalizers\":null}}' 2>/dev/null || true
             kubectl delete pv \"\$PV_NAME\" --ignore-not-found=true
             sleep 2  # let K8s API record the deletion before StatefulSet apply
         else
@@ -39,10 +52,33 @@ step_deploy_kafka() {
     echo "=== Step 2b3a: Pre-pulling Kafka image into K3s containerd ==="
     # Pre-loads the Kafka image before the pod starts, so the rollout doesn't fail the 480s timeout waiting on a slow download.
     # Same approach used for MLflow and the Airflow image. crictl pull does nothing if the image is already there.
-    ssh "$EC2_HOST" "
-        sudo k3s crictl pull docker.io/apache/kafka:4.0.0 \
-        && echo 'Kafka image ready in K3s containerd.'
-    "
+    # Retry loop: a concurrent AMI bake or heavy parallel load can reset the containerd socket mid-pull.
+    for _pull_attempt in 1 2 3; do
+        if ssh "$EC2_HOST" "
+            echo 'Pre-pulling Kafka image (attempt $_pull_attempt/3)...' &&
+            sudo k3s crictl pull docker.io/apache/kafka:4.0.0 &&
+            echo 'Kafka image ready in K3s containerd.'
+        "; then
+            break
+        fi
+        if [ "$_pull_attempt" -lt 3 ]; then
+            echo "Kafka image pull attempt $_pull_attempt failed — checking containerd socket..."
+            # Remove any partial/corrupt snapshot before retrying — lchown errors leave broken overlayfs state
+            # that causes every subsequent crictl pull attempt to fail with the same "no such file" error.
+            ssh "$EC2_HOST" "sudo k3s crictl rmi docker.io/apache/kafka:4.0.0 2>/dev/null || true
+                sudo k3s ctr images rm docker.io/apache/kafka:4.0.0 2>/dev/null || true"
+            if ssh "$EC2_HOST" "sudo k3s ctr version >/dev/null 2>&1"; then
+                echo "Containerd socket OK — retrying in 15s..."
+                sleep 15
+            else
+                echo "Containerd socket unresponsive — waiting 30s..."
+                sleep 30
+            fi
+        else
+            echo "✗ Kafka image pre-pull failed after 3 attempts"
+            return 1
+        fi
+    done
 
     # Re-apply kubectl permissions — same reason as mlflow.sh: K3s can restart under load and reset k3s.yaml to 600
     _ensure_kubectl_accessible
