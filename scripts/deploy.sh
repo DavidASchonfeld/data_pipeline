@@ -53,7 +53,7 @@ source "$DEPLOY_DIR/airflow_pods.sh" # step_helm_upgrade, step_verify_airflow_im
 source "$DEPLOY_DIR/ami.sh" 2>/dev/null || true   # ami.sh may not exist yet on first deploy
 source "$DEPLOY_DIR/deploy_status.sh" 2>/dev/null || true  # optional; remove this + 2 call sites to disable
 
-trap '_DEPLOY_EXIT=$?; _print_deploy_summary' EXIT  # capture exit code first so summary always sees the real exit code
+trap '_DEPLOY_EXIT=$?; _print_deploy_summary; _maybe_spot_retry' EXIT  # capture exit code first so summary always sees the real exit code
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -67,13 +67,18 @@ SNOWFLAKE_SETUP=false
 FIX_ML_VENV=false
 # --bake-ami: create a golden AMI from the running instance for fast future boots
 BAKE_AMI=false
+# --auto-retry-on-spot: if a spot interruption is detected, wait for replacement instance and re-run
+AUTO_RETRY_ON_SPOT=false
+# preserve original args so _maybe_spot_retry can re-exec with identical flags after a spot replacement
+DEPLOY_ORIG_ARGS=("$@")
 for _arg in "$@"; do
     case "$_arg" in
         --dags-only)       DAGS_ONLY=true ;;
         --provision)       PROVISION=true ;;
         --snowflake-setup) SNOWFLAKE_SETUP=true ;;
         --fix-ml-venv)     FIX_ML_VENV=true ;;
-        --bake-ami)        BAKE_AMI=true ;;
+        --bake-ami)            BAKE_AMI=true ;;
+        --auto-retry-on-spot)  AUTO_RETRY_ON_SPOT=true ;;
         *) echo "ERROR: Unknown argument: $_arg"; exit 1 ;;
     esac
 done
@@ -81,7 +86,8 @@ done
 [ "$PROVISION" = true ]       && echo "--- Mode: --provision (running Terraform before deploy) ---"
 [ "$SNOWFLAKE_SETUP" = true ] && echo "--- Mode: --snowflake-setup (bootstrapping Snowflake objects before deploy) ---"
 [ "$FIX_ML_VENV" = true ]     && echo "--- Mode: --fix-ml-venv (repairing ml-venv in running scheduler pod only) ---"
-[ "$BAKE_AMI" = true ]        && echo "--- Mode: --bake-ami (creating golden AMI snapshot) ---"
+[ "$BAKE_AMI" = true ]           && echo "--- Mode: --bake-ami (creating golden AMI snapshot) ---"
+[ "$AUTO_RETRY_ON_SPOT" = true ] && echo "--- Mode: --auto-retry-on-spot (will wait for replacement instance and re-run on spot interrupt) ---"
 _deploy_status_write_started  # call site 1 — log deploy start timestamp by mode
 
 # --fix-ml-venv: skip the full deploy and only rebuild the ml-venv in the running pod
@@ -139,6 +145,8 @@ else
     _wait_k3s_ready
     echo "=== SSH ready ==="
 fi
+
+_capture_instance_metadata  # grab instance ID now for spot interruption diagnosis if the deploy fails mid-run
 
 # Print disk/image usage so chronic disk pressure is visible from the very first line of the log.
 # Informational only — does not gate or slow the deploy. Compare across logs to track drift.

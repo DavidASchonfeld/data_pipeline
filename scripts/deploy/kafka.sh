@@ -53,10 +53,17 @@ step_deploy_kafka() {
     # Pre-loads the Kafka image before the pod starts, so the rollout doesn't fail the 480s timeout waiting on a slow download.
     # Same approach used for MLflow and the Airflow image. crictl pull does nothing if the image is already there.
     # Retry loop: a concurrent AMI bake or heavy parallel load can reset the containerd socket mid-pull.
+
+    # Clear orphaned containerd blobs and disk-pressure taint before pulling — the Kafka lchown overlayfs
+    # error (2026-05-09) happens when the content store still holds stale layer bytes from prior failed
+    # imports. Pulling on top of them re-enters the corrupt overlayfs state on every attempt.
+    _ensure_disk_space
+    _remove_disk_pressure_taint
+
     for _pull_attempt in 1 2 3; do
         if ssh "$EC2_HOST" "
             echo 'Pre-pulling Kafka image (attempt $_pull_attempt/3)...' &&
-            sudo k3s crictl pull docker.io/apache/kafka:4.0.0 &&
+            sudo timeout 300 k3s crictl pull docker.io/apache/kafka:4.0.0 &&
             echo 'Kafka image ready in K3s containerd.'
         "; then
             break
@@ -67,6 +74,9 @@ step_deploy_kafka() {
             # that causes every subsequent crictl pull attempt to fail with the same "no such file" error.
             ssh "$EC2_HOST" "sudo k3s crictl rmi docker.io/apache/kafka:4.0.0 2>/dev/null || true
                 sudo k3s ctr images rm docker.io/apache/kafka:4.0.0 2>/dev/null || true"
+            # ctr images rm only drops the tag — corrupt layer bytes stay in the content store and cause
+            # the next pull to hit the same lchown error. content gc actually reclaims them.
+            ssh "$EC2_HOST" "sudo k3s ctr content gc 2>/dev/null || true"
             if ssh "$EC2_HOST" "sudo k3s ctr version >/dev/null 2>&1"; then
                 echo "Containerd socket OK — retrying in 15s..."
                 sleep 15
@@ -79,6 +89,10 @@ step_deploy_kafka() {
             return 1
         fi
     done
+
+    # GC orphaned content blobs left behind by the Kafka pull — mirrors the post-import GC in airflow_image.sh:95.
+    # Pulling a ~700 MB image adds enough churn to tip the node into disk-pressure if blobs from prior pulls linger.
+    ssh "$EC2_HOST" "sudo k3s ctr content gc && echo 'Containerd GC complete after Kafka pull'" || true
 
     # Re-apply kubectl permissions — same reason as mlflow.sh: K3s can restart under load and reset k3s.yaml to 600
     _ensure_kubectl_accessible
@@ -127,9 +141,16 @@ step_deploy_kafka() {
         # right before it's deleted. rollout status specifically waits for the NEW pod to be ready.
         # 480s timeout: Kafka's startup health check can take up to 290s (20s initial delay + 18 retries × 15s),
         # plus extra buffer for scheduling and first readiness.
-        echo 'Waiting for Kafka rollout to complete (readiness probe gates on port 9092)...'
-        kubectl rollout status statefulset/kafka -n kafka --timeout=480s \
-        || {
+        echo 'Waiting for Kafka rollout to complete (readiness probe gates on port 9092, up to 480s)...'
+        # Run rollout in background; print pod phase every 30s so the terminal isn't silent for 8 minutes
+        kubectl rollout status statefulset/kafka -n kafka --timeout=480s &
+        _KAFKA_ROLLOUT_PID=\$!
+        while kill -0 \"\$_KAFKA_ROLLOUT_PID\" 2>/dev/null; do
+            sleep 30
+            kill -0 \"\$_KAFKA_ROLLOUT_PID\" 2>/dev/null || break
+            echo \"  [\$(date '+%H:%M:%S')] kafka-0: \$(kubectl get pod kafka-0 -n kafka --no-headers 2>/dev/null | awk '{print \"status=\" \$3 \" ready=\" \$2}' || echo 'not found')\"
+        done
+        wait \"\$_KAFKA_ROLLOUT_PID\" || {
             echo 'WARNING: Kafka rollout did not complete — skipping topic creation. Run deploy again once it is running.'
             # Look at the exit code to understand why it failed:
             # exit 137 means Kubernetes killed it for using too much memory (OOMKill)

@@ -147,6 +147,12 @@ step_fix_mlflow_experiment() {
     # MLflow marks deleted experiments as deleted but keeps the row in the database — trying to create a new
     # experiment with the same name would fail with a 'name already exists' error. Updating in-place sidesteps that entirely.
 
+    # Pre-flight: a later step (Kafka pull) may have tipped the node into disk-pressure since Step 2b6
+    # completed, evicting the MLflow pod. Clearing the taint and reclaiming disk here gives the pod a
+    # chance to reschedule before the rollout-status check times out.
+    _ensure_disk_space
+    _remove_disk_pressure_taint
+
     # Wait for MLflow to be fully up before connecting to it. The health check can take up to ~40s to pass
     # (10s startup delay + 6 checks × 5s each), so without this wait the scheduler pod would get a
     # 'connection refused' error on port 5500.

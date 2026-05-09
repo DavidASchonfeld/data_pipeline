@@ -50,3 +50,23 @@ _deploy_status_write_clean() {
     [ -f "$DEPLOY_STATUS_FILE" ] || return
     _deploy_status_set "$(_deploy_status_mode)" "  Last Clean Finish" "$(date '+%Y-%m-%d %H:%M:%S')"
 }
+
+# Detailed disk breakdown logged on every deploy — informational only, does not gate the deploy.
+# Captures PVC storage, pod logs, and swapfile so drift is visible in the deploy log over time.
+_log_disk_breakdown() {
+    echo "=== Detailed disk breakdown ==="
+    ssh "$EC2_HOST" "
+        echo '-- Top /var subdirs --'
+        sudo du -h -d1 /var 2>/dev/null | sort -hr | head -15
+        echo '-- Swapfile --'
+        sudo du -sh /swapfile 2>/dev/null || echo '(no swapfile)'
+        echo '-- K3s local-path PVC storage --'
+        sudo du -sh /var/lib/rancher/k3s/storage/* 2>/dev/null || echo '(none)'
+        echo '-- Pod logs --'
+        sudo du -sh /var/log/pods /var/log/containers 2>/dev/null || echo '(empty)'
+    "
+    echo '-- PVC claims --'
+    # Run kubectl locally (it talks to the cluster via kubeconfig, not SSH)
+    kubectl get pvc -A -o wide 2>/dev/null || echo '(kubectl unavailable)'
+    echo "==============================="
+}
