@@ -102,6 +102,7 @@ _print_deploy_summary() {
             echo "  Script exited with errors — check items above and logs for details."
         else
             echo "  (none)"
+            type _deploy_status_write_clean &>/dev/null && _deploy_status_write_clean  # call site 2 — log clean finish
         fi
     else
         echo ""
@@ -119,6 +120,169 @@ _print_deploy_summary() {
     echo "  Full log: $DEPLOY_LOGFILE"
     echo "=================================================================="
     echo ""
+}
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Disk-pressure helpers ─────────────────────────────────────────────────────
+# Prune Docker + K3s images if disk > 75% — keeps the node below kubelet's eviction threshold.
+# Also calls _remove_disk_pressure_taint so pod scheduling resumes immediately after cleanup.
+_ensure_disk_space() {
+    # BUILD_TAG is set by deploy.sh after the airflow build; falls back to a sentinel that won't
+    # match any real tag, so a pre-build call won't accidentally delete the only airflow-dbt image.
+    local _build_tag="${BUILD_TAG:-NEVER_MATCH}"
+    ssh "$EC2_HOST" "
+        DISK_USE=\$(df / | awk 'NR==2 {gsub(/%/,\"\",\$5); print \$5}')
+        if [ \"\${DISK_USE:-0}\" -gt 75 ]; then
+            echo \"Disk at \${DISK_USE}% — pruning to prevent disk-pressure / kubelet eviction...\"
+            # Drop unused tagged airflow-dbt images from prior builds — these accumulate at ~5 GB each
+            # and are invisible to 'docker system prune' (only removes dangling, not tagged-but-unused).
+            # Skip the current build tag so the live image stays available for K3S re-import recovery.
+            docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
+                | grep -E '^airflow-dbt:3\.1\.8-dbt-' \
+                | grep -v ':${_build_tag}\$' \
+                | xargs -r docker rmi -f 2>/dev/null || true
+            # buildx layer cache (no-op when empty, but cheap to call)
+            docker buildx prune -af 2>/dev/null || true
+            # containers, networks, build cache (does NOT touch tagged images — those are handled above)
+            docker system prune -f 2>/dev/null || true
+            # K3S has its own containerd image store separate from Docker's
+            sudo k3s crictl rmi --prune 2>/dev/null || true
+            DISK_AFTER=\$(df / | awk 'NR==2 {gsub(/%/,\"\",\$5); print \$5}')
+            echo \"Disk after prune: \${DISK_AFTER}%\"
+            if [ \"\${DISK_AFTER:-0}\" -gt 85 ]; then
+                # Cache prune wasn't enough — dominant usage is live container/PVC data.
+                # Run targeted secondary cleanup before deciding whether to continue.
+                echo \"Disk still at \${DISK_AFTER}% — running secondary cleanup (logs, journal)...\"
+                echo '--- Top disk consumers ---'
+                du -sh /var/log/pods /var/lib/rancher/k3s/storage /var/lib/rancher/k3s/agent/containerd 2>/dev/null || true
+                echo '--------------------------'
+                # Truncate pod logs older than 3 days — kubelet holds open handles so truncate (not rm) is safe
+                find /var/log/pods -name '*.log' -mtime +3 -exec truncate -s 0 {} \; 2>/dev/null || true
+                # Vacuum systemd journal — can quietly grow past 1 GB on this host
+                sudo journalctl --vacuum-time=2d 2>/dev/null || true
+                # Delete Evicted pod objects — each holds a /var/log/pods/<uid> directory on disk even after eviction.
+                # 14 evicted MLflow pods were observed accumulating on May 8; deleting them releases the log dirs.
+                echo 'Deleting any Evicted pod objects to reclaim their log directories...'
+                kubectl get pods -A --no-headers 2>/dev/null \
+                    | awk '\$4 == \"Evicted\" {print \$1, \$2}' \
+                    | while read -r _ns _pod; do
+                        kubectl delete pod \"\$_pod\" -n \"\$_ns\" --grace-period=0 --force 2>/dev/null || true
+                      done
+                # Remove Released PVs — PVs in Released state hold storage but cannot be reattached to a claim.
+                kubectl get pv --no-headers 2>/dev/null \
+                    | awk '\$5 == \"Released\" {print \$1}' \
+                    | xargs -r kubectl delete pv 2>/dev/null || true
+                # Remove orphaned pod log directories whose owning pod no longer exists.
+                # Evicted pods leave their log dirs even after the pod object is deleted above.
+                LIVE_UIDS=\$(kubectl get pods -A -o jsonpath='{.items[*].metadata.uid}' 2>/dev/null | tr ' ' '\n')
+                for _dir in /var/log/pods/*/; do
+                    _uid=\$(basename \"\$_dir\" | awk -F_ '{print \$NF}')
+                    echo \"\$LIVE_UIDS\" | grep -qF \"\$_uid\" || sudo rm -rf \"\$_dir\" 2>/dev/null || true
+                done
+                # Sweep any leftover image-import tarballs that the import step's inline cleanup missed.
+                sudo rm -f /tmp/k3s-import-*.tar 2>/dev/null || true
+                # Clean up Ubuntu's package download cache and remove old kernel backups Ubuntu kept as fallbacks.
+                # apt-get autoremove --purge only removes kernels that are not currently running — it is safe.
+                sudo apt-get clean 2>/dev/null || true
+                sudo DEBIAN_FRONTEND=noninteractive apt-get autoremove --purge -y 2>&1 | tail -3 || true
+                # Tell snap to keep only 2 old versions of each package, then remove anything already superseded.
+                # snap only marks a revision 'disabled' after it has been fully replaced — removing them is safe.
+                sudo snap set system refresh.retain=2 2>/dev/null || true
+                snap list --all 2>/dev/null | awk '/disabled/{print \$1, \$3}' | while read -r _snapname _snaprev; do
+                    sudo snap remove \"\$_snapname\" --revision=\"\$_snaprev\" 2>/dev/null || true
+                done
+                # Empty pip's download cache — pip just re-downloads from the internet next time it needs a package.
+                sudo rm -rf /root/.cache/pip /home/ubuntu/.cache/pip 2>/dev/null || true
+                DISK_AFTER=\$(df / | awk 'NR==2 {gsub(/%/,\"\",\$5); print \$5}')
+                echo \"Disk after secondary cleanup: \${DISK_AFTER}%\"
+                if [ \"\${DISK_AFTER:-0}\" -gt 92 ]; then
+                    # Abort rather than risk kubelet evicting pods mid-deploy (what caused the May 8 Flask eviction).
+                    # Threshold raised from 90 → 92 since live PVC/container baseline is genuinely high on this host.
+                    echo \"ERROR: disk at \${DISK_AFTER}% after full cleanup — live PVC/container data too large. Aborting deploy.\"
+                    exit 1
+                elif [ \"\${DISK_AFTER:-0}\" -gt 85 ]; then
+                    # Detailed breakdown — secondary cleanup ran but disk is still high, so the remainder is live data.
+                    # Print which PVCs, images, and log dirs are the actual consumers so the operator can decide what to trim.
+                    echo ''
+                    echo '=== Detailed disk breakdown (live data still > 85%) ==='
+                    echo '-- hostPath PVC bind mounts --'
+                    sudo du -sh \\
+                        /home/ubuntu/airflow/logs \\
+                        /home/ubuntu/airflow/dags \\
+                        /home/ubuntu/airflow/dag-mylogs \\
+                        /home/ubuntu/mlflow-data \\
+                        2>/dev/null || true
+                    echo '-- K3s local-path provisioner volumes (PostgreSQL, Kafka, etc.) --'
+                    sudo du -sh /var/lib/rancher/k3s/storage/* 2>/dev/null || true
+                    echo '-- K3s containerd images: top 5 by size --'
+                    sudo k3s crictl images 2>/dev/null | awk 'NR>1' | sort -k5 -h -r | head -5 || true
+                    echo '-- K3s containerd images: pinned count --'
+                    PINNED=0
+                    for _img in \$(sudo k3s ctr images ls -q 2>/dev/null); do
+                        sudo k3s ctr images label \"\$_img\" 2>/dev/null \
+                            | grep -q 'io.cri-containerd.pinned=pinned' && PINNED=\$(( PINNED + 1 ))
+                    done
+                    echo \"Pinned images: \$PINNED\"
+                    echo '-- /var/log/pods total + orphan count --'
+                    sudo du -sh /var/log/pods 2>/dev/null || true
+                    LIVE_UIDS=\$(kubectl get pods -A -o jsonpath='{.items[*].metadata.uid}' 2>/dev/null | tr ' ' '\\n')
+                    POD_TOTAL=0; POD_ORPHAN=0
+                    for _dir in /var/log/pods/*/; do
+                        [ -d \"\$_dir\" ] || continue
+                        POD_TOTAL=\$(( POD_TOTAL + 1 ))
+                        _uid=\$(basename \"\$_dir\" | awk -F_ '{print \$NF}')
+                        echo \"\$LIVE_UIDS\" | grep -qF \"\$_uid\" || POD_ORPHAN=\$(( POD_ORPHAN + 1 ))
+                    done
+                    echo \"Total pod log dirs: \$POD_TOTAL | orphaned (no live pod): \$POD_ORPHAN\"
+                    echo '-- Top 10 files >100 MB on root volume --'
+                    sudo find / -xdev -type f -size +100M -exec ls -lh {} \\; 2>/dev/null \
+                        | awk '{printf \"%-8s %s\\n\", \$5, \$9}' | sort -h -r | head -10 || true
+                    echo '======================================================='
+                    echo ''
+                    echo \"WARNING: disk still at \${DISK_AFTER}% after prune — likely live container/PVC usage, not cache\"
+                fi
+            fi
+        else
+            echo \"Disk at \${DISK_USE}% — OK\"
+        fi
+    "
+    _remove_disk_pressure_taint
+}
+
+# Remove disk-pressure:NoSchedule taint from the ready node after disk cleanup.
+# K3s adds this taint automatically when disk > 85% — removing it here unblocks pod scheduling
+# immediately instead of waiting for K3s's next node-condition sync cycle (~30s).
+_remove_disk_pressure_taint() {
+    ssh "$EC2_HOST" "
+        NODE=\$(kubectl get nodes --no-headers 2>/dev/null | awk '\$2 == \"Ready\" {print \$1}' | head -1)
+        [ -z \"\$NODE\" ] && exit 0
+        if kubectl get node \"\$NODE\" -o jsonpath='{.spec.taints[*].key}' 2>/dev/null \
+            | grep -qw 'node.kubernetes.io/disk-pressure'; then
+            echo \"Removing disk-pressure taint from node \$NODE...\"
+            kubectl taint node \"\$NODE\" node.kubernetes.io/disk-pressure:NoSchedule- 2>/dev/null || true
+            echo 'Disk-pressure taint removed.'
+        else
+            echo 'No disk-pressure taint — OK'
+        fi
+    "
+}
+# Print disk, Docker, and K3s image usage at deploy start — informational only, does not gate the deploy.
+# Use the output over several deploys to decide whether to resize the EBS volume or tune image strategy.
+_log_disk_diagnostics() {
+    echo "=== Disk diagnostics (informational) ==="
+    ssh "$EC2_HOST" "
+        echo '-- Root filesystem --'
+        df -h /
+        echo '-- Docker layer/cache usage --'
+        docker system df 2>/dev/null || echo '(docker not available)'
+        echo '-- K3s containerd: image count --'
+        sudo k3s crictl images --quiet 2>/dev/null | wc -l || echo '(k3s not available)'
+        echo '-- K3s containerd store size --'
+        sudo du -sh /var/lib/rancher/k3s/agent/containerd 2>/dev/null || echo '(path not found)'
+        echo '-- Top 5 largest K3s images --'
+        sudo k3s crictl images 2>/dev/null | awk 'NR>1 {print}' | sort -k5 -h -r | head -5 || true
+    "
+    echo "========================================"
 }
 # ─────────────────────────────────────────────────────────────────────────────
 
