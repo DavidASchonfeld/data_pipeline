@@ -155,6 +155,7 @@ For the failure mode catalog (what *can* go wrong, not what *did* go wrong), see
 | 2026-05-08 | `AlreadyExists` again + MLflow 14-pod eviction storm: recovery deleted whole Job (fought Job controller); fix: restart pod only, server-side apply, MLflow rollout polling loop | [migration-disk-pressure-evict#follow-up-3](infrastructure/2026-05-08-migration-disk-pressure-evict-image-gc.md#follow-up-3-may-8-third-redeploy--same-day) |
 | 2026-05-09 | Disk warnings at 87–90% post-prune: 6.9 GB of orphaned containerd blobs from prior image imports never GC'd; fix: `k3s ctr content gc` after every import + in `_ensure_disk_space` | [containerd-orphaned-blobs](infrastructure/2026-05-09-containerd-orphaned-blobs-disk-pressure.md) |
 | 2026-05-09 | `ctr: open /tmp/k3s-import-*.tar: no such file or directory`: `_ensure_disk_space` wildcard `rm -f` raced with a parallel in-flight import; fix: age-gate sweeps to `find ... -mmin +5 -delete` | [ctr-import-tar-race](infrastructure/2026-05-09-ctr-import-tar-race.md) |
+| 2026-05-09 | Deploy peaks at 87% but baseline is 62%: 10 orphaned local-path PV dirs (~700 MB) left behind by helm upgrades + secondary cleanup triggered too late; fix: orphan-PV-dir sweep + lower secondary-cleanup threshold 85→80 | [disk-baseline](infrastructure/2026-05-09-disk-baseline-orphaned-pv-dirs-and-snapshots.md) |
 
 ---
 
