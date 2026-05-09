@@ -51,6 +51,7 @@ source "$DEPLOY_DIR/mlflow.sh"       # step_deploy_mlflow, step_fix_mlflow_exper
 source "$DEPLOY_DIR/flask.sh"        # step_deploy_flask, step_verify_flask
 source "$DEPLOY_DIR/airflow_pods.sh" # step_helm_upgrade, step_verify_airflow_image, step_restart_airflow_pods, step_setup_ml_venv
 source "$DEPLOY_DIR/ami.sh" 2>/dev/null || true   # ami.sh may not exist yet on first deploy
+source "$DEPLOY_DIR/deploy_status.sh" 2>/dev/null || true  # optional; remove this + 2 call sites to disable
 
 trap '_DEPLOY_EXIT=$?; _print_deploy_summary' EXIT  # capture exit code first so summary always sees the real exit code
 # ─────────────────────────────────────────────────────────────────────────────
@@ -81,6 +82,7 @@ done
 [ "$SNOWFLAKE_SETUP" = true ] && echo "--- Mode: --snowflake-setup (bootstrapping Snowflake objects before deploy) ---"
 [ "$FIX_ML_VENV" = true ]     && echo "--- Mode: --fix-ml-venv (repairing ml-venv in running scheduler pod only) ---"
 [ "$BAKE_AMI" = true ]        && echo "--- Mode: --bake-ami (creating golden AMI snapshot) ---"
+_deploy_status_write_started  # call site 1 — log deploy start timestamp by mode
 
 # --fix-ml-venv: skip the full deploy and only rebuild the ml-venv in the running pod
 # Useful after a deploy where step_setup_ml_venv printed a WARNING — no pod restart or Docker build needed
@@ -137,6 +139,10 @@ else
     _wait_k3s_ready
     echo "=== SSH ready ==="
 fi
+
+# Print disk/image usage so chronic disk pressure is visible from the very first line of the log.
+# Informational only — does not gate or slow the deploy. Compare across logs to track drift.
+_log_disk_diagnostics
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Early AMI bake cancellation ───────────────────────────────────────────────
@@ -192,6 +198,10 @@ if [ "$DAGS_ONLY" = false ]; then
     # parallel with Kafka+MLflow on a t4g.large (8GB/2vCPU) starves the host and drops SSH.
     # Kafka and MLflow are k8s manifest applies (idempotent, light), so 2-way parallel after is safe.
     step_build_airflow_image  # Step 2b2: Docker build + K3S import (~10-30s with cached layers, 2-5 min from scratch)
+
+    # Re-check disk after the large image build — the build can push disk past K3S's 85% pressure threshold,
+    # causing a disk-pressure:NoSchedule taint that blocks Kafka and MLflow pod scheduling.
+    _ensure_disk_space
 
     # Run the two remaining independent steps in parallel — both are mostly idempotent kubectl applies
     # _wait_bg checks whether each one succeeded — bash's built-in error checking doesn't catch background job failures

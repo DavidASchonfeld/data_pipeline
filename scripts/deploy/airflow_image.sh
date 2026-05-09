@@ -87,4 +87,11 @@ step_build_airflow_image() {
 
     # Import the freshly built image into K3S — shared helper in common.sh handles save+import+verify
     import_image_to_k3s "airflow-dbt:$BUILD_TAG" "airflow-dbt"
+
+    # Throw away Docker's old copy of the image now that K3S has its own — recovers ~1 GB per build.
+    # --filter 'until=1h' keeps the image we just built; -a removes all older unused images and their layer files.
+    ssh "$EC2_HOST" "echo 'Pruning Docker image layer cache after K3S import...' && docker image prune -af --filter 'until=1h' 2>&1 | tail -5" || true
+    # Clear Docker's build scratch pad (BuildKit cache) — it rebuilds on the next build if needed, no data is lost.
+    # This is separate from image layers and can hold another 1-2 GB of intermediate build files from prior runs.
+    ssh "$EC2_HOST" "echo 'Pruning Docker BuildKit cache after K3S import...' && docker builder prune -af --filter 'until=1h' 2>&1 | tail -5" || true
 }

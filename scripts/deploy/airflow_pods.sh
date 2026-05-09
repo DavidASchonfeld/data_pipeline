@@ -35,19 +35,52 @@ _cleanup_stale_nodes() {
     _ensure_disk_space
 }
 
-_ensure_disk_space() {
-    # Prune Docker + K3s images if disk > 80% — prevents node.kubernetes.io/disk-pressure:NoSchedule taint.
-    # After failed deploys accumulate layers, disk pressure blocks pod scheduling regardless of PVC state.
+
+_wait_migration_job_gone() {
+    # Wait for the migration job to be fully removed from etcd before recreating.
+    # kubectl wait --for=delete blocks until the object is gone past finalizers — unlike
+    # kubectl get --ignore-not-found which returns empty while a finalizing Job still lives in etcd,
+    # causing kubectl create to reject with AlreadyExists (May 8 2026 incident, second occurrence).
     ssh "$EC2_HOST" "
-        DISK_USE=\$(df / | awk 'NR==2 {gsub(/%/,\"\",\$5); print \$5}')
-        if [ \"\${DISK_USE:-0}\" -gt 80 ]; then
-            echo \"Disk at \${DISK_USE}% — pruning to prevent disk-pressure taint...\"
-            docker system prune -f 2>/dev/null || true
-            sudo k3s crictl rmi --prune 2>/dev/null || true
-            echo \"Disk after prune: \$(df -h / | awk 'NR==2 {print \$5}')\"
-        else
-            echo \"Disk at \${DISK_USE}% — OK\"
+        # Always run kubectl wait — the old kubectl get --ignore-not-found early-exit returned empty
+        # for jobs still in DeletionTimestamp state, giving a false 'absent' result. kubectl wait
+        # --for=delete returns immediately if truly gone and waits through finalizers otherwise.
+        echo 'Waiting for migration job to fully delete from etcd (timeout 90s)...'
+        _wait_rc=0
+        kubectl wait --for=delete job/airflow-run-airflow-migrations \
+            -n airflow-my-namespace --timeout=90s 2>/dev/null || _wait_rc=\$?
+        # If wait failed, check if the job is truly absent (NotFound) vs a stuck finalizer
+        if [ \$_wait_rc -ne 0 ] && ! kubectl get job airflow-run-airflow-migrations \
+                -n airflow-my-namespace >/dev/null 2>&1; then
+            echo 'Migration job confirmed absent.'
+            exit 0
         fi
+        if [ \$_wait_rc -ne 0 ]; then
+            # Timeout: finalizer is stuck — dump diagnostics, then patch it off
+            echo 'WARNING: migration job still in etcd after 90s — stuck finalizer detected.'
+            kubectl get job airflow-run-airflow-migrations -n airflow-my-namespace \
+                -o jsonpath='{.metadata.finalizers}' 2>/dev/null \
+                | awk '{print \"  finalizers: \" \$0}' || true
+            echo ''
+            kubectl get pods -n airflow-my-namespace \
+                -l job-name=airflow-run-airflow-migrations --no-headers 2>/dev/null \
+                | awk '{print \"  pod: \" \$0}' || true
+            # Patch finalizers off — the only reliable way to unblock a stuck batch.kubernetes.io/job-tracking finalizer
+            echo 'Patching finalizers off migration job...'
+            kubectl patch job airflow-run-airflow-migrations -n airflow-my-namespace \
+                --type=merge -p '{\"metadata\":{\"finalizers\":null}}' 2>/dev/null || true
+            # Force-delete any orphaned pods so the job controller releases the object
+            kubectl delete pods -n airflow-my-namespace \
+                -l job-name=airflow-run-airflow-migrations \
+                --force --grace-period=0 --ignore-not-found=true 2>/dev/null || true
+            # Final wait — if still present after all that, fail the deploy rather than race into AlreadyExists
+            kubectl wait --for=delete job/airflow-run-airflow-migrations \
+                -n airflow-my-namespace --timeout=30s 2>/dev/null || {
+                echo 'ERROR: migration job still exists after finalizer patch — cannot safely recreate.'
+                exit 1
+            }
+        fi
+        echo 'Migration job fully deleted from etcd — safe to recreate.'
     "
 }
 
@@ -163,6 +196,9 @@ step_helm_upgrade() {
     # so helm upgrade refuses to adopt them on subsequent runs. Safe: both jobs complete during first install.
     ssh "$EC2_HOST" "kubectl delete job airflow-create-user airflow-run-airflow-migrations \
         -n airflow-my-namespace --ignore-not-found=true"
+    # Wait for migration job to fully leave etcd — Helm creates it fresh on upgrade; if a prior instance's
+    # finalizer is still draining, helm upgrade hits AlreadyExists the same way recovery does.
+    _wait_migration_job_gone || true
 
     _cleanup_stale_nodes          # remove NotReady nodes left over from prior EC2 instance
     _cleanup_stale_pg_pvc         # remove PostgreSQL PVC/PV bound to wrong node before Helm provisions storage
@@ -370,10 +406,72 @@ step_helm_upgrade() {
     # confirmed ready at this point, so the fresh job should succeed on its first attempt.
     # If the job is gone (already cleaned up from a prior successful deploy), skip and continue.
     ssh "$EC2_HOST" "
+        # Helper: wait for true etcd removal of the migration job before recreating.
+        # Captures kubectl wait exit code — unlike '|| true', a timeout here means we patch
+        # finalizers off and force-delete orphaned pods before giving up, so kubectl create
+        # never races against a still-finalizing Job and hits AlreadyExists.
+        _wait_mig_gone() {
+            # Always use kubectl wait — the old "kubectl get --ignore-not-found" early-exit returned
+            # empty for a job in DeletionTimestamp/finalizing state, making the script think the job
+            # was gone when it wasn't. kubectl wait --for=delete returns immediately if truly absent.
+            local _w_rc=0
+            echo 'Waiting for migration job to fully delete from etcd (timeout 90s)...'
+            kubectl wait --for=delete job/airflow-run-airflow-migrations \
+                -n airflow-my-namespace --timeout=90s 2>/dev/null || _w_rc=\$?
+            # If wait failed, check if the job is truly absent (NotFound) rather than a stuck finalizer
+            if [ \$_w_rc -ne 0 ] && ! kubectl get job airflow-run-airflow-migrations \
+                    -n airflow-my-namespace >/dev/null 2>&1; then
+                echo 'Migration job confirmed absent.'
+                return 0
+            fi
+            if [ \$_w_rc -ne 0 ]; then
+                echo 'WARNING: migration job still in etcd after 90s — stuck finalizer detected.'
+                kubectl get job airflow-run-airflow-migrations -n airflow-my-namespace \
+                    -o jsonpath='{.metadata.finalizers}' 2>/dev/null \
+                    | awk '{print \"  finalizers: \" \$0}' || true
+                echo ''
+                kubectl get pods -n airflow-my-namespace \
+                    -l job-name=airflow-run-airflow-migrations --no-headers 2>/dev/null \
+                    | awk '{print \"  pod: \" \$0}' || true
+                echo 'Patching finalizers off migration job...'
+                kubectl patch job airflow-run-airflow-migrations -n airflow-my-namespace \
+                    --type=merge -p '{\"metadata\":{\"finalizers\":null}}' 2>/dev/null || true
+                kubectl delete pods -n airflow-my-namespace \
+                    -l job-name=airflow-run-airflow-migrations \
+                    --force --grace-period=0 --ignore-not-found=true 2>/dev/null || true
+                kubectl wait --for=delete job/airflow-run-airflow-migrations \
+                    -n airflow-my-namespace --timeout=30s 2>/dev/null || {
+                    echo 'ERROR: migration job still exists after finalizer patch — cannot safely recreate.'
+                    return 1
+                }
+            fi
+            echo 'Migration job fully deleted from etcd — safe to recreate.'
+        }
+        # Helper: renders the Helm migration job template and submits it to Kubernetes.
+        # Uses server-side apply (idempotent) — never returns AlreadyExists even if the job still
+        # exists in etcd while finalizers drain. Commits to etcd before returning, so callers
+        # can immediately poll the job without hitting a stale-cache race.
+        _create_mig_job() {
+            helm template airflow apache-airflow/airflow \
+                -n airflow-my-namespace \
+                --version 1.20.0 \
+                --set images.airflow.tag=$BUILD_TAG \
+                -f $EC2_HELM_PATH/values.yaml \
+                -s templates/jobs/migrate-database-job.yaml \
+                | kubectl apply --server-side --force-conflicts -f -
+        }
+        # Helper: delete the job, wait for etcd removal, then server-side apply a fresh one.
+        # Used only by the Failed-job branch (backoff exhausted) — image-error recovery no longer
+        # deletes the job; it restarts the pod and lets the Job controller retry instead.
+        _recreate_mig_job_or_die() {
+            _create_mig_job || { echo 'ERROR: kubectl apply --server-side failed — bailing out.'; return 1; }
+        }
         if kubectl get job airflow-run-airflow-migrations -n airflow-my-namespace \
                 --ignore-not-found --no-headers 2>/dev/null | grep -q .; then
             echo 'Migration job found — polling for completion (up to 900s)...'
-            RETRIED=false
+            RETRY_COUNT=0    # counts image-error pod restarts; allows up to MAX_RETRIES before giving up
+            MAX_RETRIES=3
+            JOB_RECREATED=false    # tracks whether the whole job has been deleted+recreated (Failed branch)
             POD_RESTARTED=false
             for i in \$(seq 1 90); do
                 STATUS=\$(kubectl get job airflow-run-airflow-migrations -n airflow-my-namespace \
@@ -383,7 +481,7 @@ step_helm_upgrade() {
                     exit 0
                 fi
                 if echo \"\$STATUS\" | grep -q 'Failed'; then
-                    if [ \"\$RETRIED\" = true ]; then
+                    if [ \"\$JOB_RECREATED\" = true ]; then
                         echo 'ERROR: Recreated migration job also failed.'
                         kubectl logs job/airflow-run-airflow-migrations -n airflow-my-namespace --tail=50 2>/dev/null || true
                         exit 1
@@ -391,59 +489,74 @@ step_helm_upgrade() {
                     echo 'Migration job failed (likely started before PostgreSQL was ready).'
                     echo 'Deleting failed job and recreating from Helm template...'
                     kubectl delete job airflow-run-airflow-migrations -n airflow-my-namespace --ignore-not-found=true
-                    # Poll until job is fully gone — kubectl wait --for=delete silently times out and || true hides it,
-                    # causing kubectl create to race against a still-terminating job and hit AlreadyExists.
-                    for _dw in \$(seq 1 18); do
-                        kubectl get job airflow-run-airflow-migrations -n airflow-my-namespace \
-                            --ignore-not-found --no-headers 2>/dev/null | grep -q . || break
-                        [ \$_dw -lt 18 ] && echo \"  Waiting for migration job deletion (attempt \$_dw/18)...\" && sleep 5
-                    done
-                    helm template airflow apache-airflow/airflow \
-                        -n airflow-my-namespace \
-                        --version 1.20.0 \
-                        --set images.airflow.tag=$BUILD_TAG \
-                        -f $EC2_HELM_PATH/values.yaml \
-                        -s templates/jobs/migrate-database-job.yaml \
-                        | kubectl create -f -
-                    RETRIED=true
+                    _wait_mig_gone || exit 1
+                    _recreate_mig_job_or_die || exit 1
+                    JOB_RECREATED=true
                     echo 'Retry job created — continuing to poll...'
                 fi
                 # Detect pod stuck in an unrecoverable image error — fail fast instead of waiting 900s
+                # Prefer a non-terminated pod (Running/Waiting); fall back to newest by creationTimestamp.
+                # Previous head -1 picked the first (terminated/Error) pod after a kubelet eviction created
+                # a second pod, so the live retry pod's ErrImageNeverPull was never detected (May 8 2026).
                 MIG_POD=\$(kubectl get pods -n airflow-my-namespace \
-                    -l job-name=airflow-run-airflow-migrations --no-headers 2>/dev/null | awk '{print \$1}' | head -1)
+                    -l job-name=airflow-run-airflow-migrations \
+                    --sort-by=.metadata.creationTimestamp \
+                    --no-headers 2>/dev/null \
+                    | awk '\$3 != \"Error\" && \$3 != \"Completed\" && \$3 != \"Evicted\" {print \$1}' \
+                    | tail -1)
+                if [ -z \"\$MIG_POD\" ]; then
+                    MIG_POD=\$(kubectl get pods -n airflow-my-namespace \
+                        -l job-name=airflow-run-airflow-migrations \
+                        --sort-by=.metadata.creationTimestamp \
+                        --no-headers 2>/dev/null | awk '{print \$1}' | tail -1)
+                fi
                 if [ -n \"\$MIG_POD\" ]; then
                     WAIT_REASON=\$(kubectl get pod \"\$MIG_POD\" -n airflow-my-namespace \
                         -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null || echo '')
+                    # Surface kubelet eviction (low ephemeral-storage) the moment it happens — without this
+                    # log line the operator only sees a 900s timeout with no clue why the pod died.
+                    EVICT_REASON=\$(kubectl get pod \"\$MIG_POD\" -n airflow-my-namespace \
+                        -o jsonpath='{.status.reason}' 2>/dev/null || echo '')
+                    if [ \"\$EVICT_REASON\" = 'Evicted' ]; then
+                        echo \"Migration pod \$MIG_POD was Evicted by kubelet (likely disk pressure) — waiting for job controller to create a replacement...\"
+                    fi
                     if echo \"\$WAIT_REASON\" | grep -qE 'CrashLoopBackOff|ErrImageNeverPull|ImagePullBackOff'; then
-                        echo \"Migration pod stuck in \$WAIT_REASON — printing logs and forcing recreation...\"
+                        echo \"Migration pod stuck in \$WAIT_REASON (attempt \$RETRY_COUNT / \$MAX_RETRIES) — printing logs and forcing pod restart...\"
                         kubectl logs \"\$MIG_POD\" -n airflow-my-namespace --tail=20 2>/dev/null || true
-                        if [ \"\$RETRIED\" = false ]; then
-                            kubectl delete job airflow-run-airflow-migrations -n airflow-my-namespace --ignore-not-found=true
-                            # Poll until job is fully gone — same fix as Failed path above.
-                            for _dw in \$(seq 1 18); do
-                                kubectl get job airflow-run-airflow-migrations -n airflow-my-namespace \
-                                    --ignore-not-found --no-headers 2>/dev/null | grep -q . || break
-                                [ \$_dw -lt 18 ] && echo \"  Waiting for migration job deletion (attempt \$_dw/18)...\" && sleep 5
-                            done
+                        if [ \"\$RETRY_COUNT\" -lt \"\$MAX_RETRIES\" ]; then
                             # ErrImageNeverPull means the image was evicted from K3s containerd — re-import
-                            # it from Docker before creating the retry job, or the new pod will also fail.
+                            # it from Docker before restarting the pod, or the new pod will also fail.
+                            # Do NOT delete the Job — only delete the failing pod. The Job controller spawns
+                            # a fresh pod from the same spec (with the now-present image), which avoids the
+                            # AlreadyExists race that occurred when we deleted+recreated the whole Job object
+                            # under API-server load (May 8 2026 third incident).
                             if echo \"\$WAIT_REASON\" | grep -q 'ErrImageNeverPull'; then
                                 echo 'Re-importing airflow-dbt:$BUILD_TAG into K3S containerd...'
-                                docker save 'airflow-dbt:$BUILD_TAG' | sudo k3s ctr images import - \
+                                _tmp=\$(mktemp /tmp/k3s-import-XXXXXX.tar)
+                                docker save airflow-dbt:$BUILD_TAG > \"\$_tmp\" \
+                                    && sudo k3s ctr images import \"\$_tmp\" \
+                                    && rm -f \"\$_tmp\" \
                                     && echo 'Image re-import complete.' \
-                                    || echo 'WARNING: image re-import failed — retry job may also get ErrImageNeverPull'
+                                    || { rm -f \"\$_tmp\" 2>/dev/null; echo 'WARNING: image re-import failed — retry pod may also get ErrImageNeverPull'; }
+                                # Pin the image so K3s GC cannot evict it again under disk pressure
+                                sudo k3s ctr images label docker.io/library/airflow-dbt:$BUILD_TAG io.cri-containerd.pinned=pinned 2>/dev/null \
+                                    || sudo k3s ctr images label airflow-dbt:$BUILD_TAG io.cri-containerd.pinned=pinned 2>/dev/null \
+                                    || true
+                                echo 'Image pinned in containerd — GC will not evict it.'
+                                # Unpin any *previously* pinned airflow-dbt images so the next disk-pressure sweep
+                                # can reclaim them. Only the current BUILD_TAG should stay pinned.
+                                sudo k3s ctr images ls -q 2>/dev/null \
+                                    | grep -E '(^|/)airflow-dbt:' \
+                                    | grep -v \":$BUILD_TAG\$\" \
+                                    | xargs -r -I{} sudo k3s ctr images label {} io.cri-containerd.pinned- 2>/dev/null \
+                                    || true
                             fi
-                            helm template airflow apache-airflow/airflow \
-                                -n airflow-my-namespace \
-                                --version 1.20.0 \
-                                --set images.airflow.tag=$BUILD_TAG \
-                                -f $EC2_HELM_PATH/values.yaml \
-                                -s templates/jobs/migrate-database-job.yaml \
-                                | kubectl create -f -
-                            RETRIED=true
-                            echo 'Retry job created after image/crash error — continuing to poll...'
+                            kubectl delete pod \"\$MIG_POD\" -n airflow-my-namespace \
+                                --force --grace-period=0 --ignore-not-found=true 2>/dev/null || true
+                            RETRY_COUNT=\$(( RETRY_COUNT + 1 ))
+                            echo \"Stuck pod deleted — Job controller will create a replacement (retry \$RETRY_COUNT / \$MAX_RETRIES), continuing to poll...\"
                         else
-                            echo 'ERROR: Recreated migration job pod also stuck in error state.'
+                            echo \"ERROR: Migration pod stuck in image/crash error after \$MAX_RETRIES recovery attempts.\"
                             exit 1
                         fi
                     fi
@@ -487,9 +600,25 @@ step_verify_airflow_image() {
             echo 'airflow-dbt:$BUILD_TAG confirmed present in K3S containerd'
         else
             echo 'airflow-dbt:$BUILD_TAG not found — GC likely evicted it. Re-importing from Docker store...'
-            docker save airflow-dbt:$BUILD_TAG | sudo k3s ctr images import -
-            echo 'Re-import complete. Verifying...'
-            sudo k3s ctr images list | grep airflow-dbt
+            # Use temp tar instead of direct pipe — piping docker save to ctr import truncates large images
+            # over SSH (ctr reports 'short read: expected N bytes but got M: unexpected EOF')
+            _tmp=\$(mktemp /tmp/k3s-import-XXXXXX.tar) &&
+            docker save airflow-dbt:$BUILD_TAG > \"\$_tmp\" &&
+            sudo k3s ctr images import \"\$_tmp\" &&
+            rm -f \"\$_tmp\" &&
+            echo 'Re-import complete. Verifying...' &&
+            sudo k3s ctr images list | grep airflow-dbt &&
+            { sudo k3s ctr images label docker.io/library/airflow-dbt:$BUILD_TAG io.cri-containerd.pinned=pinned 2>/dev/null \
+                || sudo k3s ctr images label airflow-dbt:$BUILD_TAG io.cri-containerd.pinned=pinned 2>/dev/null \
+                || true; } &&
+            echo 'Image pinned in containerd — GC will not evict it.' &&
+            # Unpin any *previously* pinned airflow-dbt images so the next disk-pressure sweep
+            # can reclaim them. Only the current BUILD_TAG should stay pinned.
+            { sudo k3s ctr images ls -q 2>/dev/null \
+                | grep -E '(^|/)airflow-dbt:' \
+                | grep -v \":$BUILD_TAG\$\" \
+                | xargs -r -I{} sudo k3s ctr images label {} io.cri-containerd.pinned- 2>/dev/null \
+                || true; }
         fi
     "
 }
@@ -585,9 +714,9 @@ step_restart_airflow_pods() {
                         kubectl scale rs \"\$OLD_RS\" --replicas=0 -n airflow-my-namespace 2>/dev/null || true
                     done
                 fi
-                # Secondary wait: give the pod up to 60s to honour its graceful shutdown after force-scale
-                # (default Kubernetes grace period is 30s, so 60s is ample headroom)
-                for j in \$(seq 1 12); do
+                # Secondary wait: give the pod up to 120s to honour its graceful shutdown after force-scale
+                # (Airflow pods can have terminationGracePeriodSeconds > 30s; 120s covers force-scale propagation lag)
+                for j in \$(seq 1 24); do
                     NEW_COUNT=\$(kubectl get pods -l component=dag-processor \
                         -n airflow-my-namespace --no-headers 2>/dev/null | grep -c .)
                     [ \"\$NEW_COUNT\" -le 1 ] && break
@@ -597,7 +726,7 @@ step_restart_airflow_pods() {
                 FINAL_COUNT=\$(kubectl get pods -l component=dag-processor \
                     -n airflow-my-namespace --no-headers 2>/dev/null | grep -c .)
                 if [ \"\$FINAL_COUNT\" -gt 1 ]; then
-                    echo 'WARNING: still '\$FINAL_COUNT' dag-processor pods after force-scale — Phase A deletion will proceed anyway'
+                    echo 'INFO: '\$FINAL_COUNT' dag-processor pod(s) still terminating; Phase A will force-delete them.'
                 else
                     echo 'Old dag-processor RS force-scaled to 0 — pod terminated cleanly.'
                 fi

@@ -71,13 +71,61 @@ step_deploy_mlflow() {
         && kubectl apply -f $EC2_HOME/airflow/manifests/mlflow/deployment-mlflow.yaml -n airflow-my-namespace \
         && kubectl apply -f $EC2_HOME/airflow/manifests/mlflow/service-mlflow.yaml -n airflow-my-namespace \
         && echo 'MLflow manifests applied.'
+    "
 
-        # Kubernetes's Recreate strategy shuts down the old pod before starting the new one —
-        # this avoids two pods trying to write to the same storage at the same time
-        # raised from 180s: startupProbe allows up to 300s for first boot
-        kubectl rollout status deployment/mlflow -n airflow-my-namespace --timeout=360s \
-        || {
-            echo 'ERROR: MLflow rollout timed out. Diagnosing...'
+    # Prune disk and clear any disk-pressure taint before the rollout — K3s may have set it during
+    # the parallel image build. A single taint-remove is insufficient when disk pressure is chronic;
+    # the polling loop below re-clears taint on every iteration so evicted pods can reschedule.
+    _ensure_disk_space
+    _remove_disk_pressure_taint
+
+    # Kubernetes's Recreate strategy shuts down the old pod before starting the new one —
+    # this avoids two pods trying to write to the same storage at the same time.
+    # Poll availableReplicas every 15s instead of using kubectl rollout status --timeout=360s —
+    # this lets us re-clear disk-pressure taint mid-wait when kubelet re-adds it under load.
+    echo 'Polling MLflow rollout (24 × 15s = 360s)...'
+    ROLLOUT_OK=false
+    for _i in $(seq 1 24); do
+        _READY=$(ssh "$EC2_HOST" "kubectl get deployment mlflow -n airflow-my-namespace \
+            -o jsonpath='{.status.availableReplicas}' 2>/dev/null || echo 0")
+        if [ "${_READY:-0}" -ge 1 ]; then ROLLOUT_OK=true; break; fi
+        # Check if any MLflow pod is stuck Pending or Evicted due to disk pressure
+        _BAD=$(ssh "$EC2_HOST" "kubectl get pods -n airflow-my-namespace -l app=mlflow \
+            --no-headers 2>/dev/null | grep -cE 'Pending|Evicted'" 2>/dev/null || echo 0)
+        if [ "${_BAD:-0}" -gt 0 ]; then
+            echo "  MLflow pod(s) Pending/Evicted — refreshing disk space and taint (attempt $_i/24)..."
+            _ensure_disk_space
+            _remove_disk_pressure_taint
+            # Delete Evicted MLflow pods so the ReplicaSet doesn't keep spawning replacements
+            # that also get evicted (cascade observed May 8 2026: 50+ Evicted pods in 9 minutes).
+            # Evicted pods have status.phase=Failed (kubelet sets phase=Failed, reason=Evicted).
+            ssh "$EC2_HOST" "kubectl delete pods -n airflow-my-namespace -l app=mlflow \
+                --field-selector=status.phase=Failed --ignore-not-found=true 2>/dev/null" || true
+        else
+            echo "  Attempt $_i/24 — MLflow availableReplicas=${_READY:-0}, waiting 15s..."
+        fi
+        # Detect ErrImageNeverPull — K3S GC may have evicted the MLflow image during disk pressure.
+        # Re-import from Docker so the next replacement pod can actually start (mirrors migration-job recovery).
+        _IMG_BAD=$(ssh "$EC2_HOST" "kubectl get pods -n airflow-my-namespace -l app=mlflow \
+            -o jsonpath='{.items[*].status.containerStatuses[*].state.waiting.reason}' 2>/dev/null \
+            | grep -ow 'ErrImageNeverPull' | head -1" 2>/dev/null || echo '')
+        if [ -n "$_IMG_BAD" ]; then
+            echo "  MLflow pod stuck in ErrImageNeverPull — re-importing image into K3S containerd..."
+            ssh "$EC2_HOST" "
+                _tmp=\$(mktemp /tmp/k3s-import-XXXXXX.tar)
+                docker save '$MLFLOW_IMAGE' > \"\$_tmp\" \
+                    && sudo k3s ctr images import \"\$_tmp\" \
+                    && rm -f \"\$_tmp\" \
+                    && echo 'MLflow image re-import complete.' \
+                    || { rm -f \"\$_tmp\" 2>/dev/null; echo 'WARNING: MLflow image re-import failed'; }
+            "
+        fi
+        sleep 15
+    done
+
+    if [ "$ROLLOUT_OK" = false ]; then
+        echo 'ERROR: MLflow rollout timed out. Diagnosing...'
+        ssh "$EC2_HOST" "
             echo '--- MLflow pod status ---'
             kubectl get pods -n airflow-my-namespace -l app=mlflow
             echo '--- MLflow pod describe (last 30 lines) ---'
@@ -85,9 +133,11 @@ step_deploy_mlflow() {
             echo '--- MLflow pod logs (last 30 lines) ---'
             kubectl logs -n airflow-my-namespace -l app=mlflow --tail=30 2>/dev/null \
                 || echo '(no logs — pod may not have started)'
-            exit 1
-        }
-    "
+        "
+        # Free disk + remove taint so the next deploy starts from a healthy state
+        _ensure_disk_space
+        exit 1
+    fi
 }
 
 step_fix_mlflow_experiment() {

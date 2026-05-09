@@ -30,3 +30,5 @@ AWSCLIV2.pkg
 AWSCLIV2.pkg
 # macOS metadata files — generated automatically by Finder
 **/.DS_Store
+# deploy status file — local timestamps, not for version control
+scripts/deploy_status.md

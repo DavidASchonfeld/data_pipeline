@@ -137,24 +137,47 @@ print('ECR credential helper configured')
 
 step_verify_flask() {
     echo "=== Step 8: Verifying deployment ==="
-    # Wait up to 90s for the Flask pod to become Ready, then print all pod statuses.
-    # WHY kubectl wait instead of kubectl get:
-    #   The pod starts in a Pending state while K3S downloads the image from ECR (~15-60s).
-    #   Checking immediately always shows Pending, which tells you nothing useful.
-    #   `kubectl wait --for=condition=Ready` pauses here until the pod is healthy, then we print the result.
-    #   If it times out, the || block runs and prints describe output — the Events section there will tell
-    #   you exactly what went wrong.
-    ssh "$EC2_HOST" "
-        echo 'Waiting for $FLASK_POD to be ready (up to 90s)...' &&
-        kubectl wait pod/$FLASK_POD -n default --for=condition=Ready --timeout=90s &&
-        echo '' &&
-        echo 'Pod is Running. All pods:' &&
-        kubectl get pods -n default
-    " || {
-        echo ""
-        echo "WARNING: Flask pod did not become Ready within 90s. Current state:"
-        ssh "$EC2_HOST" "kubectl get pods -n default && echo '' && kubectl describe pod $FLASK_POD -n default | tail -20"
+
+    # Clear any residual disk-pressure taint before Flask tries to schedule — the airflow rollout
+    # above frees image cache but the taint may still be set from an earlier high-disk moment.
+    _ensure_disk_space
+
+    # Inner function: wait for pod Ready and return status code (0=ready, 1=not ready)
+    # 180s timeout matches the pod's livenessProbe.initialDelaySeconds=120 + prewarm buffer.
+    _wait_flask_ready() {
+        ssh "$EC2_HOST" "
+            echo 'Waiting for $FLASK_POD to be ready (up to 180s)...' &&
+            kubectl wait pod/$FLASK_POD -n default --for=condition=Ready --timeout=180s &&
+            echo '' &&
+            echo 'Pod is Running. All pods:' &&
+            kubectl get pods -n default
+        "
     }
+
+    if ! _wait_flask_ready; then
+        # Check if the pod was evicted due to disk pressure — if so, retry once after cleanup
+        _POD_PHASE=$(ssh "$EC2_HOST" "kubectl get pod $FLASK_POD -n default -o jsonpath='{.status.phase}' 2>/dev/null || echo 'Unknown'")
+        if [ "$_POD_PHASE" = "Failed" ]; then
+            _EVICT_REASON=$(ssh "$EC2_HOST" "kubectl get pod $FLASK_POD -n default -o jsonpath='{.status.reason}' 2>/dev/null || echo ''")
+        fi
+        if [ "${_EVICT_REASON:-}" = "Evicted" ]; then
+            echo ""
+            echo "Flask pod was evicted (likely DiskPressure) — running cleanup and retrying once..."
+            _ensure_disk_space
+            # Delete the evicted pod shell and re-apply so K3s schedules a fresh one
+            ssh "$EC2_HOST" "kubectl delete pod $FLASK_POD -n default --ignore-not-found=true && sleep 5"
+            ssh "$EC2_HOST" "kubectl apply -f /tmp/pod-flask.yaml"
+            if ! _wait_flask_ready; then
+                echo ""
+                echo "WARNING: Flask pod did not become Ready after retry. Current state:"
+                ssh "$EC2_HOST" "kubectl get pods -n default && echo '' && kubectl describe pod $FLASK_POD -n default | tail -20"
+            fi
+        else
+            echo ""
+            echo "WARNING: Flask pod did not become Ready within 180s. Current state:"
+            ssh "$EC2_HOST" "kubectl get pods -n default && echo '' && kubectl describe pod $FLASK_POD -n default | tail -20"
+        fi
+    fi
 
     # Verify public connectivity — catches cases where the pod is healthy but the security group blocks port 32147
     _DASHBOARD_IP=$(ssh -G "$EC2_HOST" 2>/dev/null | awk '/^hostname / {print $2}')

@@ -150,6 +150,9 @@ For the failure mode catalog (what *can* go wrong, not what *did* go wrong), see
 | 2026-04-16 | Migration job timeout + image import lease error | [migration-timeout-lease-error](infrastructure/2026-04-16-migration-job-timeout-and-image-lease-error.md) |
 | 2026-04-16 | dag-processor "still 2 pods after 5 min" warning on rapid redeploy | [dag-processor-pods-not-scaled-down](infrastructure/2026-04-16-dag-processor-pods-not-scaled-down.md) |
 | 2026-04-17 | Deploy fails: SSH unreachable after 36 attempts (stale host key after spot replacement) | [ssh-host-key-mismatch](infrastructure/2026-04-17-ssh-host-key-mismatch-spot-replacement.md) |
+| 2026-05-08 | Migration job 900s timeout: kubelet evicted pod, image GC'd from containerd, retry pod stuck | [migration-disk-pressure-evict](infrastructure/2026-05-08-migration-disk-pressure-evict-image-gc.md) |
+| 2026-05-08 | Migration recovery `AlreadyExists` race: finalizing Job invisible to `kubectl get` but still in etcd; fix: `_wait_mig_gone` helper with finalizer-stripping fallback | [migration-disk-pressure-evict#follow-up](infrastructure/2026-05-08-migration-disk-pressure-evict-image-gc.md#follow-up-alreadyexists-after-delete-may-8-redeploy) |
+| 2026-05-08 | `AlreadyExists` again + MLflow 14-pod eviction storm: recovery deleted whole Job (fought Job controller); fix: restart pod only, server-side apply, MLflow rollout polling loop | [migration-disk-pressure-evict#follow-up-3](infrastructure/2026-05-08-migration-disk-pressure-evict-image-gc.md#follow-up-3-may-8-third-redeploy--same-day) |
 
 ---
 
