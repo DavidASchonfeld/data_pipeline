@@ -170,9 +170,10 @@ _ensure_disk_space() {
             sudo k3s ctr content gc 2>/dev/null || true
             DISK_AFTER=\$(df / | awk 'NR==2 {gsub(/%/,\"\",\$5); print \$5}')
             echo \"Disk after prune: \${DISK_AFTER}%\"
-            if [ \"\${DISK_AFTER:-0}\" -gt 85 ]; then
+            if [ \"\${DISK_AFTER:-0}\" -gt 80 ]; then
                 # Cache prune wasn't enough — dominant usage is live container/PVC data.
-                # Run targeted secondary cleanup before deciding whether to continue.
+                # Trigger at 80% (lowered from 85%) so the deeper sweep runs before the build/import peak,
+                # which has historically pushed disk into the 87-90% range mid-deploy.
                 echo \"Disk still at \${DISK_AFTER}% — running secondary cleanup (logs, journal)...\"
                 echo '--- Top disk consumers ---'
                 sudo du -sh /var/log/pods /var/lib/rancher/k3s/storage \
@@ -197,6 +198,20 @@ _ensure_disk_space() {
                 kubectl get pv --no-headers 2>/dev/null \
                     | awk '\$5 == \"Released\" {print \$1}' \
                     | xargs -r kubectl delete pv 2>/dev/null || true
+                # Sweep orphaned local-path provisioner directories — kubectl delete pv only removes the cluster object,
+                # not the underlying folder under /var/lib/rancher/k3s/storage/. Past helm upgrades have left
+                # ~700 MB-1 GB of dead postgres+kafka dirs sitting around. The directory is root-owned so we
+                # enumerate via sudo find. Skip the loop entirely if the live-PV lookup returns empty
+                # (transient kubectl failure) — never delete data on a fluke.
+                LIVE_PVS=\$(kubectl get pv -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\\n')
+                if [ -n \"\$LIVE_PVS\" ]; then
+                    sudo find /var/lib/rancher/k3s/storage -mindepth 1 -maxdepth 1 -type d -name 'pvc-*' 2>/dev/null \
+                        | while read -r _dir; do
+                            # Directory name format: pvc-<uid>_<namespace>_<pvc-name> — PV name is the leading pvc-<uid> part.
+                            _pv_name=\$(basename \"\$_dir\" | awk -F_ '{print \$1}')
+                            echo \"\$LIVE_PVS\" | grep -qFx \"\$_pv_name\" || { echo \"Removing orphan PV dir: \$(basename \"\$_dir\")\"; sudo rm -rf \"\$_dir\"; }
+                          done
+                fi
                 # Remove orphaned pod log directories whose owning pod no longer exists.
                 # Evicted pods leave their log dirs even after the pod object is deleted above.
                 LIVE_UIDS=\$(kubectl get pods -A -o jsonpath='{.items[*].metadata.uid}' 2>/dev/null | tr ' ' '\n')
