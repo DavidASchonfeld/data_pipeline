@@ -154,35 +154,59 @@ step_verify_flask() {
         "
     }
 
-    if ! _wait_flask_ready; then
-        # Check if the pod was evicted due to disk pressure — if so, retry once after cleanup
-        _POD_PHASE=$(ssh "$EC2_HOST" "kubectl get pod $FLASK_POD -n default -o jsonpath='{.status.phase}' 2>/dev/null || echo 'Unknown'")
-        if [ "$_POD_PHASE" = "Failed" ]; then
-            _EVICT_REASON=$(ssh "$EC2_HOST" "kubectl get pod $FLASK_POD -n default -o jsonpath='{.status.reason}' 2>/dev/null || echo ''")
-        fi
-        if [ "${_EVICT_REASON:-}" = "Evicted" ]; then
+    _READY=false
+    if _wait_flask_ready; then
+        _READY=true
+    else
+        # First check: did the pod disappear entirely? (e.g. force-deleted by _ensure_disk_space's evicted-pod sweep)
+        _POD_EXISTS=$(ssh "$EC2_HOST" "kubectl get pod $FLASK_POD -n default --ignore-not-found -o name 2>/dev/null")
+        if [ -z "$_POD_EXISTS" ]; then
             echo ""
-            echo "Flask pod was evicted (likely DiskPressure) — running cleanup and retrying once..."
+            echo "Flask pod not found — re-applying manifest and retrying once..."
             _ensure_disk_space
-            # Delete the evicted pod shell and re-apply so K3s schedules a fresh one
-            ssh "$EC2_HOST" "kubectl delete pod $FLASK_POD -n default --ignore-not-found=true && sleep 5"
             ssh "$EC2_HOST" "kubectl apply -f /tmp/pod-flask.yaml"
-            if ! _wait_flask_ready; then
+            if _wait_flask_ready; then
+                _READY=true
+            else
                 echo ""
-                echo "WARNING: Flask pod did not become Ready after retry. Current state:"
+                echo "WARNING: Flask pod did not become Ready after re-apply. Current state:"
                 ssh "$EC2_HOST" "kubectl get pods -n default && echo '' && kubectl describe pod $FLASK_POD -n default | tail -20"
             fi
         else
-            echo ""
-            echo "WARNING: Flask pod did not become Ready within 180s. Current state:"
-            ssh "$EC2_HOST" "kubectl get pods -n default && echo '' && kubectl describe pod $FLASK_POD -n default | tail -20"
+            # Pod exists — check if it was evicted due to disk pressure and retry once
+            _POD_PHASE=$(ssh "$EC2_HOST" "kubectl get pod $FLASK_POD -n default -o jsonpath='{.status.phase}' 2>/dev/null || echo 'Unknown'")
+            if [ "$_POD_PHASE" = "Failed" ]; then
+                _EVICT_REASON=$(ssh "$EC2_HOST" "kubectl get pod $FLASK_POD -n default -o jsonpath='{.status.reason}' 2>/dev/null || echo ''")
+            fi
+            if [ "${_EVICT_REASON:-}" = "Evicted" ]; then
+                echo ""
+                echo "Flask pod was evicted (likely DiskPressure) — running cleanup and retrying once..."
+                _ensure_disk_space
+                # Delete the evicted pod shell and re-apply so K3s schedules a fresh one
+                ssh "$EC2_HOST" "kubectl delete pod $FLASK_POD -n default --ignore-not-found=true && sleep 5"
+                ssh "$EC2_HOST" "kubectl apply -f /tmp/pod-flask.yaml"
+                if _wait_flask_ready; then
+                    _READY=true
+                else
+                    echo ""
+                    echo "WARNING: Flask pod did not become Ready after retry. Current state:"
+                    ssh "$EC2_HOST" "kubectl get pods -n default && echo '' && kubectl describe pod $FLASK_POD -n default | tail -20"
+                fi
+            else
+                echo ""
+                echo "WARNING: Flask pod did not become Ready within 180s. Current state:"
+                ssh "$EC2_HOST" "kubectl get pods -n default && echo '' && kubectl describe pod $FLASK_POD -n default | tail -20"
+            fi
         fi
     fi
 
-    # Verify public connectivity — catches cases where the pod is healthy but the security group blocks port 32147
+    # Verify public connectivity — only meaningful when the pod is actually Ready.
+    # Catches cases where the pod is healthy but the security group blocks port 32147.
     _DASHBOARD_IP=$(ssh -G "$EC2_HOST" 2>/dev/null | awk '/^hostname / {print $2}')
     if [ -n "$_DASHBOARD_IP" ]; then
-        if curl -fsSL -o /dev/null --connect-timeout 5 "http://$_DASHBOARD_IP:32147/health" 2>/dev/null; then
+        if [ "$_READY" = false ]; then
+            echo "NOTE: Skipping public reachability check — Flask pod is not Ready."
+        elif curl -fsSL -o /dev/null --connect-timeout 5 "http://$_DASHBOARD_IP:32147/health" 2>/dev/null; then
             echo "✓ Dashboard publicly accessible at http://$_DASHBOARD_IP:32147/dashboard/"
         else
             echo ""

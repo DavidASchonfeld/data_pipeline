@@ -116,6 +116,23 @@ _print_deploy_summary() {
             echo "  Script exited with errors — check items above and logs for details."
         fi
     fi
+    # On failure (not Ctrl+C), query AWS to confirm whether a spot interruption caused the SSH drop
+    if [ "$exit_code" -ne 0 ] && [ "${DEPLOY_INTERRUPTED:-false}" != "true" ]; then
+        _detect_spot_interruption
+        echo "  -- Interruption Diagnosis --------------------------------------"
+        if [ "${SPOT_INTERRUPTION_DETECTED:-false}" = "true" ]; then
+            echo "  SPOT INTERRUPTION CONFIRMED"
+            echo "  Reason:   $SPOT_TERMINATION_REASON"
+            echo "  Instance: ${_EC2_INSTANCE_ID:-unknown}"
+            echo "  ASG (min=1) is spinning up a replacement (~2-5 min)."
+            echo "  Re-run:   ./scripts/deploy.sh ${DEPLOY_ORIG_ARGS[*]:-}"
+            [ "${AUTO_RETRY_ON_SPOT:-false}" != "true" ] && \
+                echo "  Tip:      add --auto-retry-on-spot to wait and retry automatically."
+        else
+            echo "  Not a spot interruption: $SPOT_TERMINATION_REASON"
+        fi
+        echo "  ---------------------------------------------------------------"
+    fi
     echo "=================================================================="
     echo "  Full log: $DEPLOY_LOGFILE"
     echo "=================================================================="
@@ -143,10 +160,14 @@ _ensure_disk_space() {
                 | xargs -r docker rmi -f 2>/dev/null || true
             # buildx layer cache (no-op when empty, but cheap to call)
             docker buildx prune -af 2>/dev/null || true
-            # containers, networks, build cache (does NOT touch tagged images — those are handled above)
-            docker system prune -f 2>/dev/null || true
+            # Drop unused tagged images too (not just dangling) — frees Docker's containerd-backed layer store.
+            # until=2h spares anything Docker may need for the in-flight build started this deploy.
+            docker system prune -af --filter 'until=2h' 2>/dev/null || true
             # K3S has its own containerd image store separate from Docker's
             sudo k3s crictl rmi --prune 2>/dev/null || true
+            # GC orphaned content blobs — k3s ctr images rm only removes the tag reference, not the layer bytes.
+            # Each deploy without this leaves ~1.2 GB of orphaned layers that accumulate across builds.
+            sudo k3s ctr content gc 2>/dev/null || true
             DISK_AFTER=\$(df / | awk 'NR==2 {gsub(/%/,\"\",\$5); print \$5}')
             echo \"Disk after prune: \${DISK_AFTER}%\"
             if [ \"\${DISK_AFTER:-0}\" -gt 85 ]; then
@@ -154,7 +175,8 @@ _ensure_disk_space() {
                 # Run targeted secondary cleanup before deciding whether to continue.
                 echo \"Disk still at \${DISK_AFTER}% — running secondary cleanup (logs, journal)...\"
                 echo '--- Top disk consumers ---'
-                du -sh /var/log/pods /var/lib/rancher/k3s/storage /var/lib/rancher/k3s/agent/containerd 2>/dev/null || true
+                sudo du -sh /var/log/pods /var/lib/rancher/k3s/storage \
+                    /var/lib/rancher/k3s/agent/containerd /var/lib/containerd /var/lib/docker 2>/dev/null || true
                 echo '--------------------------'
                 # Truncate pod logs older than 3 days — kubelet holds open handles so truncate (not rm) is safe
                 find /var/log/pods -name '*.log' -mtime +3 -exec truncate -s 0 {} \; 2>/dev/null || true
@@ -162,11 +184,14 @@ _ensure_disk_space() {
                 sudo journalctl --vacuum-time=2d 2>/dev/null || true
                 # Delete Evicted pod objects — each holds a /var/log/pods/<uid> directory on disk even after eviction.
                 # 14 evicted MLflow pods were observed accumulating on May 8; deleting them releases the log dirs.
-                echo 'Deleting any Evicted pod objects to reclaim their log directories...'
-                kubectl get pods -A --no-headers 2>/dev/null \
-                    | awk '\$4 == \"Evicted\" {print \$1, \$2}' \
-                    | while read -r _ns _pod; do
-                        kubectl delete pod \"\$_pod\" -n \"\$_ns\" --grace-period=0 --force 2>/dev/null || true
+                # Scope to airflow-my-namespace — the only namespace where evicted pods accumulate
+                # (MLflow, api-server, dag-processor). default holds only the Flask pod, which deploy.sh
+                # manages explicitly; a global sweep race-deleted it on 2026-05-09.
+                echo 'Deleting any Evicted pod objects in airflow-my-namespace to reclaim their log directories...'
+                kubectl get pods -n airflow-my-namespace --no-headers 2>/dev/null \
+                    | awk '\$3 == \"Evicted\" {print \$1}' \
+                    | while read -r _pod; do
+                        kubectl delete pod \"\$_pod\" -n airflow-my-namespace --grace-period=0 --force 2>/dev/null || true
                       done
                 # Remove Released PVs — PVs in Released state hold storage but cannot be reattached to a claim.
                 kubectl get pv --no-headers 2>/dev/null \
@@ -179,8 +204,8 @@ _ensure_disk_space() {
                     _uid=\$(basename \"\$_dir\" | awk -F_ '{print \$NF}')
                     echo \"\$LIVE_UIDS\" | grep -qF \"\$_uid\" || sudo rm -rf \"\$_dir\" 2>/dev/null || true
                 done
-                # Sweep any leftover image-import tarballs that the import step's inline cleanup missed.
-                sudo rm -f /tmp/k3s-import-*.tar 2>/dev/null || true
+                # Sweep stale image-import tarballs only (>5 min old) — younger tars belong to a concurrent in-flight import.
+                sudo find /tmp -maxdepth 1 -name 'k3s-import-*.tar' -mmin +5 -delete 2>/dev/null || true
                 # Clean up Ubuntu's package download cache and remove old kernel backups Ubuntu kept as fallbacks.
                 # apt-get autoremove --purge only removes kernels that are not currently running — it is safe.
                 sudo apt-get clean 2>/dev/null || true
@@ -277,12 +302,14 @@ _log_disk_diagnostics() {
         docker system df 2>/dev/null || echo '(docker not available)'
         echo '-- K3s containerd: image count --'
         sudo k3s crictl images --quiet 2>/dev/null | wc -l || echo '(k3s not available)'
-        echo '-- K3s containerd store size --'
-        sudo du -sh /var/lib/rancher/k3s/agent/containerd 2>/dev/null || echo '(path not found)'
+        echo '-- Image-store sizes (K3s vs Docker — should not both be large) --'
+        sudo du -sh /var/lib/rancher/k3s/agent/containerd /var/lib/containerd /var/lib/docker 2>/dev/null || echo '(path not found)'
         echo '-- Top 5 largest K3s images --'
         sudo k3s crictl images 2>/dev/null | awk 'NR>1 {print}' | sort -k5 -h -r | head -5 || true
     "
     echo "========================================"
+    # Detailed breakdown: PVCs, pod logs, swapfile — captures drift across deploys
+    _log_disk_breakdown
 }
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -313,8 +340,8 @@ import_image_to_k3s() {
         fi
         if [ "$_attempt" -lt 5 ]; then
             echo "K3S import attempt $_attempt failed, retrying in 15s..."
-            # Clean up any partial temp tar left by a failed save or import
-            ssh "$EC2_HOST" "rm -f /tmp/k3s-import-*.tar 2>/dev/null || true"
+            # Clean up only stale tars (>5 min old) — younger tars may belong to a parallel in-flight import.
+            ssh "$EC2_HOST" "find /tmp -maxdepth 1 -name 'k3s-import-*.tar' -mmin +5 -delete 2>/dev/null || true"
             # If containerd's socket was reset (happens under heavy parallel load), verify the socket
             # is responsive before retrying — a non-responsive socket means the import will fail again immediately
             if ssh "$EC2_HOST" "sudo k3s ctr version >/dev/null 2>&1"; then
@@ -453,6 +480,113 @@ _wait_k3s_api_ready() {
 }
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ── Spot interruption detection ───────────────────────────────────────────────
+# Grab instance ID + public IP from EC2's metadata service right after SSH is confirmed ready.
+# Stored as globals so _detect_spot_interruption can query AWS even after SSH has dropped.
+_capture_instance_metadata() {
+    # IMDSv2: get a short-lived token first, then use it to fetch instance metadata
+    _EC2_INSTANCE_ID=$(ssh "$EC2_HOST" "
+        TOKEN=\$(curl -sXPUT 'http://169.254.169.254/latest/api/token' \
+            -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600' --max-time 5 2>/dev/null)
+        curl -sf --max-time 5 -H \"X-aws-ec2-metadata-token: \$TOKEN\" \
+            http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null
+    " 2>/dev/null || echo "")
+    _EC2_PUBLIC_IP=$(ssh "$EC2_HOST" "
+        TOKEN=\$(curl -sXPUT 'http://169.254.169.254/latest/api/token' \
+            -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600' --max-time 5 2>/dev/null)
+        curl -sf --max-time 5 -H \"X-aws-ec2-metadata-token: \$TOKEN\" \
+            http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null
+    " 2>/dev/null || echo "")
+    export _EC2_INSTANCE_ID _EC2_PUBLIC_IP
+    # only print if I got an ID — an empty result here should not stop the deploy
+    if [ -n "$_EC2_INSTANCE_ID" ]; then
+        echo "Instance metadata captured: $_EC2_INSTANCE_ID  ($_EC2_PUBLIC_IP)"
+    fi
+}
+
+# Query AWS after an SSH failure to determine if a spot interruption caused it.
+# Sets SPOT_INTERRUPTION_DETECTED=true/false and SPOT_TERMINATION_REASON (plain-English string).
+# Uses subshell-safe patterns (|| echo "") so AWS CLI failures never abort the EXIT trap.
+_detect_spot_interruption() {
+    SPOT_INTERRUPTION_DETECTED=false
+    SPOT_TERMINATION_REASON="unknown"
+
+    # No instance ID means SSH was never ready — can't diagnose
+    if [ -z "${_EC2_INSTANCE_ID:-}" ]; then
+        SPOT_TERMINATION_REASON="no instance ID captured (SSH may never have connected)"
+        return
+    fi
+
+    local _profile="${AWS_PROFILE:-terraform-dev}"
+
+    local _state _lifecycle
+    _state=$(aws ec2 describe-instances --profile "$_profile" --region "$AWS_REGION" \
+        --instance-ids "$_EC2_INSTANCE_ID" \
+        --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo "")
+    _lifecycle=$(aws ec2 describe-instances --profile "$_profile" --region "$AWS_REGION" \
+        --instance-ids "$_EC2_INSTANCE_ID" \
+        --query 'Reservations[0].Instances[0].InstanceLifecycle' --output text 2>/dev/null || echo "")
+
+    if [ -z "$_state" ] || [ "$_state" = "None" ] || [ "$_state" = "null" ]; then
+        SPOT_TERMINATION_REASON="could not query AWS (check credentials or region)"
+        return
+    fi
+
+    # Instance still running — SSH dropped for a non-spot reason (OOM, network blip, script bug)
+    if [ "$_state" = "running" ]; then
+        SPOT_TERMINATION_REASON="instance $_EC2_INSTANCE_ID is still running — likely OOM, network blip, or script bug (not a spot event)"
+        return
+    fi
+
+    # Instance is gone but it is not a spot instance
+    if [ "$_lifecycle" != "spot" ]; then
+        SPOT_TERMINATION_REASON="instance $_EC2_INSTANCE_ID terminated (state: $_state) but is not a spot instance"
+        return
+    fi
+
+    # Spot instance terminated — look up the specific AWS status code
+    local _spot_req_id _spot_code
+    _spot_req_id=$(aws ec2 describe-instances --profile "$_profile" --region "$AWS_REGION" \
+        --instance-ids "$_EC2_INSTANCE_ID" \
+        --query 'Reservations[0].Instances[0].SpotInstanceRequestId' --output text 2>/dev/null || echo "")
+
+    if [ -n "$_spot_req_id" ] && [ "$_spot_req_id" != "None" ]; then
+        _spot_code=$(aws ec2 describe-spot-instance-requests --profile "$_profile" --region "$AWS_REGION" \
+            --spot-instance-request-ids "$_spot_req_id" \
+            --query 'SpotInstanceRequests[0].Status.Code' --output text 2>/dev/null || echo "")
+    fi
+
+    # Map AWS status codes to plain-English reasons
+    case "${_spot_code:-}" in
+        instance-terminated-no-capacity) SPOT_TERMINATION_REASON="AWS reclaimed capacity (no capacity available in AZ)" ;;
+        instance-terminated-by-price)    SPOT_TERMINATION_REASON="spot price exceeded your bid" ;;
+        instance-terminated-by-user)     SPOT_TERMINATION_REASON="terminated manually (by user or automation)" ;;
+        instance-terminated-by-schedule) SPOT_TERMINATION_REASON="terminated by schedule" ;;
+        marked-for-termination)          SPOT_TERMINATION_REASON="instance was marked for termination (2-min warning issued)" ;;
+        "")                              SPOT_TERMINATION_REASON="spot instance terminated (reason unavailable)" ;;
+        *)                               SPOT_TERMINATION_REASON="spot instance terminated (AWS code: $_spot_code)" ;;
+    esac
+
+    SPOT_INTERRUPTION_DETECTED=true
+}
+
+# If --auto-retry-on-spot was passed and a spot interruption is confirmed, wait for the
+# replacement instance (ASG min=1 will spin one up) then re-exec with the original flags.
+_maybe_spot_retry() {
+    [ "${SPOT_INTERRUPTION_DETECTED:-false}" = "true" ] || return 0
+    [ "${AUTO_RETRY_ON_SPOT:-false}" = "true" ] || return 0
+    echo ""
+    echo "=== Auto-retry: waiting for replacement instance (up to 15 min) ==="
+    if _wait_ssh_ready 90; then
+        echo "=== Replacement instance ready — re-running deploy ==="
+        exec "$0" "${DEPLOY_ORIG_ARGS[@]}"
+    else
+        echo "✗ Replacement instance not ready after 15 min — re-run manually:"
+        echo "  ./scripts/deploy.sh ${DEPLOY_ORIG_ARGS[*]:-}"
+    fi
+}
+# ─────────────────────────────────────────────────────────────────────────────
+
 # ── Background job error helper ───────────────────────────────────────────────
 # _wait_bg PID label — waits for a background job to finish, then prints success or failure and exits if it failed.
 # WHY this is needed: bash's 'stop on error' setting does not apply to background jobs (&).
@@ -460,11 +594,20 @@ _wait_k3s_api_ready() {
 # would keep running as if nothing went wrong. This function catches that.
 _wait_bg() {
     local pid=$1 label=$2
+    local _start=$SECONDS
     # Print before waiting so the terminal doesn't appear frozen during long background jobs
     echo "Waiting for $label..."
+    # Heartbeat: print elapsed time every 60s so the terminal is never silent for more than a minute
+    ( while kill -0 "$pid" 2>/dev/null; do
+        sleep 60
+        kill -0 "$pid" 2>/dev/null && echo "  ... $label still running ($(( SECONDS - _start ))s elapsed)"
+    done ) &
+    local _hb_pid=$!
     if wait "$pid"; then
-        echo "✓ $label done"
+        kill "$_hb_pid" 2>/dev/null; wait "$_hb_pid" 2>/dev/null || true
+        echo "✓ $label done ($(( SECONDS - _start ))s)"
     else
+        kill "$_hb_pid" 2>/dev/null; wait "$_hb_pid" 2>/dev/null || true
         echo "✗ $label FAILED"
         exit 1
     fi

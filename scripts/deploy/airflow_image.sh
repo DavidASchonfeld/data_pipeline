@@ -88,6 +88,12 @@ step_build_airflow_image() {
     # Import the freshly built image into K3S — shared helper in common.sh handles save+import+verify
     import_image_to_k3s "airflow-dbt:$BUILD_TAG" "airflow-dbt"
 
+    # GC orphaned content blobs left behind by previous imports.
+    # k3s ctr images rm (above) only removes the tag reference; the actual layer bytes stay in the content
+    # store as unreferenced blobs until a garbage collection runs. Without this, each deploy accumulates
+    # ~1.2 GB of orphaned layers — 6+ deploys = 6+ GB of wasted disk, which is what triggers the 90% warning.
+    ssh "$EC2_HOST" "sudo k3s ctr content gc && echo 'Containerd GC complete — orphaned blobs reclaimed'" || true
+
     # Throw away Docker's old copy of the image now that K3S has its own — recovers ~1 GB per build.
     # --filter 'until=1h' keeps the image we just built; -a removes all older unused images and their layer files.
     ssh "$EC2_HOST" "echo 'Pruning Docker image layer cache after K3S import...' && docker image prune -af --filter 'until=1h' 2>&1 | tail -5" || true
