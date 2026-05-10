@@ -28,3 +28,36 @@ def make_empty_figure(message: str) -> go.Figure:
         font={"size": 14, "color": "#8892a4"},  # cool gray — muted placeholder text
     )
     return fig
+
+
+def make_loading_figure() -> go.Figure:
+    """Shown while the initial Snowflake prewarm is in flight."""
+    return make_empty_figure("Fetching latest data from Snowflake…")
+
+
+def make_no_data_figure(hint: str = "") -> go.Figure:
+    """Shown when Snowflake connected but returned zero rows — pipeline hasn't run yet."""
+    msg = "Pipeline hasn't published data yet."
+    if hint:
+        msg += f" {hint}"
+    return make_empty_figure(msg)
+
+
+def make_error_figure() -> go.Figure:
+    """Shown when the Snowflake query raised an exception — temporary connection problem."""
+    return make_empty_figure("Couldn't reach Snowflake — will retry automatically.")
+
+
+def make_account_suspended_figure() -> go.Figure:
+    """Shown when Snowflake rejects the connection because the trial ended or billing lapsed."""
+    return make_empty_figure("Snowflake account suspended — check billing or trial status.")
+
+
+def make_bad_credentials_figure() -> go.Figure:
+    """Shown when Snowflake returns errno 390100 (wrong username/password)."""
+    return make_empty_figure("Snowflake credentials rejected — check the K8s secret.")
+
+
+def make_network_error_figure() -> go.Figure:
+    """Shown when the Snowflake host is unreachable (errno 250001/250003)."""
+    return make_empty_figure("Can't reach Snowflake servers — check network connectivity.")

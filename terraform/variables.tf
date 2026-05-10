@@ -32,9 +32,9 @@ variable "instance_type" {
 }
 
 variable "ebs_volume_size" {
-  description = "Root EBS volume size in GiB — 30 GiB covers K3s images, MLflow artifacts, and Airflow logs with headroom"
+  description = "Root EBS volume size in GiB — 50 GiB covers dual containerd stores (Docker + K3s), MLflow artifacts, and Airflow logs with headroom"
   type        = number
-  default     = 30
+  default     = 50
 }
 
 variable "spot_max_price" {

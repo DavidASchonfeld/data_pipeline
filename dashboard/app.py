@@ -72,6 +72,9 @@ dash_app.layout = html.Div(
             style={"width": "200px", "marginBottom": "20px"},  # width is component-specific — kept inline
         ),
 
+        # Auto-refresh interval — triggers data callbacks every hour to match the 1-hour cache TTL
+        dcc.Interval(id="stocks-interval", interval=3600 * 1000, n_intervals=0),
+
         # dcc.Loading wraps all financials outputs — shows a spinner immediately
         # while the Snowflake query runs so the page never looks broken or blank
         dcc.Loading(
@@ -104,11 +107,13 @@ dash_app.layout = html.Div(
             children=[html.Div(id="health-table")],  # marginBottom removed — theme.css handles spacing
         ),
         html.Button(
-            "Refresh Anomalies",
+            "Reload view",
             id="anomaly-refresh-btn",  # id referenced by the update_anomalies callback in callbacks.py
             n_clicks=0,
             className="dash-btn",  # CSS class applies dark button styling and hover states
         ),
+        # Shows when data was last fetched from Snowflake and the auto-refresh cadence
+        html.P(id="anomaly-freshness", className="dash-freshness"),
         # Invisible stores: anomaly-data-store caches the raw anomaly data; anomaly-sort-state tracks which column is sorted
         dcc.Store(id="anomaly-data-store"),
         dcc.Store(id="anomaly-sort-state", data={"column": None, "direction": "asc"}),
@@ -185,6 +190,9 @@ weather_dash_app.layout = html.Div(
             ),
         ]),
 
+        # Auto-refresh interval — triggers data callbacks every 15 minutes to match the weather cache TTL
+        dcc.Interval(id="weather-interval", interval=900 * 1000, n_intervals=0),
+
         # City selector — lets users switch between the 10 pre-loaded US cities without extra Snowflake queries
         html.Label("Select City:"),
         dcc.Dropdown(
@@ -195,13 +203,15 @@ weather_dash_app.layout = html.Div(
             style={"width": "250px", "marginBottom": "20px"},
         ),
 
-        # Refresh button triggers the weather callback to reload data from Snowflake
+        # Reload view re-renders charts from the in-memory cache without hitting Snowflake
         html.Button(
-            "Refresh Weather",
+            "Reload view",
             id="weather-refresh-btn",  # id referenced by update_weather callback in callbacks.py
             n_clicks=0,
             className="dash-btn",  # CSS class applies dark button styling and hover states
         ),
+        # Shows when data was last fetched from Snowflake and the auto-refresh cadence
+        html.P(id="weather-freshness", className="dash-freshness"),
 
         # dcc.Loading wraps both weather outputs — shows a spinner while Snowflake is queried
         dcc.Loading(
@@ -227,11 +237,13 @@ weather_dash_app.layout = html.Div(
             children=[html.Div(id="weather-health-table")],  # populated by update_weather_health callback
         ),
         html.Button(
-            "Refresh Anomalies",
+            "Reload view",
             id="weather-anomaly-refresh-btn",  # triggers update_weather_anomalies callback in callbacks.py
             n_clicks=0,
             className="dash-btn",
         ),
+        # Shows when anomaly data was last fetched and the auto-refresh cadence
+        html.P(id="weather-anomaly-freshness", className="dash-freshness"),
         # Plain-language explanation of the anomaly method — sits right above the chart and table
         html.P(
             "How it works: for each city, the system calculates the average temperature "

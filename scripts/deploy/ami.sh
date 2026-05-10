@@ -56,13 +56,18 @@ cancel_in_progress_bake() {
         return 0
     fi
 
+    # Always clear the lock on exit — even if something below fails — so the next deploy isn't blocked
+    trap 'rm -f "$_AMI_LOCKFILE"' RETURN
+
     echo "--- Reading previous bake info from lock file ---"
     # Parse PID and AMI ID from the lock file (format: PID=<pid> and AMI=<ami-id>)
     local _old_pid _old_ami
     _old_pid=$(grep '^PID=' "$_AMI_LOCKFILE" 2>/dev/null | cut -d= -f2)
     _old_ami=$(grep '^AMI=' "$_AMI_LOCKFILE" 2>/dev/null | cut -d= -f2)
+    echo "  Found PID=${_old_pid:-none} AMI=${_old_ami:-none}"
 
     # 1. Kill the old background bake process if it is still running
+    echo "--- Checking if PID ${_old_pid:-none} is alive ---"
     if [ -n "$_old_pid" ] && kill -0 "$_old_pid" 2>/dev/null; then
         # Verify the PID belongs to an AMI bake process (prevents killing a recycled PID)
         local _proc_cmd
@@ -75,51 +80,59 @@ cancel_in_progress_bake() {
         else
             echo "PID $_old_pid is not a bake process — skipping kill (PID was recycled)"
         fi
+    else
+        echo "  Process not running — nothing to kill"
     fi
 
-    # 2. Deregister the pending/completed AMI from the previous bake
+    # 2. Deregister the pending/completed AMI from the previous bake (requires AWS auth)
+    echo "--- Deregistering pending AMI ${_old_ami:-none} ---"
     if [ -n "$_old_ami" ]; then
-        local _ami_state
-        _ami_state=$(aws ec2 describe-images --image-ids "$_old_ami" --region "$AWS_REGION" \
-            --query 'Images[0].State' --output text 2>/dev/null || echo "not-found")
+        # Only attempt AWS calls if auth is available — skip silently if SSO is expired
+        if _ensure_aws_auth >/dev/null 2>&1; then
+            local _ami_state
+            _ami_state=$(timeout 30 aws ec2 describe-images --image-ids "$_old_ami" --region "$AWS_REGION" \
+                --query 'Images[0].State' --output text 2>/dev/null || echo "not-found")
 
-        if [ "$_ami_state" != "not-found" ] && [ "$_ami_state" != "None" ]; then
-            echo "Deregistering old AMI $_old_ami (state: $_ami_state)..."
+            if [ "$_ami_state" != "not-found" ] && [ "$_ami_state" != "None" ]; then
+                echo "Deregistering old AMI $_old_ami (state: $_ami_state)..."
 
-            # Find the snapshot backing this AMI so we can delete it too (saves storage costs)
-            local _snap_id
-            _snap_id=$(aws ec2 describe-images --image-ids "$_old_ami" --region "$AWS_REGION" \
-                --query 'Images[0].BlockDeviceMappings[0].Ebs.SnapshotId' --output text 2>/dev/null || echo "")
+                # Find the snapshot backing this AMI so we can delete it too (saves storage costs)
+                local _snap_id
+                _snap_id=$(timeout 30 aws ec2 describe-images --image-ids "$_old_ami" --region "$AWS_REGION" \
+                    --query 'Images[0].BlockDeviceMappings[0].Ebs.SnapshotId' --output text 2>/dev/null || echo "")
 
-            # Deregister the AMI (cancels pending snapshot if still in progress)
-            aws ec2 deregister-image --image-id "$_old_ami" --region "$AWS_REGION" 2>/dev/null || true
+                # Deregister the AMI (cancels pending snapshot if still in progress)
+                timeout 30 aws ec2 deregister-image --image-id "$_old_ami" --region "$AWS_REGION" 2>/dev/null || true
 
-            # If primary lookup missed the snapshot, search by AMI ID in snapshot description
-            if [ -z "$_snap_id" ] || [ "$_snap_id" = "None" ]; then
-                _snap_id=$(aws ec2 describe-snapshots --owner-ids self \
-                    --filters "Name=description,Values=*$_old_ami*" \
-                    --region "$AWS_REGION" \
-                    --query 'Snapshots[0].SnapshotId' --output text 2>/dev/null || echo "")
-            fi
+                # If primary lookup missed the snapshot, search by AMI ID in snapshot description
+                if [ -z "$_snap_id" ] || [ "$_snap_id" = "None" ]; then
+                    _snap_id=$(timeout 30 aws ec2 describe-snapshots --owner-ids self \
+                        --filters "Name=description,Values=*$_old_ami*" \
+                        --region "$AWS_REGION" \
+                        --query 'Snapshots[0].SnapshotId' --output text 2>/dev/null || echo "")
+                fi
 
-            # Delete the backing snapshot to stop paying for its storage
-            if [ -n "$_snap_id" ] && [ "$_snap_id" != "None" ]; then
-                echo "Deleting old snapshot: $_snap_id"
-                aws ec2 delete-snapshot --snapshot-id "$_snap_id" --region "$AWS_REGION" 2>/dev/null || true
+                # Delete the backing snapshot to stop paying for its storage
+                if [ -n "$_snap_id" ] && [ "$_snap_id" != "None" ]; then
+                    echo "Deleting old snapshot: $_snap_id"
+                    timeout 30 aws ec2 delete-snapshot --snapshot-id "$_snap_id" --region "$AWS_REGION" 2>/dev/null || true
+                fi
+            else
+                echo "Previous AMI $_old_ami no longer exists — nothing to deregister"
             fi
         else
-            echo "Previous AMI $_old_ami no longer exists — nothing to deregister"
+            echo "WARNING: AWS auth unavailable — skipping AMI deregistration (old AMI may linger)"
         fi
     fi
 
     # 3. Ensure EC2 services are running (in case the kill happened while they were stopped)
-    echo "--- Ensuring EC2 services are running ---"
-    ssh "$EC2_HOST" "sudo systemctl start docker && sudo systemctl start k3s && echo 'Services confirmed running'" \
+    echo "--- Restarting EC2 services after cancel ---"
+    ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 \
+        "$EC2_HOST" "sudo systemctl start docker && sudo systemctl start k3s && echo 'Services confirmed running'" \
         2>/dev/null || echo "  (EC2 unreachable — services will start on next boot)"
 
-    # 4. Clean up lock file and bake log so the new bake starts fresh
-    rm -f "$_AMI_LOCKFILE"
-    > /tmp/ami-bake.log   # truncate previous bake log
+    # 4. Truncate bake log so the new bake starts fresh (lock cleared via RETURN trap above)
+    > /tmp/ami-bake.log
 
     echo "--- Previous bake cancelled successfully ---"
 }

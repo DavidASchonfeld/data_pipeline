@@ -1,3 +1,4 @@
+import datetime
 import logging
 import pandas as pd  # needed to parse JSON data from dcc.Store back into DataFrames
 from dash import html, ClientsideFunction  # ClientsideFunction wires JS functions to Dash callbacks
@@ -5,9 +6,12 @@ from dash.dependencies import Input, Output, State  # State reads values without
 
 logger = logging.getLogger(__name__)  # module-level logger — writes to pod stdout (visible in kubectl logs)
 
-from db import _load_ticker_data, load_anomalies, load_weather_data, load_stock_health, load_weather_health  # split health loaders: stocks page uses load_stock_health, weather page uses load_weather_health
+from db import _load_ticker_data, load_anomalies, load_weather_data, load_stock_health, load_weather_health, get_cache_freshness  # split health loaders: stocks page uses load_stock_health, weather page uses load_weather_health
 from charts import build_revenue_net_income_fig, build_net_income_fig, build_stats_table, build_anomaly_scatter, build_health_table  # build_health_table added for the health panel
-from chart_utils import make_empty_figure  # shared themed empty-figure helper — keeps fallback figures on-brand
+from chart_utils import (  # distinct empty states — generic error, specific Snowflake errors, and no-data
+    make_empty_figure, make_no_data_figure, make_error_figure,
+    make_account_suspended_figure, make_bad_credentials_figure, make_network_error_figure,
+)
 from weather_charts import build_temperature_fig, build_weather_stats_table, compute_weather_anomalies, build_weather_anomaly_scatter  # weather chart builders; anomaly functions added for anomaly detection section
 from security import ALLOWED_TICKERS, ALLOWED_CITIES  # import centralised allowlists — avoids duplicating the sets here
 from anomaly_table import (  # shared table logic so both dashboards use identical column definitions
@@ -54,6 +58,41 @@ def _sort_header_outputs(sort_state: dict, col_keys: list) -> tuple[list, list]:
     return indicators, classes
 
 
+def _freshness_caption(key: str, interval_text: str) -> str:
+    """Build 'Auto-updates every X · Last updated HH:MM' caption from the cache status for key."""
+    meta = get_cache_freshness(key)
+    if meta["refreshed_at"] is None:
+        return f"Auto-updates every {interval_text}"  # prewarm hasn't run yet
+    ts = datetime.datetime.fromtimestamp(meta["refreshed_at"]).strftime("%H:%M")
+    return f"Auto-updates every {interval_text} · Last updated {ts}"
+
+
+_SNOWFLAKE_ERROR_MESSAGES = {
+    "account_suspended": "Snowflake account suspended — check billing or trial status.",
+    "bad_credentials":   "Snowflake credentials rejected — check the K8s secret.",
+    "network_error":     "Can't reach Snowflake servers — check network connectivity.",
+    "error":             "Couldn't reach Snowflake — will retry automatically.",
+}
+
+def _snowflake_error_msg(status: str) -> str:
+    """Return the specific Snowflake error message for a given cache status, or '' if not an error."""
+    return _SNOWFLAKE_ERROR_MESSAGES.get(status, "")
+
+
+def _pick_empty_figure(key: str, hint: str = ""):
+    """Return the appropriate empty figure based on the last-known cache status for key."""
+    status = get_cache_freshness(key).get("status", "unknown")
+    if status == "account_suspended":
+        return make_account_suspended_figure()
+    if status == "bad_credentials":
+        return make_bad_credentials_figure()
+    if status == "network_error":
+        return make_network_error_figure()
+    if status == "error":
+        return make_error_figure()
+    return make_no_data_figure(hint)
+
+
 def register_callbacks(dash_app) -> None:
     """Register all Dash callbacks onto the given Dash app instance."""
 
@@ -62,23 +101,18 @@ def register_callbacks(dash_app) -> None:
         Output("volume-chart", "figure"),   # 2nd return value → sets the Net Income standalone bar chart
         Output("stats-table", "children"),  # 3rd return value → sets the stats table's HTML children
         Input("ticker-dropdown", "value"),  # triggers callback when the dropdown selection changes
+        Input("stocks-interval", "n_intervals"),  # also fires every hour for background auto-refresh
     )
-    def update_charts(ticker: str):
-        """Re-render all three outputs whenever the user picks a different ticker.
-
-        Dash callbacks are reactive: Dash automatically calls this function whenever
-        any Input component changes. The return values are mapped positionally to the
-        Output components defined above — order matters.
-        """
+    def update_charts(ticker: str, n_intervals):
+        """Re-render all three outputs whenever the user picks a different ticker or the hourly interval fires."""
         if ticker not in ALLOWED_TICKERS:                                                              # reject unknown tickers before any DB call — prevents strangers cache-busting Snowflake queries
             empty_fig = make_empty_figure("Invalid ticker")                                            # themed empty figure keeps the dashboard on-brand even in the error path
             return empty_fig, empty_fig, html.P("Invalid ticker selection.", style={"color": "red"})   # return all three outputs so Dash's positional mapping doesn't raise a mismatch error
-        try:
-            df = _load_ticker_data(ticker)
-        except Exception:
-            logger.exception("Failed to load ticker data for %s", ticker)  # full traceback to pod stdout
-            empty_fig = make_empty_figure("Data temporarily unavailable")  # themed placeholder instead of raw unstyled Plotly figure
-            return empty_fig, empty_fig, html.P("Data temporarily unavailable. Please try again later.", style={"color": "red"})
+        df = _load_ticker_data(ticker)
+
+        if df.empty:
+            empty_fig = _pick_empty_figure(f"financials:{ticker}", "Stocks data runs daily via Airflow.")
+            return empty_fig, empty_fig, html.P("No data yet — pipeline may still be running.", style={"color": "#8892a4"})
 
         # Split into per-metric DataFrames for separate traces
         revenue_df    = df[df["metric"] == "Revenues"].copy()
@@ -95,19 +129,19 @@ def register_callbacks(dash_app) -> None:
     @dash_app.callback(
         Output("anomaly-scatter", "figure"),       # updates the scatter plot figure
         Output("anomaly-data-store", "data"),      # stores anomaly data as JSON for the table callback
+        Output("anomaly-freshness", "children"),   # "Last updated HH:MM · auto-updates every 1 hr" caption
         Input("anomaly-refresh-btn", "n_clicks"),  # triggers on button click; also fires on initial page load
+        Input("stocks-interval", "n_intervals"),   # also fires every hour for background auto-refresh
         prevent_initial_call=False,  # load data immediately on page load, not just on button click
     )
-    def update_anomalies(n_clicks):
-        """Push anomaly data to the store on page load or Refresh click; table re-renders reactively."""
-        try:
-            df = load_anomalies()  # query Snowflake (or return empty frame for non-Snowflake backends)
-        except Exception:
-            logger.exception("Failed to load anomaly data")  # full traceback to pod stdout
-            empty_fig = make_empty_figure("Data temporarily unavailable")  # themed placeholder instead of raw unstyled Plotly figure
-            return empty_fig, None  # None clears the store so the table shows its empty-state message
+    def update_anomalies(n_clicks, n_intervals):
+        """Push anomaly data to the store on page load, Reload click, or hourly interval; table re-renders reactively."""
+        df = load_anomalies()  # query Snowflake (or return empty frame for non-Snowflake backends)
+        caption = _freshness_caption("anomalies", "1 hour")
+        if df.empty:
+            return _pick_empty_figure("anomalies", "Anomaly detection runs after the daily stocks DAG."), None, caption
         # Serialize to JSON so the table callback can re-render on legend clicks without re-querying
-        return build_anomaly_scatter(df), df.to_json(orient="records", date_format="iso")
+        return build_anomaly_scatter(df), df.to_json(orient="records", date_format="iso"), caption
 
     # ── Anomaly Detection — table rendering callback ──────────────────────────
     # Fires when data loads, when the graph legend is toggled, or when a sort column changes
@@ -154,17 +188,20 @@ def register_callbacks(dash_app) -> None:
 
     # ── Pipeline Health callback ───────────────────────────────────────────────
     @dash_app.callback(
-        Output("health-table", "children"),       # updates the pipeline health HTML table
-        Input("anomaly-refresh-btn", "n_clicks"), # shares the existing Refresh button — no extra query trigger
+        Output("health-table", "children"),         # updates the pipeline health HTML table
+        Input("anomaly-refresh-btn", "n_clicks"),   # shares the Reload view button — no extra query trigger
+        Input("stocks-interval", "n_intervals"),    # also refreshes every hour alongside the anomaly data
         prevent_initial_call=False,  # populate on page load, not just on button click
     )
-    def update_health(n_clicks):
-        """Render stock pipeline health table (Financials + Anomalies only) on page load or refresh."""
-        try:
-            df = load_stock_health()  # stock-only health: Financials + Anomalies; weather has its own panel
-        except Exception:
-            logger.exception("Failed to load stock health")  # full traceback to pod stdout
-            return html.P("Data temporarily unavailable. Please try again later.", style={"color": "red"})
+    def update_health(n_clicks, n_intervals):
+        """Render stock pipeline health table (Financials + Anomalies only) on page load, reload, or hourly interval."""
+        df = load_stock_health()  # stock-only health: Financials + Anomalies; weather has its own panel
+        if df.empty:
+            status = get_cache_freshness("stock_health").get("status", "unknown")
+            msg = _snowflake_error_msg(status)
+            if msg:
+                return html.P(msg, style={"color": "#f59e0b"})
+            return html.P("No pipeline health data yet — run the pipeline first.", style={"color": "#8892a4"})
         return build_health_table(df)  # renders row counts + freshness table
 
 
@@ -174,38 +211,42 @@ def register_weather_callbacks(weather_dash_app) -> None:
     @weather_dash_app.callback(
         Output("weather-temp-chart", "figure"),    # 1st return value → sets the temperature line chart
         Output("weather-stats-table", "children"), # 2nd return value → sets the stats table's HTML children
+        Output("weather-freshness", "children"),   # "Last updated HH:MM · auto-updates every 15 min" caption
         Input("weather-refresh-btn", "n_clicks"),  # triggers on button click and on initial page load
         Input("city-dropdown", "value"),           # city selection — filters the cached full-dataset client-side
+        Input("weather-interval", "n_intervals"),  # also fires every 15 min for background auto-refresh
         prevent_initial_call=False,  # load data immediately on page load, not just on button click
     )
-    def update_weather(n_clicks, city):
-        """Re-render temperature chart and stats for selected city on page load, refresh, or city change."""
+    def update_weather(n_clicks, city, n_intervals):
+        """Re-render temperature chart and stats for selected city on page load, reload, city change, or 15-min interval."""
+        caption = _freshness_caption("weather", "15 min")
         if city not in ALLOWED_CITIES:  # validate against allowlist — prevents cache-busting with arbitrary strings
             empty_fig = make_empty_figure("Invalid city selection")  # themed placeholder instead of raw unstyled Plotly figure
-            return empty_fig, html.P("Invalid city selection.", style={"color": "red"})
-        try:
-            df = load_weather_data()  # full dataset for all cities (cached 15 min); filter below
-            if not df.empty and "city_name" in df.columns:
-                df = df[df["city_name"] == city]  # filter to selected city — no extra Snowflake query needed
-        except Exception:
-            logger.exception("Failed to load weather data")  # full traceback to pod stdout
-            empty_fig = make_empty_figure("Data temporarily unavailable")  # themed placeholder instead of raw unstyled Plotly figure
-            return empty_fig, html.P("Data temporarily unavailable. Please try again later.", style={"color": "red"})
-        return build_temperature_fig(df, city), build_weather_stats_table(df)  # chart + stats rendered from the filtered DataFrame
+            return empty_fig, html.P("Invalid city selection.", style={"color": "red"}), caption
+        df = load_weather_data()  # full dataset for all cities (cached 15 min); filter below
+        if df.empty:
+            empty_fig = _pick_empty_figure("weather", "Weather data runs hourly via Airflow.")
+            return empty_fig, html.P("No data yet — pipeline may still be running.", style={"color": "#8892a4"}), caption
+        if "city_name" in df.columns:
+            df = df[df["city_name"] == city]  # filter to selected city — no extra Snowflake query needed
+        return build_temperature_fig(df, city), build_weather_stats_table(df), caption  # chart + stats rendered from the filtered DataFrame
 
     # ── Weather Pipeline Health callback ──────────────────────────────────────
     @weather_dash_app.callback(
         Output("weather-health-table", "children"),          # weather-specific health panel on the weather page
-        Input("weather-anomaly-refresh-btn", "n_clicks"),    # shares the Refresh Anomalies button — health is part of the anomaly section
+        Input("weather-anomaly-refresh-btn", "n_clicks"),    # shares the Reload view button — health is part of the anomaly section
+        Input("weather-interval", "n_intervals"),            # also refreshes every 15 min alongside the weather data
         prevent_initial_call=False,  # populate on page load, not just on button click
     )
-    def update_weather_health(n_clicks):
-        """Render weather pipeline health table (Weather table only) on page load or refresh."""
-        try:
-            df = load_weather_health()  # weather-only health: just the FCT_WEATHER_HOURLY freshness row
-        except Exception:
-            logger.exception("Failed to load weather health")  # full traceback to pod stdout
-            return html.P("Data temporarily unavailable. Please try again later.", style={"color": "red"})
+    def update_weather_health(n_clicks, n_intervals):
+        """Render weather pipeline health table (Weather table only) on page load, reload, or 15-min interval."""
+        df = load_weather_health()  # weather-only health: just the FCT_WEATHER_HOURLY freshness row
+        if df.empty:
+            status = get_cache_freshness("weather_health").get("status", "unknown")
+            msg = _snowflake_error_msg(status)
+            if msg:
+                return html.P(msg, style={"color": "#f59e0b"})
+            return html.P("No pipeline health data yet — run the pipeline first.", style={"color": "#8892a4"})
         return build_health_table(df)  # renders row count + freshness for the weather table
 
     # ── Weather Anomaly Detection — data loading callback ────────────────────
@@ -213,20 +254,20 @@ def register_weather_callbacks(weather_dash_app) -> None:
     @weather_dash_app.callback(
         Output("weather-anomaly-scatter", "figure"),         # scatter: temperature over time, anomalies highlighted
         Output("weather-anomaly-data-store", "data"),        # stores computed anomaly data as JSON for the table callback
+        Output("weather-anomaly-freshness", "children"),     # "Last updated HH:MM · auto-updates every 15 min" caption
         Input("weather-anomaly-refresh-btn", "n_clicks"),    # triggers on button click and page load
+        Input("weather-interval", "n_intervals"),            # also fires every 15 min for background auto-refresh
         prevent_initial_call=False,  # load anomaly data immediately on page load
     )
-    def update_weather_anomalies(n_clicks):
-        """Compute z-score anomalies and push to store on page load or refresh; table re-renders reactively."""
-        try:
-            df = load_weather_data()  # full dataset, all cities (cached 15 min) — no extra Snowflake query
-        except Exception:
-            logger.exception("Failed to load weather data for anomaly detection")  # full traceback to pod stdout
-            empty_fig = make_empty_figure("Data temporarily unavailable")  # themed placeholder instead of raw unstyled Plotly figure
-            return empty_fig, None  # None clears the store so the table shows its empty-state message
+    def update_weather_anomalies(n_clicks, n_intervals):
+        """Compute z-score anomalies and push to store on page load, reload, or 15-min interval; table re-renders reactively."""
+        df = load_weather_data()  # full dataset, all cities (cached 15 min) — no extra Snowflake query
+        caption = _freshness_caption("weather", "15 min")
+        if df.empty:
+            return _pick_empty_figure("weather", "Weather data runs hourly via Airflow."), None, caption
         df = compute_weather_anomalies(df)  # z-score per city, in-memory — no DB call
         # Serialize to JSON so the table callback can re-render on legend clicks without recomputing
-        return build_weather_anomaly_scatter(df), df.to_json(orient="records", date_format="iso")
+        return build_weather_anomaly_scatter(df), df.to_json(orient="records", date_format="iso"), caption
 
     # ── Weather Anomaly Detection — table rendering callback ─────────────────
     # Fires when data loads, when the graph legend is toggled, or when a sort column changes
