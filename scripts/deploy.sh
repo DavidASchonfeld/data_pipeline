@@ -9,7 +9,7 @@
 #                                          Use when creating a new instance or switching networks
 #   ./scripts/deploy.sh --snowflake-setup — bootstrap all Snowflake objects (warehouse, DB, schemas, role, user)
 #                                          Run once on a fresh Snowflake account or after a full project teardown.
-#                                          Requires SNOWFLAKE_ADMIN_USER, SNOWFLAKE_ADMIN_PASSWORD, SNOWFLAKE_PASSWORD in .env.deploy.
+#                                          Requires SNOWFLAKE_ADMIN_USER, SNOWFLAKE_ADMIN_PASSWORD in .env.deploy.
 #                                          Safe to re-run — all statements are CREATE IF NOT EXISTS.
 #   ./scripts/deploy.sh --bake-ami       — create a golden AMI snapshot from the running instance
 

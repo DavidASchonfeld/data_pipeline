@@ -10,7 +10,7 @@
 --   MARTS schema    — dbt fact/dim tables for the dashboard (auto-created by dbt, but pre-granted here)
 --   ANALYTICS schema— anomaly detection results; auto-created by anomaly_detector.py on first run
 --   PIPELINE_ROLE   — least-privilege service role used by all pipeline components
---   PIPELINE_USER   — service account; password set via SNOWFLAKE_PASSWORD env var (never committed)
+--   PIPELINE_USER   — service account; authenticates via RSA key-pair (no password)
 --
 -- Schemas NOT created here (created automatically at runtime):
 --   ANALYTICS — anomaly_detector.py runs CREATE SCHEMA IF NOT EXISTS on first execution
@@ -96,11 +96,10 @@ GRANT INSERT, UPDATE, SELECT, DELETE ON FUTURE TABLES IN SCHEMA PIPELINE_DB.MART
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 10. PIPELINE_USER — service account used by all pipeline components
---     Password is injected by the runner script from SNOWFLAKE_PASSWORD env var.
---     The literal string {{SNOWFLAKE_PASSWORD}} is replaced before execution — never committed.
+--     Authenticates via RSA key-pair auth — no password set or required.
+--     The RSA public key is registered on this user in Snowflake separately (one-time manual step).
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE USER IF NOT EXISTS PIPELINE_USER
-    PASSWORD          = '{{SNOWFLAKE_PASSWORD}}'
     DEFAULT_ROLE      = PIPELINE_ROLE
     DEFAULT_WAREHOUSE = PIPELINE_WH
     DEFAULT_NAMESPACE = 'PIPELINE_DB.RAW'
@@ -108,6 +107,12 @@ CREATE USER IF NOT EXISTS PIPELINE_USER
 
 -- Bind the service role to the service user
 GRANT ROLE PIPELINE_ROLE TO USER PIPELINE_USER;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 12. Ensure no password is set on PIPELINE_USER — RSA key-pair is the only auth method.
+--     Safe to run on a fresh account (UNSET on a user with no password is a no-op).
+-- ─────────────────────────────────────────────────────────────────────────────
+ALTER USER PIPELINE_USER UNSET PASSWORD;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 11. (REMOVED — 2026-05-10)

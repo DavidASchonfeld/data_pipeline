@@ -6,7 +6,6 @@
 #   SNOWFLAKE_ADMIN_USER     — your personal Snowflake login (needs ACCOUNTADMIN — required to create users and schemas)
 #   SNOWFLAKE_ADMIN_PASSWORD — admin password (never committed)
 #   SNOWFLAKE_ACCOUNT        — account identifier, e.g. abc12345.us-east-1
-#   SNOWFLAKE_PASSWORD       — desired password for PIPELINE_USER (injected into the SQL at run time)
 #
 # The script uses snowflake-connector-python (already a project dependency — installed in the
 # anomaly-detection ml-venv and available via pip in most environments).
@@ -15,18 +14,14 @@ step_snowflake_setup() {
     echo "=== Snowflake Setup: applying scripts/snowflake_setup.sql ==="
 
     # Verify the required admin credentials are present before attempting a connection
-    for var in SNOWFLAKE_ACCOUNT SNOWFLAKE_ADMIN_USER SNOWFLAKE_ADMIN_PASSWORD SNOWFLAKE_PASSWORD; do
+    for var in SNOWFLAKE_ACCOUNT SNOWFLAKE_ADMIN_USER SNOWFLAKE_ADMIN_PASSWORD; do
         if [ -z "${!var:-}" ]; then
             echo "ERROR: $var is not set in .env.deploy — required for --snowflake-setup"
             echo "  SNOWFLAKE_ADMIN_USER / SNOWFLAKE_ADMIN_PASSWORD — your personal SYSADMIN credentials"
-            echo "  SNOWFLAKE_PASSWORD                              — desired password for PIPELINE_USER"
             exit 1
         fi
     done
 
-    # Read the SQL file and inject the PIPELINE_USER password before sending to Snowflake.
-    # {{SNOWFLAKE_PASSWORD}} is a placeholder in the SQL — we replace it here so the password
-    # is never stored in the file itself (which IS committed to git).
     SQL_FILE="$PROJECT_ROOT/scripts/snowflake_setup.sql"
     if [ ! -f "$SQL_FILE" ]; then
         echo "ERROR: SQL setup file not found: $SQL_FILE"
@@ -44,9 +39,8 @@ import os
 import sys
 import re
 
-# Read the SQL file and replace the password placeholder with the real value
-sql_raw = open("$SQL_FILE").read()
-sql_final = sql_raw.replace("{{SNOWFLAKE_PASSWORD}}", os.environ["SNOWFLAKE_PASSWORD"])
+# Read the SQL file
+sql_final = open("$SQL_FILE").read()
 
 # Connect as ACCOUNTADMIN — the top-level role in Snowflake. SYSADMIN cannot create schemas or users,
 # so ACCOUNTADMIN is required for a full first-time setup (warehouses, databases, schemas, roles, users).
