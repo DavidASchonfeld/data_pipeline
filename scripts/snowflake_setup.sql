@@ -110,23 +110,13 @@ CREATE USER IF NOT EXISTS PIPELINE_USER
 GRANT ROLE PIPELINE_ROLE TO USER PIPELINE_USER;
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- 11. Service-account auth policy — exempt PIPELINE_USER from MFA
---     Snowflake now mandates MFA for password logins. PIPELINE_USER is a
---     robot account with no phone to approve a Duo prompt, so logins fail
---     under the default policy. This carve-out lets the pipeline run.
---     Long-term plan: migrate PIPELINE_USER to RSA key-pair auth (tracked in
---     docs/TODO.md and docs/incidents/snowflake/2026-05-09-snowflake-mfa-blocking-pipeline.md).
+-- 11. (REMOVED — 2026-05-10)
+--     The PIPELINE_SERVICE_ACCOUNT_POLICY auth policy was created on 2026-05-09
+--     to exempt PIPELINE_USER from the MFA mandate while still on password auth.
+--     Later the same day, PIPELINE_USER was migrated to RSA key-pair auth, which
+--     is MFA-exempt by design — making the policy redundant AND actively harmful:
+--     its AUTHENTICATION_METHODS = ('PASSWORD') clause blocked the new KEYPAIR
+--     logins (errno 250001, "Authentication attempt rejected by the current
+--     authentication policy"). Policy was UNSET and DROPped on 2026-05-10.
+--     See: docs/incidents/snowflake/2026-05-10-auth-policy-blocking-keypair-login.md
 -- ─────────────────────────────────────────────────────────────────────────────
--- Authentication policies are schema-scoped — set a current database/schema first.
-USE DATABASE PIPELINE_DB;
-USE SCHEMA PUBLIC;
-
--- Create the service-account login policy: password-only, no MFA required.
-CREATE OR REPLACE AUTHENTICATION POLICY PIPELINE_SERVICE_ACCOUNT_POLICY
-    AUTHENTICATION_METHODS = ('PASSWORD')
-    MFA_ENROLLMENT         = OPTIONAL
-    COMMENT = 'Service-account login policy: password-only, MFA-exempt. Used by PIPELINE_USER only.';
-
--- Attach the policy to PIPELINE_USER (fully qualified name — ALTER USER does not honor USE SCHEMA).
-ALTER USER PIPELINE_USER
-    SET AUTHENTICATION POLICY PIPELINE_DB.PUBLIC.PIPELINE_SERVICE_ACCOUNT_POLICY;

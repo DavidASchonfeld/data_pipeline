@@ -93,7 +93,8 @@ For the failure mode catalog (what *can* go wrong, not what *did* go wrong), see
 | 2026-04-07 | Weather Snowflake write failure (timestamp mismatch) | [weather-write](snowflake/2026-04-07-weather-snowflake-write-failure.md) |
 | 2026-04-10 | FCT_ANOMALIES insufficient privileges | [privileges](snowflake/2026-04-10-snowflake-fct-anomalies-insufficient-privileges.md) |
 | 2026-05-09 | Snowflake's MFA mandate blocked PIPELINE_USER (password+MFA can't run unattended); fixed via service-account auth policy | [mfa-blocking-pipeline](snowflake/2026-05-09-snowflake-mfa-blocking-pipeline.md) |
-| 2026-05-09 | Migrated PIPELINE_USER from password to RSA key-pair auth (Phase 1 of long-term fix to MFA outage); password retained as fallback, cleanup tracked in TODO | [rsa-keypair-migration](snowflake/2026-05-09-pipeline-user-rsa-keypair-migration.md) |
+| 2026-05-09 | Migrated PIPELINE_USER from password to RSA key-pair auth (Phase 1 of long-term fix to MFA outage); password retained as fallback | [rsa-keypair-migration](snowflake/2026-05-09-pipeline-user-rsa-keypair-migration.md) |
+| 2026-05-10 | PIPELINE_SERVICE_ACCOUNT_POLICY (PASSWORD-only) blocked the new KEYPAIR logins with errno 250001; policy UNSET+DROPped | [auth-policy-blocking-keypair](snowflake/2026-05-10-auth-policy-blocking-keypair-login.md) |
 
 ### Kafka
 
