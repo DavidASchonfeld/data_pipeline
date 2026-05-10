@@ -43,21 +43,38 @@ def make_no_data_figure(hint: str = "") -> go.Figure:
     return make_empty_figure(msg)
 
 
-def make_error_figure() -> go.Figure:
+def _make_error_panel(headline: str, detail: str = "") -> go.Figure:
+    """Friendly headline plus an optional second line showing the raw driver detail.
+
+    The detail line is what makes the difference between "looks like a network issue"
+    and "actually it's an MFA mandate" — we want both visible to a user reading the page.
+    """
+    fig = make_empty_figure(headline)
+    if detail:
+        # Anchor the detail line just below the headline; smaller + dimmer + monospace so it reads as technical context, not a second alert
+        fig.add_annotation(
+            text=detail, showarrow=False,
+            yshift=-22,  # nudge below the headline annotation
+            font={"size": 11, "color": "#6c7689", "family": "monospace"},
+        )
+    return fig
+
+
+def make_error_figure(detail: str = "") -> go.Figure:
     """Shown when the Snowflake query raised an exception — temporary connection problem."""
-    return make_empty_figure("Couldn't reach Snowflake — will retry automatically.")
+    return _make_error_panel("Couldn't reach Snowflake — will retry automatically.", detail)
 
 
-def make_account_suspended_figure() -> go.Figure:
+def make_account_suspended_figure(detail: str = "") -> go.Figure:
     """Shown when Snowflake rejects the connection because the trial ended or billing lapsed."""
-    return make_empty_figure("Snowflake account suspended — check billing or trial status.")
+    return _make_error_panel("Snowflake account suspended — check billing or trial status.", detail)
 
 
-def make_bad_credentials_figure() -> go.Figure:
+def make_bad_credentials_figure(detail: str = "") -> go.Figure:
     """Shown when Snowflake returns errno 390100 (wrong username/password)."""
-    return make_empty_figure("Snowflake credentials rejected — check the K8s secret.")
+    return _make_error_panel("Snowflake credentials rejected — check the K8s secret.", detail)
 
 
-def make_network_error_figure() -> go.Figure:
+def make_network_error_figure(detail: str = "") -> go.Figure:
     """Shown when the Snowflake host is unreachable (errno 250001/250003)."""
-    return make_empty_figure("Can't reach Snowflake servers — check network connectivity.")
+    return _make_error_panel("Can't reach Snowflake servers — check network connectivity.", detail)

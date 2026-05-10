@@ -74,22 +74,54 @@ _SNOWFLAKE_ERROR_MESSAGES = {
     "error":             "Couldn't reach Snowflake — will retry automatically.",
 }
 
-def _snowflake_error_msg(status: str) -> str:
-    """Return the specific Snowflake error message for a given cache status, or '' if not an error."""
+def _format_error_detail(meta: dict) -> str:
+    """Build a one-line 'errno N: message' string from a cache-freshness entry, or '' if no detail."""
+    errno = meta.get("errno")
+    message = meta.get("message")
+    if errno is None and not message:
+        return ""
+    if errno is not None and message:
+        return f"errno {errno}: {message}"
+    if errno is not None:
+        return f"errno {errno}"
+    return message  # message but no errno
+
+def _snowflake_error_msg(key_or_status, status: str | None = None) -> str:
+    """Return the specific Snowflake error message for a cache key (preferred) or bare status.
+
+    When called with a cache key, also appends the raw driver errno + message so the user
+    can see *why* it failed, not just the friendly headline. Backwards-compatible call
+    with a bare status string is still supported (returns headline only).
+    """
+    if status is None:
+        # Single-arg call: caller passed a key — look up status + detail from the cache
+        meta = get_cache_freshness(key_or_status)
+        headline = _SNOWFLAKE_ERROR_MESSAGES.get(meta.get("status", ""), "")
+        if not headline:
+            return ""
+        detail = _format_error_detail(meta)
+        return f"{headline} ({detail})" if detail else headline
+    # Two-arg call: caller already has the status; no key, no detail available
     return _SNOWFLAKE_ERROR_MESSAGES.get(status, "")
 
 
 def _pick_empty_figure(key: str, hint: str = ""):
-    """Return the appropriate empty figure based on the last-known cache status for key."""
-    status = get_cache_freshness(key).get("status", "unknown")
+    """Return the appropriate empty figure based on the last-known cache status for key.
+
+    Pulls the raw driver errno + message from the cache so the figure can show *why*
+    Snowflake failed, not just a canned headline.
+    """
+    meta = get_cache_freshness(key)
+    status = meta.get("status", "unknown")
+    detail = _format_error_detail(meta)
     if status == "account_suspended":
-        return make_account_suspended_figure()
+        return make_account_suspended_figure(detail)
     if status == "bad_credentials":
-        return make_bad_credentials_figure()
+        return make_bad_credentials_figure(detail)
     if status == "network_error":
-        return make_network_error_figure()
+        return make_network_error_figure(detail)
     if status == "error":
-        return make_error_figure()
+        return make_error_figure(detail)
     return make_no_data_figure(hint)
 
 
@@ -197,8 +229,8 @@ def register_callbacks(dash_app) -> None:
         """Render stock pipeline health table (Financials + Anomalies only) on page load, reload, or hourly interval."""
         df = load_stock_health()  # stock-only health: Financials + Anomalies; weather has its own panel
         if df.empty:
-            status = get_cache_freshness("stock_health").get("status", "unknown")
-            msg = _snowflake_error_msg(status)
+            # Pass the cache key (not just the status) so the message includes the raw errno + driver text
+            msg = _snowflake_error_msg("stock_health")
             if msg:
                 return html.P(msg, style={"color": "#f59e0b"})
             return html.P("No pipeline health data yet — run the pipeline first.", style={"color": "#8892a4"})
@@ -242,8 +274,8 @@ def register_weather_callbacks(weather_dash_app) -> None:
         """Render weather pipeline health table (Weather table only) on page load, reload, or 15-min interval."""
         df = load_weather_health()  # weather-only health: just the FCT_WEATHER_HOURLY freshness row
         if df.empty:
-            status = get_cache_freshness("weather_health").get("status", "unknown")
-            msg = _snowflake_error_msg(status)
+            # Pass the cache key (not just the status) so the message includes the raw errno + driver text
+            msg = _snowflake_error_msg("weather_health")
             if msg:
                 return html.P(msg, style={"color": "#f59e0b"})
             return html.P("No pipeline health data yet — run the pipeline first.", style={"color": "#8892a4"})

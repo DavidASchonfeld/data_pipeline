@@ -1,14 +1,18 @@
 import concurrent.futures
+import logging
 import threading
 import time
 
 import pandas as pd
 from sqlalchemy import create_engine, text
 
+# Module logger — writes to pod stdout so the raw Snowflake error text shows up in `kubectl logs`
+logger = logging.getLogger(__name__)
+
 # All environment variables and constants come from config.py — this file never reads os.environ directly
 from config import (
     SQL_USERNAME, SQL_PASSWORD, SQL_DATABASE, SQL_URL, DB_BACKEND,
-    SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_PASSWORD,
+    SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_PASSWORD, SNOWFLAKE_PRIVATE_KEY_PATH,
     SNOWFLAKE_DATABASE, SNOWFLAKE_SCHEMA, SNOWFLAKE_WAREHOUSE, SNOWFLAKE_ROLE,
     CACHE_TTL_FINANCIALS, CACHE_TTL_WEATHER,
 )
@@ -21,11 +25,22 @@ from config import (
 if DB_BACKEND == "snowflake":
     # Snowflake engine — set DB_BACKEND=snowflake in the K8s secret to activate
     from snowflake.sqlalchemy import URL as SnowflakeURL
+    from cryptography.hazmat.primitives import serialization   # used to load the RSA private key file at engine creation time
+    from cryptography.hazmat.backends import default_backend
+
+    # Load the RSA private key once at startup — DER bytes is what the Snowflake driver expects
+    with open(SNOWFLAKE_PRIVATE_KEY_PATH, "rb") as _f:
+        _p_key = serialization.load_pem_private_key(_f.read(), password=None, backend=default_backend())
+    _SNOWFLAKE_PRIVATE_KEY_DER = _p_key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
     DB_ENGINE = create_engine(
         SnowflakeURL(
             account=SNOWFLAKE_ACCOUNT,
             user=SNOWFLAKE_USER,
-            password=SNOWFLAKE_PASSWORD,
             database=SNOWFLAKE_DATABASE,
             schema=SNOWFLAKE_SCHEMA,  # dashboard reads MARTS, not RAW
             warehouse=SNOWFLAKE_WAREHOUSE,
@@ -33,6 +48,7 @@ if DB_BACKEND == "snowflake":
         ),
         pool_pre_ping=True,  # verify each connection is alive before use — prevents stale-connection hangs after spot replacement
         connect_args={
+            "private_key": _SNOWFLAKE_PRIVATE_KEY_DER,  # RSA key-pair auth — no password ever sent over the wire
             "login_timeout": 10,  # cap authentication handshake to 10 s
             "session_parameters": {
                 # Kill any query running longer than 60 s — prevents Gunicorn workers
@@ -65,39 +81,65 @@ _prewarm_event = threading.Event()
 
 # Tracks the outcome of the last query attempt per key — persists across TTL expiry
 # so the UI can show "error" vs "no data" vs "ok" rather than a single blank state
-_CACHE_STATUS: dict = {}  # {key: {"status": "ok"|"empty"|"error", "refreshed_at": float}}
+# Error rows also carry the raw driver errno + message so the UI and pod logs can show *why* it failed
+_CACHE_STATUS: dict = {}  # {key: {"status": str, "refreshed_at": float, "errno": int|None, "message": str|None}}
 
-def _set_cache_status(key: str, status: str) -> None:
-    """Record the last query outcome for a cache key."""
-    _CACHE_STATUS[key] = {"status": status, "refreshed_at": time.time()}
+# Cap on the raw Snowflake message we keep — long stack-trace blobs blow up chart annotations
+_SNOWFLAKE_MSG_MAX_LEN = 300
+
+def _set_cache_status(key: str, status) -> None:
+    """Record the last query outcome for a cache key.
+
+    Accepts either a plain string (for "ok"/"empty") or a dict from _classify_snowflake_error
+    (for failures — carries errno + message alongside the status).
+    """
+    if isinstance(status, dict):
+        entry = {"refreshed_at": time.time(), **status}
+    else:
+        entry = {"status": status, "refreshed_at": time.time(), "errno": None, "message": None}
+    _CACHE_STATUS[key] = entry
 
 def get_cache_freshness(key: str) -> dict:
-    """Return last-known query status and wall-clock refresh time for a cache key."""
-    return _CACHE_STATUS.get(key, {"status": "unknown", "refreshed_at": None})
+    """Return last-known query status and wall-clock refresh time for a cache key.
 
-def _classify_snowflake_error(exc: Exception) -> str:
-    """Inspect a Snowflake/SQLAlchemy exception and return a specific status string.
+    The returned dict always contains status + refreshed_at; errno + message are present
+    only on failure rows (otherwise None).
+    """
+    return _CACHE_STATUS.get(key, {"status": "unknown", "refreshed_at": None, "errno": None, "message": None})
+
+def _classify_snowflake_error(exc: Exception) -> dict:
+    """Inspect a Snowflake/SQLAlchemy exception and return status + raw driver detail.
 
     SQLAlchemy wraps the native connector error; e.orig exposes it with .errno and .msg.
+    Returning the errno + message alongside the status lets the UI and logs show the real
+    underlying reason (e.g. "Multi-factor authentication is required") instead of just a
+    canned headline.
     """
     orig  = getattr(exc, "orig", exc)  # unwrap SQLAlchemy wrapper to reach the connector error
     errno = getattr(orig, "errno", None)
-    msg   = str(exc).lower()
+    # Prefer the connector's .msg (clean) over str(exc) (often verbose stack-trace text)
+    raw_msg = getattr(orig, "msg", None) or str(orig) or str(exc)
+    message = raw_msg[:_SNOWFLAKE_MSG_MAX_LEN]  # truncate so it fits cleanly in a chart annotation
+    msg_lower = str(exc).lower()
     # "suspended" / "trial" appear in Snowflake's account-suspension response body;
     # no official errno is documented for this case — detected by message content.
     # See: https://docs.snowflake.com/en/user-guide/admin-trial-account
-    if "suspended" in msg or "trial" in msg or "expired" in msg:
-        return "account_suspended"
+    if "suspended" in msg_lower or "trial" in msg_lower or "expired" in msg_lower:
+        status = "account_suspended"
     # errno 390100 = "Incorrect username or password was specified"
     # Source: https://github.com/snowflakedb/snowflake-connector-python/issues/176
-    if errno == 390100 or "incorrect username or password" in msg:
-        return "bad_credentials"
+    elif errno == 390100 or "incorrect username or password" in msg_lower:
+        status = "bad_credentials"
     # errno 250001 = "Could not connect to Snowflake backend after 0 attempt(s)"
     # errno 250003 = "Failed to execute request" (SSL / proxy failures)
     # Source: https://github.com/snowflakedb/snowflake-connector-python/issues/1364
-    if errno in (250001, 250003) or "could not connect" in msg:
-        return "network_error"
-    return "error"
+    # Note: errno 250001 also fires for some auth-policy rejections (e.g. MFA mandate),
+    # which is why we now propagate the raw message — the headline alone can mislead.
+    elif errno in (250001, 250003) or "could not connect" in msg_lower:
+        status = "network_error"
+    else:
+        status = "error"
+    return {"status": status, "errno": errno, "message": message}
 
 def _cache_get(key: str):
     """Return cached value if present and not expired, else None."""
@@ -127,7 +169,11 @@ def _cached_query(key: str, ttl: int, columns: list, query_fn) -> pd.DataFrame:
         result = query_fn()  # query_fn raises on DB error — exception handling is centralized here
     except Exception as e:
         # Don't cache failures — let the next request retry after TTL
-        _set_cache_status(key, _classify_snowflake_error(e))
+        info = _classify_snowflake_error(e)
+        # Log the raw driver message so `kubectl logs` shows the real reason, not just the canned UI headline
+        logger.warning("Snowflake query '%s' failed: status=%s errno=%s msg=%s",
+                       key, info["status"], info["errno"], info["message"])
+        _set_cache_status(key, info)
         return pd.DataFrame(columns=columns)
     _cache_set(key, result, ttl)
     _set_cache_status(key, "empty" if result.empty else "ok")
@@ -175,7 +221,11 @@ def _load_ticker_data(ticker: str) -> pd.DataFrame:
     except Exception as e:
         # Snowflake may be briefly unavailable (warehouse resume, spot replacement) — return empty frame
         # Don't cache the failure: next request should retry, not stay cold for the full TTL
-        _set_cache_status(cache_key, _classify_snowflake_error(e))
+        info = _classify_snowflake_error(e)
+        # Log the raw driver message so `kubectl logs` shows the real reason, not just the canned UI headline
+        logger.warning("Snowflake query '%s' failed: status=%s errno=%s msg=%s",
+                       cache_key, info["status"], info["errno"], info["message"])
+        _set_cache_status(cache_key, info)
         return pd.DataFrame(columns=FINANCIALS_COLUMNS)
     _cache_set(cache_key, df, CACHE_TTL_FINANCIALS)
     _set_cache_status(cache_key, "empty" if df.empty else "ok")

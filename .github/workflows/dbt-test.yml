@@ -17,6 +17,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Write Snowflake private key
+        # profiles.yml reads SNOWFLAKE_PRIVATE_KEY_PATH at runtime; we materialize the GitHub secret to a file here.
+        run: |
+          mkdir -p "$RUNNER_TEMP/snowflake"
+          printf '%s' "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > "$RUNNER_TEMP/snowflake/rsa_key.p8"
+          chmod 600 "$RUNNER_TEMP/snowflake/rsa_key.p8"
+          echo "SNOWFLAKE_PRIVATE_KEY_PATH=$RUNNER_TEMP/snowflake/rsa_key.p8" >> "$GITHUB_ENV"
       - name: Install dbt-snowflake
         run: pip install dbt-snowflake==1.8.0
       - name: dbt deps
