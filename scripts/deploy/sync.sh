@@ -62,13 +62,12 @@ step_sync_manifests_secrets() {
         # Read Snowflake credentials from the already-applied snowflake-credentials secret
         SF_ACCOUNT=\$(kubectl get secret snowflake-credentials -n airflow-my-namespace -o jsonpath='{.data.SNOWFLAKE_ACCOUNT}' | base64 -d) &&
         SF_USER=\$(kubectl get secret snowflake-credentials -n airflow-my-namespace -o jsonpath='{.data.SNOWFLAKE_USER}' | base64 -d) &&
-        SF_PASS=\$(kubectl get secret snowflake-credentials -n airflow-my-namespace -o jsonpath='{.data.SNOWFLAKE_PASSWORD}' | base64 -d) &&
 
         # Build the Airflow connection in JSON format — SnowflakeHook 6.x reads 'account' from extra,
         # not from the URI host field. Using JSON ensures account is correctly set in extra.
-        # JSON-escape the password to handle special characters safely.
-        SF_PASS_ESC=\$(python3 -c \"import json, sys; print(json.dumps(sys.argv[1])[1:-1])\" \"\$SF_PASS\") &&
-        CONN_URI=\"{\\\"conn_type\\\": \\\"snowflake\\\", \\\"login\\\": \\\"\$SF_USER\\\", \\\"password\\\": \\\"\$SF_PASS_ESC\\\", \\\"extra\\\": {\\\"account\\\": \\\"\$SF_ACCOUNT\\\", \\\"database\\\": \\\"PIPELINE_DB\\\", \\\"schema\\\": \\\"RAW\\\", \\\"warehouse\\\": \\\"PIPELINE_WH\\\", \\\"role\\\": \\\"PIPELINE_ROLE\\\"}}\" &&
+        # 'private_key_file' tells the hook to authenticate with RSA key-pair auth — no password is sent over the wire.
+        # The path below is the in-pod mount point for the snowflake-rsa-key secret (see Step 2c2b).
+        CONN_URI=\"{\\\"conn_type\\\": \\\"snowflake\\\", \\\"login\\\": \\\"\$SF_USER\\\", \\\"extra\\\": {\\\"account\\\": \\\"\$SF_ACCOUNT\\\", \\\"private_key_file\\\": \\\"/secrets/snowflake/rsa_key.p8\\\", \\\"database\\\": \\\"PIPELINE_DB\\\", \\\"schema\\\": \\\"RAW\\\", \\\"warehouse\\\": \\\"PIPELINE_WH\\\", \\\"role\\\": \\\"PIPELINE_ROLE\\\"}}\" &&
 
         ROLE_B64=\$(printf 'PIPELINE_ROLE' | base64 -w0) &&
         CONN_B64=\$(printf '%s' \"\$CONN_URI\" | base64 -w0) &&
@@ -111,6 +110,21 @@ step_sync_manifests_secrets() {
         apply_k8s_secret airflow-my-namespace dbt-profiles "--from-file=profiles.yml=$EC2_HOME/profiles.yml"
     else
         echo "Note: profiles.yml not found locally — skipping (create it first if dbt is not yet set up)."
+    fi
+
+    echo "=== Step 2c2b: Syncing Snowflake RSA private-key secret to EC2 ==="
+    # The .p8 file holds the private key PIPELINE_USER uses for key-pair auth (replaces password).
+    # Path on the local Mac comes from SNOWFLAKE_PRIVATE_KEY_PATH in .env.deploy; same env var name
+    # is also set inside the pod (to /secrets/snowflake/rsa_key.p8) by snowflake-secret.yaml.
+    # The file is gitignored — it lives only on the Mac and on EC2.
+    # Secret is applied to BOTH namespaces because the dashboard pod runs in 'default' and Airflow runs in airflow-my-namespace.
+    if [ -n "${SNOWFLAKE_PRIVATE_KEY_PATH:-}" ] && [ -f "$SNOWFLAKE_PRIVATE_KEY_PATH" ]; then
+        scp "$SNOWFLAKE_PRIVATE_KEY_PATH" "$EC2_HOST:$EC2_HOME/pipeline_user_rsa.p8"
+        # Both pods mount the secret at /secrets/snowflake/rsa_key.p8 (see helm values.yaml + pod-flask.yaml)
+        apply_k8s_secret airflow-my-namespace snowflake-rsa-key "--from-file=rsa_key.p8=$EC2_HOME/pipeline_user_rsa.p8"
+        apply_k8s_secret default              snowflake-rsa-key "--from-file=rsa_key.p8=$EC2_HOME/pipeline_user_rsa.p8"
+    else
+        echo "Note: SNOWFLAKE_PRIVATE_KEY_PATH not set or file missing — skipping (RSA key-pair auth not configured yet)."
     fi
 
     echo "=== Step 2c3: Deleting stale Airflow migration Job ==="

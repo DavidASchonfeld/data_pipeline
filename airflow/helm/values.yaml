@@ -122,13 +122,19 @@ workers:
    - name: dbt-profiles           # mounts profiles.yml from K8s secret so BashOperator can find it at /dbt/profiles.yml
      secret:
        secretName: dbt-profiles   # create with: kubectl create secret generic dbt-profiles --from-file=profiles.yml=./profiles.yml -n airflow
+   - name: snowflake-rsa-key      # mounts the .p8 private key file used for Snowflake RSA key-pair auth
+     secret:
+       secretName: snowflake-rsa-key
   extraVolumeMounts:
    - name: out-volume
      mountPath: /opt/airflow/out
    - name: dbt-profiles
      mountPath: /dbt              # DBT_PROFILES_DIR=/dbt in BashOperator commands points dbt here
      readOnly: true
-     
+   - name: snowflake-rsa-key
+     mountPath: /secrets/snowflake   # rsa_key.p8 lands at /secrets/snowflake/rsa_key.p8 — matches SNOWFLAKE_PRIVATE_KEY_PATH
+     readOnly: true
+
 scheduler:
   # Same as in workers section
   # Link the folder specified in my pvc-outputtextwriter
@@ -141,11 +147,17 @@ scheduler:
    - name: dbt-profiles           # LocalExecutor runs tasks in the scheduler pod — must mount here too
      secret:
        secretName: dbt-profiles
+   - name: snowflake-rsa-key      # LocalExecutor runs tasks in scheduler — needs the key file mounted here too
+     secret:
+       secretName: snowflake-rsa-key
   extraVolumeMounts:
    - name: out-volume
      mountPath: /opt/airflow/out
    - name: dbt-profiles
      mountPath: /dbt              # matches DBT_PROFILES_DIR=/dbt in BashOperator bash_command
+     readOnly: true
+   - name: snowflake-rsa-key
+     mountPath: /secrets/snowflake   # rsa_key.p8 lands at /secrets/snowflake/rsa_key.p8 — matches SNOWFLAKE_PRIVATE_KEY_PATH
      readOnly: true
   # Airflow 3.x loads full provider stack per jobs-check call; needs up to 45s on t3.large.
   # timeoutSeconds raised 45→60: probes were hitting the 45s ceiling under load, causing CrashLoopBackOff.

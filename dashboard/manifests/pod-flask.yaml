@@ -25,6 +25,11 @@ spec:
     env:
     - name: DB_BACKEND
       value: "snowflake"  # activates Snowflake engine in db.py; set to "mariadb" to revert
+    # Mount the Snowflake RSA private key file so db.py can authenticate via key-pair (no password)
+    volumeMounts:
+    - name: snowflake-rsa-key
+      mountPath: /secrets/snowflake   # rsa_key.p8 lands at /secrets/snowflake/rsa_key.p8 — matches SNOWFLAKE_PRIVATE_KEY_PATH
+      readOnly: true
     # Resource limits required on t3.large (8 GB RAM) to prevent one runaway pod from OOMKilling (Out Of Memory Killing) others.
     # requests = memory/CPU K8s guarantees and uses for scheduling; limits = hard ceiling before OOMKill (pod killed by OS for exceeding RAM).
     # 256Mi request: Flask/Dash idle baseline is ~200 MB (see EC2_SIZING.md); 512Mi limit covers peak load.
@@ -58,3 +63,8 @@ spec:
       periodSeconds: 5         # Check every 5 seconds (frequent, catches issues quickly)
       timeoutSeconds: 3        # Fail probe if no response within 3 seconds
       failureThreshold: 2      # Remove from service after 2 failures (10s unresponsive = offline)
+  # Pod-level volumes — referenced by the volumeMounts on the container above
+  volumes:
+  - name: snowflake-rsa-key
+    secret:
+      secretName: snowflake-rsa-key   # created by deploy.sh Step 2c2b in the 'default' namespace

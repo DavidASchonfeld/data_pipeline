@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-09
 **Severity:** High (full dashboard outage; every Snowflake-touching component down — dashboard, Airflow DAGs, dbt, anomaly detector)
-**Status:** Resolved
+**Status:** Resolved — long-term fix (RSA key-pair auth) shipped same day in [2026-05-09-pipeline-user-rsa-keypair-migration.md](2026-05-09-pipeline-user-rsa-keypair-migration.md)
 
 ---
 

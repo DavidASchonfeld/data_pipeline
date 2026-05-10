@@ -54,16 +54,33 @@ from sklearn.ensemble import IsolationForest     # ML model for unsupervised ano
 import mlflow                                    # experiment tracking + model artifact logging
 import mlflow.sklearn
 from mlflow.models import infer_signature          # builds explicit input+output schema to silence int-column warning
+from cryptography.hazmat.primitives import serialization   # used to load the RSA private key file at login time
+from cryptography.hazmat.backends import default_backend
 
 
 # ── Snowflake connection ─────────────────────────────────────────────────────
+
+def _load_private_key_der() -> bytes:
+    """Read the RSA private key file and return it as DER bytes — the format snowflake-connector wants."""
+    # The path is set in the K8s secret; the file itself is mounted read-only into the pod
+    key_path = os.environ["SNOWFLAKE_PRIVATE_KEY_PATH"]
+    with open(key_path, "rb") as f:
+        # load_pem_private_key parses the PEM-encoded text on disk into a private key object
+        p_key = serialization.load_pem_private_key(f.read(), password=None, backend=default_backend())
+    # Convert that object to DER bytes — the binary form Snowflake expects on the wire
+    return p_key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
 
 def get_snowflake_conn():
     """Open a Snowflake connection using env vars — avoids Airflow hook dependency."""
     return snowflake.connector.connect(
         account=os.environ["SNOWFLAKE_ACCOUNT"],
         user=os.environ["SNOWFLAKE_USER"],
-        password=os.environ["SNOWFLAKE_PASSWORD"],
+        private_key=_load_private_key_der(),         # RSA key-pair auth — replaces password (no MFA prompt for service account)
         database=os.environ["SNOWFLAKE_DATABASE"],
         warehouse=os.environ["SNOWFLAKE_WAREHOUSE"],
         role=os.environ.get("SNOWFLAKE_ROLE", "PIPELINE_ROLE"),  # explicit role — prevents default-role from silently locking created objects
