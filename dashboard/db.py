@@ -130,11 +130,14 @@ def _classify_snowflake_error(exc: Exception) -> dict:
     # Source: https://github.com/snowflakedb/snowflake-connector-python/issues/176
     elif errno == 390100 or "incorrect username or password" in msg_lower:
         status = "bad_credentials"
+    # errno 250001 is overloaded: it fires for real network failures AND for auth-policy
+    # rejections ("Authentication attempt rejected by the current authentication policy").
+    # Check the message text first so policy rejections get a specific headline, not "network error".
+    elif "authentication policy" in msg_lower:
+        status = "auth_policy_rejected"
     # errno 250001 = "Could not connect to Snowflake backend after 0 attempt(s)"
     # errno 250003 = "Failed to execute request" (SSL / proxy failures)
     # Source: https://github.com/snowflakedb/snowflake-connector-python/issues/1364
-    # Note: errno 250001 also fires for some auth-policy rejections (e.g. MFA mandate),
-    # which is why we now propagate the raw message — the headline alone can mislead.
     elif errno in (250001, 250003) or "could not connect" in msg_lower:
         status = "network_error"
     else:

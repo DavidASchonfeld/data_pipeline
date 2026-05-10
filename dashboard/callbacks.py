@@ -68,10 +68,11 @@ def _freshness_caption(key: str, interval_text: str) -> str:
 
 
 _SNOWFLAKE_ERROR_MESSAGES = {
-    "account_suspended": "Snowflake account suspended — check billing or trial status.",
-    "bad_credentials":   "Snowflake credentials rejected — check the K8s secret.",
-    "network_error":     "Can't reach Snowflake servers — check network connectivity.",
-    "error":             "Couldn't reach Snowflake — will retry automatically.",
+    "account_suspended":    "Snowflake account suspended — check billing or trial status.",
+    "bad_credentials":      "Snowflake credentials rejected — check the K8s secret.",
+    "network_error":        "Can't reach Snowflake servers — check network connectivity.",
+    "auth_policy_rejected": "Snowflake auth policy rejected the login — check the policy attached to PIPELINE_USER.",
+    "error":                "Couldn't reach Snowflake — will retry automatically.",
 }
 
 def _format_error_detail(meta: dict) -> str:
