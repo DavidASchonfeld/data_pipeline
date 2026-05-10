@@ -10,7 +10,6 @@ jobs:
     env:
       SNOWFLAKE_ACCOUNT:   ${{ secrets.SNOWFLAKE_ACCOUNT }}
       SNOWFLAKE_USER:      ${{ secrets.SNOWFLAKE_USER }}
-      SNOWFLAKE_PASSWORD:  ${{ secrets.SNOWFLAKE_PASSWORD }}
       SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
     steps:
       - uses: actions/checkout@v4
