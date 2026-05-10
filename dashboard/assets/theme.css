@@ -157,6 +157,15 @@ label {
     color: #ffffff;  /* pure white — high contrast on the blue fill            */
 }
 
+/* ── Freshness caption — shown under Reload view buttons ─────────────────────
+   Communicates auto-refresh cadence and last Snowflake fetch time.            */
+.dash-freshness {
+    color: var(--text-secondary);
+    font-size: 11px;
+    margin-top: -10px;  /* tucks up under the button margin                    */
+    margin-bottom: 16px;
+}
+
 /* ── Data Tables ─────────────────────────────────────────────────────────────
    Base class applied to html.Table in all four table-builder functions.       */
 .dash-table {

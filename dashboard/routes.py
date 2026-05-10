@@ -1,9 +1,10 @@
 import logging
+import time
 import pandas as pd
 from flask import Flask
 from sqlalchemy import text
 
-from db import DB_ENGINE, _prewarm_event  # _prewarm_event signals when cache is fully warm
+from db import DB_ENGINE, _prewarm_event, _QUERY_CACHE, _CACHE_STATUS  # cache state for /health/cache
 from security import limiter, require_basic_auth  # rate limiting decorators and basic-auth helper
 from spot import check_spot_interruption  # spot termination polling — safe no-op on non-EC2
 
@@ -29,6 +30,37 @@ def register_routes(app: Flask) -> None:
         # Health-check endpoint — useful for Kubernetes liveness probes
         # No DB call needed; fast, reliable signal that pod process is running
         return {"status": "ok"}, 200
+
+    @app.route('/health/cache')
+    @limiter.exempt  # internal debug endpoint — use after deploy to verify prewarm populated the cache
+    @require_basic_auth  # requires the same credentials as /validation — blocks unauthenticated access
+    def health_cache():
+        # Shows row counts, TTL expiry, and last-query status for every cached key
+        # Useful for diagnosing "no data yet" after a restart: zero row_count means the query returned empty
+        now = time.monotonic()
+        keys = {}
+
+        # Keys that have data in the TTL cache
+        for key, (df, expires_at) in list(_QUERY_CACHE.items()):
+            meta = _CACHE_STATUS.get(key, {})
+            keys[key] = {
+                "row_count": len(df),
+                "expires_in_seconds": max(0, int(expires_at - now)),
+                "status": meta.get("status", "unknown"),
+                "last_refreshed_epoch": meta.get("refreshed_at"),
+            }
+
+        # Keys that errored and have no cache entry
+        for key, meta in list(_CACHE_STATUS.items()):
+            if key not in keys:
+                keys[key] = {
+                    "row_count": 0,
+                    "expires_in_seconds": 0,
+                    "status": meta.get("status", "unknown"),
+                    "last_refreshed_epoch": meta.get("refreshed_at"),
+                }
+
+        return {"prewarm_complete": _prewarm_event.is_set(), "keys": keys}, 200
 
     @app.route('/health/ready')
     @limiter.exempt  # polled during startup and spot recovery — must never be rate-limited

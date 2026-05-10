@@ -92,6 +92,7 @@ For the failure mode catalog (what *can* go wrong, not what *did* go wrong), see
 | 2026-04-08 | Non-deterministic dedup in fct_company_financials | [dedup](snowflake/2026-04-08-fct-financials-nondeterministic-dedup.md) |
 | 2026-04-07 | Weather Snowflake write failure (timestamp mismatch) | [weather-write](snowflake/2026-04-07-weather-snowflake-write-failure.md) |
 | 2026-04-10 | FCT_ANOMALIES insufficient privileges | [privileges](snowflake/2026-04-10-snowflake-fct-anomalies-insufficient-privileges.md) |
+| 2026-05-09 | Snowflake's MFA mandate blocked PIPELINE_USER (password+MFA can't run unattended); fixed via service-account auth policy | [mfa-blocking-pipeline](snowflake/2026-05-09-snowflake-mfa-blocking-pipeline.md) |
 
 ### Kafka
 

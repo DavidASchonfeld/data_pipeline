@@ -63,6 +63,42 @@ _QUERY_CACHE: dict = {}       # {key: (dataframe, expires_at)} — TTLs imported
 # Set by prewarm_cache() when all startup queries finish; /health/ready blocks on this
 _prewarm_event = threading.Event()
 
+# Tracks the outcome of the last query attempt per key — persists across TTL expiry
+# so the UI can show "error" vs "no data" vs "ok" rather than a single blank state
+_CACHE_STATUS: dict = {}  # {key: {"status": "ok"|"empty"|"error", "refreshed_at": float}}
+
+def _set_cache_status(key: str, status: str) -> None:
+    """Record the last query outcome for a cache key."""
+    _CACHE_STATUS[key] = {"status": status, "refreshed_at": time.time()}
+
+def get_cache_freshness(key: str) -> dict:
+    """Return last-known query status and wall-clock refresh time for a cache key."""
+    return _CACHE_STATUS.get(key, {"status": "unknown", "refreshed_at": None})
+
+def _classify_snowflake_error(exc: Exception) -> str:
+    """Inspect a Snowflake/SQLAlchemy exception and return a specific status string.
+
+    SQLAlchemy wraps the native connector error; e.orig exposes it with .errno and .msg.
+    """
+    orig  = getattr(exc, "orig", exc)  # unwrap SQLAlchemy wrapper to reach the connector error
+    errno = getattr(orig, "errno", None)
+    msg   = str(exc).lower()
+    # "suspended" / "trial" appear in Snowflake's account-suspension response body;
+    # no official errno is documented for this case — detected by message content.
+    # See: https://docs.snowflake.com/en/user-guide/admin-trial-account
+    if "suspended" in msg or "trial" in msg or "expired" in msg:
+        return "account_suspended"
+    # errno 390100 = "Incorrect username or password was specified"
+    # Source: https://github.com/snowflakedb/snowflake-connector-python/issues/176
+    if errno == 390100 or "incorrect username or password" in msg:
+        return "bad_credentials"
+    # errno 250001 = "Could not connect to Snowflake backend after 0 attempt(s)"
+    # errno 250003 = "Failed to execute request" (SSL / proxy failures)
+    # Source: https://github.com/snowflakedb/snowflake-connector-python/issues/1364
+    if errno in (250001, 250003) or "could not connect" in msg:
+        return "network_error"
+    return "error"
+
 def _cache_get(key: str):
     """Return cached value if present and not expired, else None."""
     entry = _QUERY_CACHE.get(key)
@@ -87,8 +123,14 @@ def _cached_query(key: str, ttl: int, columns: list, query_fn) -> pd.DataFrame:
     cached = _cache_get(key)
     if cached is not None:
         return cached  # cache hit — skip the Snowflake round-trip
-    result = query_fn()  # execute the query now that cache missed
+    try:
+        result = query_fn()  # query_fn raises on DB error — exception handling is centralized here
+    except Exception as e:
+        # Don't cache failures — let the next request retry after TTL
+        _set_cache_status(key, _classify_snowflake_error(e))
+        return pd.DataFrame(columns=columns)
     _cache_set(key, result, ttl)
+    _set_cache_status(key, "empty" if result.empty else "ok")
     return result
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -130,11 +172,13 @@ def _load_ticker_data(ticker: str) -> pd.DataFrame:
             df = pd.read_sql(query, conn, params={"ticker": ticker})
         # Cast period_end to datetime so Plotly renders the x-axis correctly
         df["period_end"] = pd.to_datetime(df["period_end"])
-    except Exception:
+    except Exception as e:
         # Snowflake may be briefly unavailable (warehouse resume, spot replacement) — return empty frame
         # Don't cache the failure: next request should retry, not stay cold for the full TTL
+        _set_cache_status(cache_key, _classify_snowflake_error(e))
         return pd.DataFrame(columns=FINANCIALS_COLUMNS)
     _cache_set(cache_key, df, CACHE_TTL_FINANCIALS)
+    _set_cache_status(cache_key, "empty" if df.empty else "ok")
     return df
 
 
@@ -203,12 +247,8 @@ def load_weather_data() -> pd.DataFrame:
               AND city_name != 'Unknown'
             ORDER BY city_name, observation_time ASC
         """)
-        try:
-            with DB_ENGINE.connect() as conn:
-                return pd.read_sql(query, conn)  # execute and load all rows into a DataFrame
-        except Exception:
-            # Table may not have data yet or Snowflake may be briefly unavailable — return empty frame
-            return pd.DataFrame(columns=WEATHER_COLUMNS)
+        with DB_ENGINE.connect() as conn:
+            return pd.read_sql(query, conn)  # execute and load all rows into a DataFrame; exceptions bubble to _cached_query
 
     return _cached_query("weather", CACHE_TTL_WEATHER, WEATHER_COLUMNS, _query)  # 15-min cache — matches Open-Meteo refresh cadence
 # ─────────────────────────────────────────────────────────────────────────────
@@ -235,12 +275,8 @@ def load_anomalies() -> pd.DataFrame:
             FROM {_TBL_ANOMALIES}
             ORDER BY is_anomaly DESC, anomaly_score ASC
         """)
-        try:
-            with DB_ENGINE.connect() as conn:
-                return pd.read_sql(query, conn)  # execute query and load all rows into a DataFrame
-        except Exception:
-            # Table may not exist yet if the DAG hasn't run — return empty frame so the dashboard doesn't crash
-            return pd.DataFrame(columns=ANOMALY_COLUMNS)
+        with DB_ENGINE.connect() as conn:
+            return pd.read_sql(query, conn)  # execute query and load all rows; exceptions bubble to _cached_query
 
     return _cached_query("anomalies", CACHE_TTL_FINANCIALS, ANOMALY_COLUMNS, _query)  # 1-hour cache — matches financials TTL
 # ─────────────────────────────────────────────────────────────────────────────
@@ -268,12 +304,8 @@ def load_pipeline_health() -> pd.DataFrame:
             SELECT 'Anomalies', COUNT(*), MAX(detected_at)
             FROM {_TBL_ANOMALIES}
         """)
-        try:
-            with DB_ENGINE.connect() as conn:
-                return pd.read_sql(query, conn)  # execute and load all three rows into a DataFrame
-        except Exception:
-            # Table may not exist yet or Snowflake may be briefly unavailable — return empty frame
-            return pd.DataFrame(columns=HEALTH_COLUMNS)
+        with DB_ENGINE.connect() as conn:
+            return pd.read_sql(query, conn)  # execute and load all three rows; exceptions bubble to _cached_query
 
     return _cached_query("pipeline_health", CACHE_TTL_FINANCIALS, HEALTH_COLUMNS, _query)  # 1-hour cache — matches financials TTL
 
@@ -293,11 +325,8 @@ def load_stock_health() -> pd.DataFrame:
             SELECT 'Anomalies', COUNT(*), MAX(detected_at)
             FROM {_TBL_ANOMALIES}
         """)
-        try:
-            with DB_ENGINE.connect() as conn:
-                return pd.read_sql(query, conn)
-        except Exception:
-            return pd.DataFrame(columns=HEALTH_COLUMNS)
+        with DB_ENGINE.connect() as conn:
+            return pd.read_sql(query, conn)  # exceptions bubble to _cached_query
 
     return _cached_query("stock_health", CACHE_TTL_FINANCIALS, HEALTH_COLUMNS, _query)  # 1-hour cache — matches financials TTL
 
@@ -313,11 +342,8 @@ def load_weather_health() -> pd.DataFrame:
             SELECT 'Weather' AS table_name, COUNT(*) AS row_count, MAX(imported_at) AS latest_ts
             FROM {_TBL_WEATHER}
         """)
-        try:
-            with DB_ENGINE.connect() as conn:
-                return pd.read_sql(query, conn)
-        except Exception:
-            return pd.DataFrame(columns=HEALTH_COLUMNS)
+        with DB_ENGINE.connect() as conn:
+            return pd.read_sql(query, conn)  # exceptions bubble to _cached_query
 
     return _cached_query("weather_health", CACHE_TTL_WEATHER, HEALTH_COLUMNS, _query)  # 15-min cache — matches weather TTL
 # ─────────────────────────────────────────────────────────────────────────────

@@ -161,7 +161,11 @@ if declare -f cancel_in_progress_bake > /dev/null 2>&1 && [ -f "${_AMI_LOCKFILE:
     _bake_lock_age=$(( $(date +%s) - $(stat -f %m "${_AMI_LOCKFILE:-/tmp/ami-bake.lock}" 2>/dev/null || echo 0) ))
     if [ "$_bake_lock_age" -lt 3600 ]; then
         echo "=== AMI bake in progress — cancelling before deploy to prevent Docker/K3s conflicts ==="
-        cancel_in_progress_bake
+        # || block: if cancel fails for any reason, clear the lock and continue — never let a cancel failure kill the deploy
+        cancel_in_progress_bake || {
+            echo "WARNING: cancel_in_progress_bake returned non-zero; clearing lock and continuing"
+            rm -f "${_AMI_LOCKFILE:-/tmp/ami-bake.lock}"
+        }
     else
         rm -f "${_AMI_LOCKFILE:-/tmp/ami-bake.lock}"  # stale lock from a crashed bake
     fi
@@ -318,7 +322,11 @@ if [ "$DAGS_ONLY" = false ] && declare -f step_bake_ami > /dev/null 2>&1; then
         if [ "$_lock_age" -lt 3600 ]; then
             # Previous bake is still active — cancel it so the latest deploy always wins
             echo "=== Cancelling previous AMI bake (newer deploy takes priority) ==="
-            cancel_in_progress_bake
+            # || block: if cancel fails for any reason, clear the lock and continue — never let a cancel failure kill the deploy
+            cancel_in_progress_bake || {
+                echo "WARNING: cancel_in_progress_bake returned non-zero; clearing lock and continuing"
+                rm -f "$_AMI_LOCKFILE"
+            }
         else
             rm -f "$_AMI_LOCKFILE"  # stale lock from a crashed bake — clean it up
         fi

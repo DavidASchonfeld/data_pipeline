@@ -51,6 +51,10 @@ step_deploy_mlflow() {
     # Import the pulled image into K3S — shared helper in common.sh handles save+import+verify
     import_image_to_k3s "$MLFLOW_IMAGE" "mlflow"
 
+    # Throw away Docker's copy of the MLflow image now that K3S has its own — recovers ~1 GB.
+    # Mirrors the cleanup done for airflow-dbt in airflow_image.sh after its K3S import.
+    ssh "$EC2_HOST" "echo 'Pruning Docker image layer cache after MLflow K3S import...' && docker image prune -af --filter 'until=1h' 2>&1 | tail -5" || true
+
     echo "=== Step 2b6: Deploying MLflow to K3s (safe to run multiple times) ==="
     # Re-apply kubectl permissions before any kubectl call — K3s resets k3s.yaml to root-only
     # if it restarts during the parallel image import above, causing "permission denied" failures
