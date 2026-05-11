@@ -76,14 +76,25 @@ def handler(event, context):
             )
             return
         # EIP is not attached to anyone (edge case: old spot instance died before the 2-min defer window expired).
-        # Without cleanup, the ASG (still at desired=2) launches a second instance which incorrectly defers the EIP,
-        # causing spot_restored to move it away from this instance and orphan it when the second is terminated.
-        # Fix: clear SSM flags + reset ASG now so no second instance launches and enters the defer path.
+        # If a previous launch already deferred and stored its ID in SSM, attach the EIP to THAT instance
+        # so the correct survivor gets the static IP. Falling through to self would give the EIP to this
+        # second instance, which ASG then terminates when it scales back to desired=1 — orphaning the EIP.
+        ssm_new_id_name = os.environ.get("SSM_NEW_INSTANCE_ID", "/pipeline/spot-new-instance-id")
+        eip_target_id = instance_id  # default: attach to self if no prior deferral
         try:
-            ssm_new_id_name = os.environ.get("SSM_NEW_INSTANCE_ID", "/pipeline/spot-new-instance-id")
+            stored = ssm.get_parameter(Name=ssm_new_id_name)["Parameter"]["Value"]
+            if stored not in ("none", instance_id):
+                # A previous launch already deferred — the EIP belongs on that instance, not self.
+                eip_target_id = stored
+                print(f"Edge case: EIP unattached and {stored} already deferred — attaching EIP there, not to self ({instance_id})")
+            else:
+                print("Cleared spot-replacing SSM flags — old instance already gone before defer window")
+        except Exception as e:
+            print(f"Warning: could not read spot-new-instance-id from SSM ({type(e).__name__}) — attaching EIP to self")
+
+        try:
             ssm.put_parameter(Name=ssm_flag_name, Value="false", Overwrite=True)
             ssm.put_parameter(Name=ssm_new_id_name, Value="none", Overwrite=True)
-            print("Cleared spot-replacing SSM flags — old instance already gone before defer window")
         except Exception as e:
             print(f"Warning: could not clear SSM flags in edge case: {e}")
 
@@ -96,12 +107,15 @@ def handler(event, context):
         except Exception as e:
             print(f"Warning: could not reset ASG in edge case: {e}")
 
-    print(f"Associating EIP to instance {instance_id}")
+    else:
+        eip_target_id = instance_id
 
-    # bind the static EIP to the new instance (AllowReassociation handles the case
-    # where the EIP is still associated with a terminating instance)
+    print(f"Associating EIP to instance {eip_target_id}")
+
+    # bind the static EIP to the correct instance; AllowReassociation handles the case
+    # where the EIP is still associated with a terminating instance
     ec2.associate_address(
-        InstanceId=instance_id,
+        InstanceId=eip_target_id,
         AllocationId=os.environ["EIP_ALLOCATION_ID"],
         AllowReassociation=True,
     )

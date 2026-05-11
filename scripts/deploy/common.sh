@@ -404,7 +404,7 @@ _wait_ssh_ready() {
     local _max="${1:-36}"  # attempts × 10s; default 6 min
     local _mins=$(( _max * 10 / 60 ))
     for _attempt in $(seq 1 "$_max"); do
-        if ssh -o StrictHostKeyChecking=accept-new "$EC2_HOST" true 2>/dev/null; then
+        if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "$EC2_HOST" true 2>/dev/null; then
             return 0
         fi
         echo "SSH not ready (attempt $_attempt/$_max), retrying in 10s..."
@@ -456,7 +456,7 @@ _wait_k3s_ready() {
     echo "=== Waiting for K3s node to be Ready (up to 5 minutes) ==="
     # 30 attempts × 10s = 5 min — matches the wait in bootstrap.sh and user-data.sh.tpl
     for _attempt in $(seq 1 30); do
-        if ssh "$EC2_HOST" "kubectl get nodes 2>/dev/null | grep -q ' Ready'"; then
+        if ssh -o ConnectTimeout=5 "$EC2_HOST" "kubectl get nodes 2>/dev/null | grep -q ' Ready'"; then
             echo "✓ K3s node is Ready (attempt $_attempt)"
             ssh "$EC2_HOST" "kubectl get nodes"  # print node status so the log shows it
             return 0
@@ -477,7 +477,7 @@ _wait_k3s_api_ready() {
     echo "=== Waiting for K3s API server to be ready (up to 6 minutes) ==="
     # 36 attempts × 10s = 6 min; uses kubectl's own kubeconfig so no curl/TLS issues
     for _attempt in $(seq 1 36); do
-        if ssh "$EC2_HOST" "kubectl get --raw /healthz 2>/dev/null | grep -q 'ok'"; then
+        if ssh -o ConnectTimeout=5 "$EC2_HOST" "kubectl get --raw /healthz 2>/dev/null | grep -q 'ok'"; then
             echo "✓ K3s API server ready (attempt $_attempt)"
             return 0
         fi

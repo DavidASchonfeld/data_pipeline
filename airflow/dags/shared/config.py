@@ -50,6 +50,13 @@ WEATHER_CITIES = {
     "Austin":       (30.2672, -97.7431),
 }
 
+# ── GenAI feature flag ────────────────────────────────────────────────────────
+# Controls whether the AI layer (extraction, summaries, chat) is active.
+# Local dev:   set GENAI_ENABLED=true in a .env file at the repo root (gitignored)
+# Production:  set GENAI_ENABLED=true in .env.deploy before running deploy.sh
+# When false (the default), no AI-related code runs and the pipeline behaves as before.
+GENAI_ENABLED: bool = os.environ.get("GENAI_ENABLED", "false").lower() == "true"
+
 # ── Anomaly detection ─────────────────────────────────────────────────────────
 # IsolationForest hyperparameters — tune via env vars without editing DAG files or triggering re-parse
 ANOMALY_CONTAMINATION = float(os.getenv("ANOMALY_CONTAMINATION", "0.05"))  # expected fraction of anomalies
