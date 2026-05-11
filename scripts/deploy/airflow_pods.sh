@@ -941,6 +941,21 @@ step_setup_ml_venv() {
 
             echo 'ml-venv ready at /opt/ml-venv'
         fi
+
+        # genai: install the Anthropic SDK only when the AI layer is switched on
+        # This runs whether or not the base venv was just rebuilt, so the package is always present when needed
+        if [ ${GENAI_ENABLED:-false} = true ]; then
+            echo 'Checking GenAI dependencies in ml-venv...' &&
+            if kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                /opt/ml-venv/bin/pip show anthropic > /dev/null 2>&1; then
+                echo 'anthropic already installed — skipping'
+            else
+                echo 'Installing anthropic into ml-venv...' &&
+                kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                    /opt/ml-venv/bin/pip install --no-cache-dir \"anthropic>=0.50.0\" &&
+                echo 'anthropic installed.'
+            fi
+        fi
     " || {
         echo ""
         echo "WARNING: ml-venv setup failed. anomaly_detector.py will not run until this is resolved."

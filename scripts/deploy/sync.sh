@@ -127,6 +127,26 @@ step_sync_manifests_secrets() {
         echo "Note: SNOWFLAKE_PRIVATE_KEY_PATH not set or file missing — skipping (RSA key-pair auth not configured yet)."
     fi
 
+    # genai: apply the AI-layer credentials secret when the feature is enabled
+    if [ "${GENAI_ENABLED:-false}" = "true" ]; then
+        echo "=== Step 2c2c: Applying GenAI credentials secret ==="
+        # Sync the secret file to EC2 first — it lives only on the Mac and the server, never in git
+        if [ -f "$PROJECT_ROOT/infra/genai/secrets/genai-secrets.yaml" ]; then
+            # ensure the destination directory exists on EC2 before rsync runs
+            ssh "$EC2_HOST" "mkdir -p $EC2_HOME/infra/genai/secrets"
+            rsync $RSYNC_FLAGS "$PROJECT_ROOT/infra/genai/secrets/genai-secrets.yaml" \
+                "$EC2_HOST:$EC2_HOME/infra/genai/secrets/genai-secrets.yaml"
+            # apply to airflow-my-namespace so the scheduler pod can read the API key
+            ssh "$EC2_HOST" "
+                kubectl apply -f $EC2_HOME/infra/genai/secrets/genai-secrets.yaml -n airflow-my-namespace &&
+                echo 'GenAI credentials secret applied to airflow-my-namespace.'
+            "
+        else
+            echo "Note: infra/genai/secrets/genai-secrets.yaml not found — skipping."
+            echo "      Create it from the template at infra/genai/secrets/genai-secrets.yaml.template."
+        fi
+    fi
+
     echo "=== Step 2c3: Deleting stale Airflow migration Job ==="
     # This Job was created before Helm was managing it, so it's missing the labels Helm expects to see.
     # With the old setup (useHelmHooks:true), Helm created this Job automatically. Now that we've switched
