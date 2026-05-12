@@ -11,21 +11,24 @@ Check the `GENAI_ENABLED` environment variable in `.env.deploy`. If it is `false
 ## How to turn it on
 
 1. Get an API key from your chosen AI provider (default: Anthropic — sign up at `console.anthropic.com`).
-2. Set a monthly spend cap in the provider's console (recommended: $10).
-3. Add the following to `.env.deploy`:
+2. **API key permissions**: choose **Restricted** and enable only the single permission the pipeline needs for inference calls. Avoid "All" — if the key is ever leaked, restricting it limits the blast radius to inference credits only, not account or billing access.
+   - **OpenAI**: `Model capabilities` → `Chat completions (/v1/chat/completions)` → **Write**. Every other sub-permission (Responses, Embeddings, Images, Assistants, Fine-tuning, Files, etc.) stays **None**.
+   - **Anthropic**: enable only the messages (inference) scope.
+3. Set a monthly spend cap in the provider's console (recommended: $10).
+4. Add the following to `.env.deploy`:
    ```
    GENAI_ENABLED="true"
    LLM_PROVIDER="anthropic"
    LLM_MODEL="claude-sonnet-4-5"
    LLM_API_KEY="sk-ant-..."
    ```
-4. Create the real K8s secret file from the template:
+5. Create the real K8s secret file from the template:
    ```bash
    cp infra/genai/secrets/genai-secrets.yaml.template infra/genai/secrets/genai-secrets.yaml
    # base64-encode each value and paste it in
    echo -n "sk-ant-..." | base64
    ```
-5. Run `./scripts/deploy.sh`.
+6. Run `./scripts/deploy.sh`.
 
 ---
 
@@ -47,13 +50,27 @@ Set `GENAI_ENABLED="false"` in `.env.deploy` and run `./scripts/deploy.sh`. No A
 
 ## How to swap the AI provider
 
-1. Set `LLM_PROVIDER="openai"` (or `"ollama"`) in `.env.deploy`.
-2. Create `genai/llm/openai_provider.py` (copy `anthropic_provider.py` as a starting point and adapt it).
-3. Add one branch to `genai/llm/_factory.py`.
-4. Update `LLM_API_KEY` to the new provider's key.
-5. Redeploy.
+### Supported providers
+
+| `LLM_PROVIDER` | `LLM_MODEL` example | Notes |
+|---|---|---|
+| `anthropic` | `claude-sonnet-4-5` | Default |
+| `openai` | `gpt-4o-mini` | Implemented — use as a drop-in when Anthropic is unavailable |
+
+### Steps
+
+1. Set `LLM_PROVIDER` and `LLM_MODEL` in `.env.deploy`.
+2. Update `LLM_API_KEY` to the new provider's key (same rule applies: Restricted, inference-only permission — see step 2 of "How to turn it on" for provider-specific details).
+3. Redeploy.
 
 No other code changes are needed — all callers go through `get_llm_provider()`.
+
+### Adding a new provider
+
+1. Create `genai/llm/<name>_provider.py` implementing `LLMProvider` (use `anthropic_provider.py` as a template).
+2. Add one branch to `genai/llm/_factory.py`.
+3. Add the name to `_SUPPORTED` in `_factory.py`.
+4. Follow the steps above.
 
 ---
 
@@ -66,6 +83,7 @@ genai/
 │   ├── base.py          # the interface every provider must implement
 │   ├── _factory.py      # returns the right provider based on LLM_PROVIDER
 │   ├── anthropic_provider.py
+│   ├── openai_provider.py
 │   └── __tests__/       # offline and live tests for the provider
 ├── __tests__/           # tests for config.py
 └── README.md            # this file

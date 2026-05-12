@@ -2,12 +2,10 @@
 
 import sys
 import types
-import importlib
 from datetime import date
 from unittest.mock import MagicMock, patch
 
 
-# ── Minimal stubs so gate_utils imports without Airflow or file_logger installed ──
 # file_logger stub — OutputTextWriter is used as a type annotation only in gate_utils
 _file_logger = types.ModuleType("file_logger")
 _file_logger.OutputTextWriter = MagicMock  # replace class with MagicMock so type hints resolve
@@ -21,12 +19,6 @@ _airflow_sdk.Variable = MagicMock()
 _airflow_mod = sys.modules.setdefault("airflow", types.ModuleType("airflow"))
 _airflow_mod.sdk = _airflow_sdk  # attach sdk attr so patch() can walk the dotted path
 sys.modules.setdefault("airflow.sdk", _airflow_sdk)
-
-# Ensure sys.path includes the dags directory so 'shared' is importable
-import os
-_DAGS_DIR = os.path.join(os.path.dirname(__file__), "..", "airflow", "dags")
-if _DAGS_DIR not in sys.path:
-    sys.path.insert(0, os.path.abspath(_DAGS_DIR))
 
 from shared.gate_utils import _has_new_rows, check_daily_gate  # module under test
 

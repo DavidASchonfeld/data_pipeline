@@ -22,6 +22,12 @@ step_sync_helm_dockerfile() {
     echo "=== Step 2b1: Syncing Airflow Dockerfile to EC2 ==="
     # Sync the Dockerfile so the image can be built on EC2 (image is built and loaded directly into K3S — it's never pushed to ECR)
     rsync $RSYNC_FLAGS "$PROJECT_ROOT/airflow/docker/" "$EC2_HOST:$EC2_HOME/airflow/docker/"
+
+    echo "=== Step 2b1b: Syncing genai source into Docker build context on EC2 ==="
+    # genai/ must sit inside the build context (airflow/docker/) so the Dockerfile COPY can reach it
+    rsync $RSYNC_FLAGS --delete "$PROJECT_ROOT/genai/" "$EC2_HOST:$EC2_HOME/airflow/docker/genai/"
+    # pytest.ini must be in the build context so the Dockerfile can COPY it into the image
+    rsync $RSYNC_FLAGS "$PROJECT_ROOT/pytest.ini" "$EC2_HOST:$EC2_HOME/airflow/docker/pytest.ini"
 }
 
 step_sync_manifests_secrets() {

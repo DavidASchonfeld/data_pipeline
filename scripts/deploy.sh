@@ -103,6 +103,9 @@ if [ "$BAKE_AMI" = true ]; then
     "$DEPLOY_DIR/ami.sh" bake
     exit 0
 fi
+
+# run offline tests before any SSH — fails fast on logic errors without wasting time on EC2 ops
+step_run_core_tests  # Step 1b-ii
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Rollback procedure ────────────────────────────────────────────────────────
@@ -154,8 +157,8 @@ _log_disk_diagnostics
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Early AMI bake cancellation ───────────────────────────────────────────────
-# Cancel any bake from the previous deploy before launching parallel jobs.
-# The bake runs docker system prune and stops k3s mid-flight, which disrupts
+# Tests already passed, so this deploy is worth running — cancel any leftover bake now.
+# The bake stops k3s and runs docker system prune mid-flight, which disrupts
 # concurrent docker build, containerd, and kubectl operations in this deploy.
 if declare -f cancel_in_progress_bake > /dev/null 2>&1 && [ -f "${_AMI_LOCKFILE:-/tmp/ami-bake.lock}" ]; then
     _bake_lock_age=$(( $(date +%s) - $(stat -f %m "${_AMI_LOCKFILE:-/tmp/ami-bake.lock}" 2>/dev/null || echo 0) ))
@@ -187,6 +190,16 @@ fi
 # ═══════════════════════════════════════════════════════════════════════════════
 
 step_setup  # Steps 1, 1c, 1b: EC2 dirs, kubectl chmod, Python syntax validation
+
+# if the AI layer is on, verify credentials exist before touching the server
+if [ "${GENAI_ENABLED:-false}" = "true" ]; then
+    [ -z "${LLM_API_KEY:-}" ] && { echo "ERROR: GENAI_ENABLED=true but LLM_API_KEY is not set in .env.deploy"; exit 1; }
+    [ ! -f "$PROJECT_ROOT/infra/genai/secrets/genai-secrets.yaml" ] && {
+        echo "ERROR: GENAI_ENABLED=true but infra/genai/secrets/genai-secrets.yaml not found"
+        echo "       Create it from the template: infra/genai/secrets/genai-secrets.yaml.template"
+        exit 1
+    }
+fi
 
 step_sync_dags  # Step 2: rsync airflow/dags/ to EC2
 
@@ -265,6 +278,9 @@ step_restart_airflow_pods  # Step 7
 
 # Rebuild the ML Python environment in the scheduler pod — it gets wiped every time the pod restarts
 step_setup_ml_venv  # Step 7b
+
+# run mock-based unit tests inside the pod — free, no API calls, catches import/logic errors early
+step_run_offline_tests  # Step 7b-ii
 
 step_fix_mlflow_experiment  # Step 7c: reset MLflow artifact root via sqlite3 (safe to run multiple times)
 

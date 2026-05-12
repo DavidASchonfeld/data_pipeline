@@ -21,6 +21,29 @@ def test_unknown_provider_raises_value_error():
             factory.get_llm_provider()
 
 
+def test_openai_provider_returned_for_openai_key():
+    # confirm that LLM_PROVIDER=openai returns an OpenAIProvider instance (no real API call made)
+    import sys
+    from unittest.mock import MagicMock
+
+    fake_openai = MagicMock()
+    fake_openai.OpenAI.return_value = MagicMock()  # fake client object
+
+    with patch.dict(sys.modules, {"openai": fake_openai}):
+        with patch.dict(os.environ, {"LLM_PROVIDER": "openai", "LLM_API_KEY": "sk-fake-key-for-testing"}):
+            import importlib
+            import genai.config as cfg
+            importlib.reload(cfg)
+            import genai.llm._factory as factory
+            importlib.reload(factory)
+            import genai.llm.openai_provider as op_module
+            importlib.reload(op_module)
+
+            from genai.llm.openai_provider import OpenAIProvider
+            provider = factory.get_llm_provider()
+            assert isinstance(provider, OpenAIProvider)
+
+
 def test_anthropic_provider_returned_for_anthropic_key():
     # confirm that LLM_PROVIDER=anthropic returns an AnthropicProvider instance (no real API call made)
     # fake the anthropic SDK in sys.modules so the test runs even when the package is not installed locally

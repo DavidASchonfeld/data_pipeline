@@ -67,4 +67,12 @@ RUN pip install \
     "requests>=2.32.3" \
     "apache-airflow-providers-common-compat>=1.5.0" \
     kafka-python \
-    python-dotenv
+    python-dotenv \
+    anthropic \
+    openai \
+    pytest
+
+# bake genai source in so offline unit tests can run inside the pod after each deploy
+COPY --chown=airflow:root genai/ /opt/airflow/genai/
+# pytest.ini registers the offline/live marks — without it, --strict-markers rejects them
+COPY --chown=airflow:root pytest.ini /opt/airflow/pytest.ini

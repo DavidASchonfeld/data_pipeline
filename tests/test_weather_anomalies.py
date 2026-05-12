@@ -1,19 +1,9 @@
 """Tests for compute_weather_anomalies in dashboard/weather_charts.py — pure pandas, no external calls."""
 
 import sys
-import os
 from unittest.mock import MagicMock
 
 import pandas as pd
-
-_DASHBOARD_DIR = os.path.join(os.path.dirname(__file__), "..", "dashboard")
-if _DASHBOARD_DIR not in sys.path:
-    sys.path.insert(0, os.path.abspath(_DASHBOARD_DIR))
-
-# Stub heavy optional deps before any dashboard import
-for _mod in ["dotenv", "sqlalchemy", "pymysql"]:
-    sys.modules.setdefault(_mod, MagicMock())
-sys.modules["dotenv"].load_dotenv = MagicMock()
 
 # Stub snowflake packages — weather_charts imports chart_utils which may trigger config
 for _mod in ["snowflake", "snowflake.sqlalchemy"]:

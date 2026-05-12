@@ -1,22 +1,10 @@
 """Tests for dashboard/anomaly_table.py — _severity_label, build_stocks_table_rows, build_weather_table_rows."""
 
 import sys
-import os
-from unittest.mock import MagicMock
-
+import types as _types
 import pandas as pd
 
-_DASHBOARD_DIR = os.path.join(os.path.dirname(__file__), "..", "dashboard")
-if _DASHBOARD_DIR not in sys.path:
-    sys.path.insert(0, os.path.abspath(_DASHBOARD_DIR))
-
-# Stub heavy optional deps before any dashboard import
-for _mod in ["dotenv", "sqlalchemy", "pymysql"]:
-    sys.modules.setdefault(_mod, MagicMock())
-sys.modules["dotenv"].load_dotenv = MagicMock()
-
 # Stub dash so anomaly_table can be imported without a full Dash install
-import types as _types
 _dash = _types.ModuleType("dash")
 _dash_html = _types.ModuleType("dash.html")
 
