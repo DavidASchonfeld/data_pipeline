@@ -68,6 +68,10 @@ _print_deploy_summary() {
         "$DEPLOY_LOGFILE" \
         | grep -v -- "--ignore-not-found" \
         | awk '!seen[$0]++') || true  # || true: if grep finds nothing it exits non-zero — this prevents that from stopping the script
+    # Run spot detection now so SPOT_INTERRUPTION_DETECTED is known before the fallback below
+    if [ "$exit_code" -ne 0 ] && [ "${DEPLOY_INTERRUPTED:-false}" != "true" ]; then
+        _detect_spot_interruption
+    fi
     echo ""
     echo "=================================================================="
     if [ "$exit_code" -eq 0 ]; then
@@ -91,15 +95,21 @@ _print_deploy_summary() {
     echo "  -- Warnings & Errors -------------------------------------------"
     if [ -z "$summary_lines" ]; then
         if [ "$exit_code" -ne 0 ]; then
-            # No WARNING/ERROR keywords were found — show the last 15 log lines so there is
-            # always a visible trail; this catches failures like SSH exit 255 that print nothing
-            echo "  No WARNING/ERROR keywords found. Last 15 log lines:"
-            echo ""
-            tail -n 15 "$DEPLOY_LOGFILE" | while IFS= read -r line; do
-                echo "    > $line"
-            done
-            echo ""
-            echo "  Script exited with errors — check items above and logs for details."
+            if [ "${SPOT_INTERRUPTION_DETECTED:-false}" = "true" ]; then
+                # Spot interruption explains the exit — suppressing log tail to avoid showing
+                # unrelated in-flight output (e.g. pytest lines) as if they caused the failure
+                echo "  (none — spot interruption explains exit; see diagnosis below)"
+            else
+                # No WARNING/ERROR keywords were found — show the last 15 log lines so there is
+                # always a visible trail; this catches failures like SSH exit 255 that print nothing
+                echo "  No WARNING/ERROR keywords found. Last 15 log lines:"
+                echo ""
+                tail -n 15 "$DEPLOY_LOGFILE" | while IFS= read -r line; do
+                    echo "    > $line"
+                done
+                echo ""
+                echo "  Script exited with errors — check items above and logs for details."
+            fi
         else
             echo "  (none)"
             type _deploy_status_write_clean &>/dev/null && _deploy_status_write_clean  # call site 2 — log clean finish
@@ -116,9 +126,8 @@ _print_deploy_summary() {
             echo "  Script exited with errors — check items above and logs for details."
         fi
     fi
-    # On failure (not Ctrl+C), query AWS to confirm whether a spot interruption caused the SSH drop
+    # On failure (not Ctrl+C), print spot diagnosis (detection already ran above)
     if [ "$exit_code" -ne 0 ] && [ "${DEPLOY_INTERRUPTED:-false}" != "true" ]; then
-        _detect_spot_interruption
         echo "  -- Interruption Diagnosis --------------------------------------"
         if [ "${SPOT_INTERRUPTION_DETECTED:-false}" = "true" ]; then
             echo "  SPOT INTERRUPTION CONFIRMED"

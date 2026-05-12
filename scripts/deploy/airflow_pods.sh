@@ -964,3 +964,38 @@ step_setup_ml_venv() {
         echo "Diagnose with: kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- /opt/ml-venv/bin/pip list"
     }
 }
+
+step_run_offline_tests() {
+    # run the offline (no-API-key) genai unit tests inside the scheduler pod to confirm the code deployed correctly
+    # skipped when GENAI_ENABLED is not true — non-genai deploys don't need this
+    [ "${GENAI_ENABLED:-false}" = true ] || return 0
+
+    echo "=== Running offline genai unit tests in scheduler pod ==="
+    ssh "$EC2_HOST" "
+        kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+            /bin/bash -c 'cd /opt/airflow && python -m pytest \
+                genai/__tests__/test_config.py \
+                genai/llm/__tests__/test_factory.py \
+                genai/llm/__tests__/test_openai_provider.py \
+                genai/llm/__tests__/test_anthropic_provider.py \
+                -m offline -v --no-header -q 2>&1'
+    " || {
+        echo ""
+        echo "ERROR: offline genai tests failed — the deployed code has a logic error."
+        echo "Run manually: kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- /bin/bash -c 'cd /opt/airflow && python -m pytest genai/ -m offline -v'"
+        exit 1
+    }
+    echo "Offline genai tests passed."
+}
+
+step_run_core_tests() {
+    # run all offline tests locally before touching any pods — equivalent to `make test`, catches both dashboard/DAG and genai errors early
+    echo "=== Running core offline tests locally ==="
+    python3 -m pytest "$PROJECT_ROOT/tests/" "$PROJECT_ROOT/genai/" -m "not live" --no-header 2>&1 || {
+        echo ""
+        echo "ERROR: core offline tests failed — fix the logic error before deploying."
+        echo "Run manually: make test"
+        exit 1
+    }
+    echo "Core offline tests passed."
+}

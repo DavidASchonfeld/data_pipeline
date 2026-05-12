@@ -7,6 +7,7 @@ logs
 .env
 .env.deploy
 airflow_env/
+.venv/
 # prevent timestamped log files from being committed
 *.txt
 # local infra secrets (IPs, key file, credentials) — never commit

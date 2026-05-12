@@ -1,30 +1,14 @@
 """Tests for dashboard/db.py — _cached_query helper."""
 
-import sys
 import os
 import time
-import types
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
 
-# ── Ensure dashboard/ is importable ─────────────────────────────────────────
-_DASHBOARD_DIR = os.path.join(os.path.dirname(__file__), "..", "dashboard")
-if _DASHBOARD_DIR not in sys.path:
-    sys.path.insert(0, os.path.abspath(_DASHBOARD_DIR))
-
-# Stub heavy optional deps that may not be installed in the test environment
-for _mod in ["dotenv", "sqlalchemy", "pymysql"]:
-    sys.modules.setdefault(_mod, MagicMock())
-
-# dotenv.load_dotenv must be callable
-sys.modules["dotenv"].load_dotenv = MagicMock()
-
-
 # ── Import with DB_BACKEND forced to non-snowflake so engine creation is skipped ──
 with patch.dict(os.environ, {"DB_BACKEND": "mariadb", "DB_HOST": ""}):
-    import importlib
     import db as db_module  # dashboard/db.py
 
 

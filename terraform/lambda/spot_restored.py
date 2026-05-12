@@ -53,9 +53,11 @@ def handler(event, context):
 
     logger.info("Spot replacement in progress — moving EIP to replacement instance %s", new_instance_id)
 
+    ec2  = boto3.client("ec2")
+    asg  = boto3.client("autoscaling")
+
     # Reassociate the static EIP to the new instance so it gets the stable public IP
     try:
-        ec2 = boto3.client("ec2")
         ec2.associate_address(
             InstanceId=new_instance_id,
             AllocationId=eip_allocation_id,
@@ -65,9 +67,23 @@ def handler(event, context):
     except ClientError:
         logger.exception("EIP reassociation failed — instance may still be in pending state; Wake Lambda will recover on next visit")
 
+    # Explicitly terminate the non-EIP instance before scaling down so the scale-down is deterministic.
+    # Without this, ASG's default "oldest instance first" termination policy will pick new_instance_id
+    # (it launched first) and keep the other instance, which has no EIP — orphaning it.
+    try:
+        asg_instances = asg.describe_auto_scaling_groups(
+            AutoScalingGroupNames=[asg_name]
+        )["AutoScalingGroups"][0]["Instances"]
+        for inst in asg_instances:
+            if inst["InstanceId"] != new_instance_id and inst["LifecycleState"] == "InService":
+                ec2.terminate_instances(InstanceIds=[inst["InstanceId"]])
+                logger.info("Terminated non-EIP instance %s so EIP holder survives scale-down", inst["InstanceId"])
+                break
+    except ClientError as e:
+        logger.warning("Could not terminate non-EIP instance [%s] — scale-down may orphan EIP", e.response["Error"]["Code"])
+
     # Reset ASG capacity back to normal now the old spot instance is gone
     try:
-        asg = boto3.client("autoscaling")
         asg.update_auto_scaling_group(AutoScalingGroupName=asg_name, MaxSize=2)  # matches always-on Terraform max_size=2
         asg.set_desired_capacity(AutoScalingGroupName=asg_name, DesiredCapacity=1)
         logger.info("ASG %s reset to max=2 desired=1 — normal always-on operation restored", asg_name)

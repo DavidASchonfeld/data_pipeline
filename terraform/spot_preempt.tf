@@ -210,10 +210,17 @@ resource "aws_iam_role_policy" "lambda_spot_restored" {
         Resource = "*"  # EIP actions require * — no resource-level restriction available
       },
       {
-        # Reset ASG max=1 desired=1 after the old instance is confirmed gone
+        # Reset ASG max=1 desired=1 after the old instance is confirmed gone;
+        # DescribeAutoScalingGroups lists instances so the non-EIP one can be terminated explicitly
         Effect   = "Allow"
-        Action   = ["autoscaling:UpdateAutoScalingGroup", "autoscaling:SetDesiredCapacity"]
+        Action   = ["autoscaling:UpdateAutoScalingGroup", "autoscaling:SetDesiredCapacity", "autoscaling:DescribeAutoScalingGroups"]
         Resource = "*"  # ASG actions do not support resource-level permissions
+      },
+      {
+        # Terminate the non-EIP instance after spot replacement so ASG scale-down is deterministic
+        Effect   = "Allow"
+        Action   = ["ec2:TerminateInstances"]
+        Resource = "*"
       },
       {
         # Read the waiting instance ID; clear both flags once replacement is complete
