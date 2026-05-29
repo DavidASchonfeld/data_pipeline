@@ -98,3 +98,12 @@ Later epics add `extraction/`, `embedding/`, `retrieval/`, `runners/`, `agent/`,
 - `GENAI_MAX_COST_PER_QUERY` (default `$0.05`) — maximum per-question AI spend, enforced by the chat agent.
 - `GENAI_DAILY_BUDGET` (default `$2.00`) — maximum daily AI spend, enforced by the chat agent.
 - The AI provider's own console budget cap is the final safety net (recommended: $10/month).
+
+---
+
+## Reliability tunables (optional)
+
+These have safe defaults, so you only set them to override. They are plain (non-secret) env vars — put them in `.env.deploy`, not the K8s secret.
+
+- `LLM_TIMEOUT_SECONDS` (default `60`) — how long to wait on a single LLM request before failing. The SDK default is ~10 minutes, far too long for a dashboard or DAG task.
+- `LLM_MAX_RETRIES` (default `3`) — how many times the provider SDK retries a transient failure (429 rate-limit, 5xx, dropped connection). The SDK handles the exponential backoff and jitter internally; this layer never adds a second retry loop on top.

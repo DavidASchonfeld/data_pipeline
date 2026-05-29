@@ -1,5 +1,11 @@
 """Offline unit tests for AnthropicProvider — mock the HTTP client so no API calls are made."""
-from unittest.mock import MagicMock
+import os
+import sys
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from genai.llm.base import LLMProviderError
 
 
 def _fake_response(text="Hello", stop_reason="end_turn", tool_name=None, tool_input=None, tool_id=None, input_tokens=10, output_tokens=5):
@@ -93,3 +99,41 @@ def test_chat_parses_tool_calls_in_response(anthropic_prov):
     assert len(result["tool_calls"]) == 1
     assert result["tool_calls"][0]["name"] == "get_weather"
     assert result["tool_calls"][0]["input"] == {"city": "NYC"}
+
+
+def test_client_built_with_timeout_and_retries():
+    # confirm the configured timeout and retry count are passed into the SDK client constructor
+    fake_anthropic = MagicMock()
+    with patch.dict(sys.modules, {"anthropic": fake_anthropic}):
+        with patch.dict(os.environ, {
+            "LLM_API_KEY": "sk-test", "LLM_MODEL": "claude-sonnet-4-6",
+            "LLM_TIMEOUT_SECONDS": "42", "LLM_MAX_RETRIES": "7",
+        }):
+            import importlib
+            import genai.config as cfg
+            importlib.reload(cfg)
+            import genai.llm.anthropic_provider as ap
+            importlib.reload(ap)
+            ap.AnthropicProvider()
+    kwargs = fake_anthropic.Anthropic.call_args[1]
+    assert kwargs["timeout"] == 42
+    assert kwargs["max_retries"] == 7
+
+
+def test_complete_raises_on_empty_content(anthropic_prov):
+    # a response with no text block must raise the uniform error, not an opaque IndexError
+    provider, client = anthropic_prov
+    empty = MagicMock()
+    empty.content = []
+    empty.stop_reason = "end_turn"
+    client.messages.create.return_value = empty
+    with pytest.raises(LLMProviderError):
+        provider.complete("anything")
+
+
+def test_complete_wraps_sdk_errors(anthropic_prov):
+    # an SDK-level failure is re-raised as the uniform LLMProviderError
+    provider, client = anthropic_prov
+    client.messages.create.side_effect = RuntimeError("rate limited")
+    with pytest.raises(LLMProviderError):
+        provider.complete("anything")

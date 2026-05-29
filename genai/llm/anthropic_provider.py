@@ -1,5 +1,17 @@
-from genai.config import LLM_API_KEY, LLM_MODEL
-from genai.llm.base import LLMProvider
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING
+
+from genai.config import LLM_API_KEY, LLM_MAX_RETRIES, LLM_MODEL, LLM_TIMEOUT_SECONDS
+from genai.llm.base import LLMProvider, LLMProviderError
+
+if TYPE_CHECKING:
+    # types only — pulled in for the type checker, never imported at runtime, so the SDK stays deferred
+    from anthropic.types import Message
+
+# Module logger — records calls and failures without ever logging prompt/response text (no PII).
+logger = logging.getLogger(__name__)
 
 # Token threshold above which a system prompt qualifies for server-side caching.
 # Anthropic caches prompts for ~5 minutes — saves money on repeated extraction tasks.
@@ -21,19 +33,38 @@ class AnthropicProvider(LLMProvider):
         if not LLM_API_KEY:
             raise ValueError("LLM_API_KEY is not set. Add it to .env.deploy or the K8s genai-credentials secret.")
 
-        # create a reusable client so we don't open a new HTTP connection for every request
-        self._client = anthropic.Anthropic(api_key=LLM_API_KEY)
+        # create a reusable client so we don't open a new HTTP connection for every request;
+        # cap the per-request timeout and let the SDK handle backoff/jitter for the retry count
+        self._client = anthropic.Anthropic(
+            api_key=LLM_API_KEY,
+            timeout=LLM_TIMEOUT_SECONDS,
+            max_retries=LLM_MAX_RETRIES,
+        )
         self._model = LLM_MODEL
 
     def complete(self, prompt: str, max_tokens: int = 1024) -> str:
         # complete: wrap the prompt as a single user message and return just the text reply
-        response = self._client.messages.create(
-            model=self._model,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
+        try:
+            response = self._client.messages.create(
+                model=self._model,
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+            )
+        except Exception as exc:  # SDK errors (rate limit, timeout, auth) become one error type
+            logger.error("Anthropic complete() failed for model %s: %s", self._model, exc)
+            raise LLMProviderError(f"Anthropic request failed (model={self._model}): {exc}") from exc
+
+        # guard against an empty/text-less response before indexing, so callers get a clear error
+        for block in response.content:
+            if block.type == "text":
+                logger.debug(
+                    "Anthropic complete() ok: model=%s in=%s out=%s",
+                    self._model, response.usage.input_tokens, response.usage.output_tokens,
+                )
+                return block.text
+        raise LLMProviderError(
+            f"Anthropic returned no text content (model={self._model}, stop_reason={response.stop_reason})"
         )
-        # extract the first text block from the response content list
-        return response.content[0].text
 
     def chat(
         self,
@@ -58,7 +89,11 @@ class AnthropicProvider(LLMProvider):
             # translate generic tool specs into Anthropic's expected format
             kwargs["tools"] = self._translate_tools(tools)
 
-        response = self._client.messages.create(**kwargs)
+        try:
+            response = self._client.messages.create(**kwargs)
+        except Exception as exc:  # SDK errors (rate limit, timeout, auth) become one error type
+            logger.error("Anthropic chat() failed for model %s: %s", self._model, exc)
+            raise LLMProviderError(f"Anthropic request failed (model={self._model}): {exc}") from exc
 
         # normalise the response into a format all callers can rely on regardless of provider
         return self._normalise_response(response)
@@ -87,7 +122,7 @@ class AnthropicProvider(LLMProvider):
             })
         return translated
 
-    def _normalise_response(self, response: object) -> dict:
+    def _normalise_response(self, response: Message) -> dict:
         # extract text and tool-call blocks from the response into a consistent dict shape
         text_content = ""
         tool_calls = []
@@ -97,7 +132,17 @@ class AnthropicProvider(LLMProvider):
                 text_content += block.text
             elif block.type == "tool_use":
                 tool_calls.append({"name": block.name, "input": block.input, "id": block.id})
+            else:
+                # I only consume text and tool_use; thinking/server-tool blocks aren't enabled, so flag any surprise
+                logger.warning(
+                    "Anthropic returned an unhandled content block type %r; skipping (model=%s)",
+                    block.type, self._model,
+                )
 
+        logger.debug(
+            "Anthropic chat() ok: model=%s in=%s out=%s tool_calls=%s",
+            self._model, response.usage.input_tokens, response.usage.output_tokens, len(tool_calls),
+        )
         return {
             "content": text_content,
             "stop_reason": response.stop_reason,

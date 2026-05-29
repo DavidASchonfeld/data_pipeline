@@ -5,6 +5,8 @@ on:
     paths:
       - 'dashboard/**'
       - 'tests/**'
+      - 'genai/**'
+      - 'pytest.ini'
       - '.github/workflows/test.yml'
 jobs:
   test:
@@ -18,6 +20,9 @@ jobs:
         # Install dashboard deps plus pytest; python-dotenv needed by config.py
         run: pip install plotly pandas scikit-learn flask dash python-dotenv pytest
       - name: Run tests
-        run: pytest tests/ -v
+        # pytest.ini's testpaths covers both tests/ and genai/; -m "not live" runs every
+        # offline test and skips the real-API live tests (which need credentials, never in CI).
+        # genai provider tests mock the anthropic/openai SDKs, so no extra installs are needed.
+        run: pytest -m "not live" -v
         env:
           DB_BACKEND: snowflake  # ensures Snowflake code paths are exercised in tests

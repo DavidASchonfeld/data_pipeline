@@ -23,6 +23,15 @@ LLM_MODEL: str = os.environ.get("LLM_MODEL", "claude-sonnet-4-5")
 # Never hard-code this here — it must come from the environment or a K8s secret.
 LLM_API_KEY: str = os.environ.get("LLM_API_KEY", "")
 
+# How long (seconds) to wait on a single LLM request before giving up. The SDK default is
+# ~10 minutes, far too long for a dashboard or a DAG task — cap it so a stuck call fails fast.
+LLM_TIMEOUT_SECONDS: float = float(os.environ.get("LLM_TIMEOUT_SECONDS", "60"))
+
+# How many times the SDK retries a transient failure (429 rate-limit, 5xx, dropped connection)
+# before surfacing the error. The Anthropic/OpenAI SDKs handle the exponential backoff + jitter
+# internally, so we only set the attempt count — we never add a second retry layer on top.
+LLM_MAX_RETRIES: int = int(os.environ.get("LLM_MAX_RETRIES", "3"))
+
 # ── pgvector connection ───────────────────────────────────────────────────────
 # pgvector is a Postgres database that stores text embeddings (384-number "meaning fingerprints").
 # Future EPICs write filing chunks and weather summaries here; EPIC 8 queries it for semantic search.

@@ -1,5 +1,13 @@
 from abc import ABC, abstractmethod
 
+
+# LLMProviderError: one error type every provider raises, so callers (e.g. the EPIC 9
+# orchestrator) catch a single exception regardless of which backend is active. Wraps the
+# raw SDK exceptions and any malformed-response surprises with the model name for context.
+class LLMProviderError(Exception):
+    pass
+
+
 # LLMProvider: a contract (interface) that every AI provider must fulfil.
 # Adding a new provider means creating a new file and implementing these two methods.
 
