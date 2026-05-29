@@ -24,6 +24,7 @@ Each ADR has a number (0001, 0002, …) and a title. Open any one of them — th
 | [0002](0002-llm-provider-abstraction.md) | LLM provider abstraction | How the project avoids being locked into any single AI service |
 | [0003](0003-secret-handling-pattern.md) | Secret-handling pattern | How API keys and passwords are kept out of the codebase |
 | [0004](0004-prompt-caching-provider-internal.md) | Prompt caching is provider-internal | Why caching is handled inside each provider, not as a shared setting |
+| [0005](0005-source-agnostic-ingestion.md) | Source-agnostic ingestion | How the layer is made to ingest "anything" later — one reader interface + a generic schema, without rewriting the engine |
 
 ## How to add a new ADR
 

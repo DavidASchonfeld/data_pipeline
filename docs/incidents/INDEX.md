@@ -83,6 +83,8 @@ For the failure mode catalog (what *can* go wrong, not what *did* go wrong), see
 | 2026-04-17 | Docker build failed: server overloaded by 3 parallel jobs (BuildKit EOF + containerd socket reset) | [docker-build-containerd-overload](deploy/2026-04-17-docker-build-failed-containerd-overload-parallel-jobs.md) |
 | 2026-04-17 | MLflow deploy failed: Docker layer extraction corruption + kubectl permission denied (parallel job overload) | [mlflow-deploy-failed-parallel-overload](deploy/2026-04-17-mlflow-kubectl-permission-denied-k3s-restart.md) |
 | 2026-04-17 | Deploy warnings: stale containerd lease error + port 5500 already in use on port-forward restart | [containerd-lease-port5500](deploy/2026-04-17-containerd-lease-error-and-port5500-in-use.md) |
+| 2026-05-12 | sentence-transformers pulled 2.5 GB CUDA build → disk pressure → kubelet evicted scheduler → AI packages wiped; fixed with CPU-only torch + baked into Dockerfile | [sentence-transformers-cuda-disk-wipe](airflow/2026-05-12-sentence-transformers-cuda-disk-wipe-mlvenv.md) |
+| 2026-05-28 | pgvector + MLflow parallel jobs raced on the shared Docker image store (one job's prune deleted the other's in-flight pull → "failed commit on ref"); fix: flock lock serializes the Docker ops | [pgvector-mlflow-prune-pull-race](deploy/2026-05-28-pgvector-mlflow-parallel-docker-prune-pull-race.md) |
 
 ### Snowflake
 

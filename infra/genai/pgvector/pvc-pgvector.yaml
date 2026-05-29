@@ -1,0 +1,17 @@
+# PersistentVolumeClaim: the pgvector pod's formal request to use the storage slot in pv-pgvector.yaml.
+#
+# Think of pv-pgvector.yaml as "I have a 5 GB locker available on the server" and this file as
+# "the database pod wants to use 2 GB of that locker." Kubernetes matches the two together
+# (called static binding). The pod will not start until this claim is Bound.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pgvector-pvc
+  namespace: airflow-my-namespace
+spec:
+  accessModes:
+    - ReadWriteOnce     # only one pod can hold this claim at a time (matches pv-pgvector.yaml)
+  resources:
+    requests:
+      storage: 2Gi      # requesting 2 GB out of the 5 GB PV; plenty for embedding tables at this scale
+  storageClassName: manual  # must match pv-pgvector.yaml exactly so K8s binds them together

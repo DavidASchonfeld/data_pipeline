@@ -20,6 +20,7 @@ Navigate all project documentation from here. Each link goes to the single sourc
 | Document | What it covers |
 |----------|---------------|
 | [Data Source Guide](DATA_SOURCE_GUIDE.md) | How to add, edit, remove, or replace a data source (API → Kafka → Snowflake → dbt → Dashboard) |
+| [GenAI Overview](GENAI_OVERVIEW.md) | Plain-English explanation of the AI layer: what it will do and what's built so far |
 
 ---
 
@@ -42,6 +43,7 @@ Navigate all project documentation from here. Each link goes to the single sourc
 | [Dashboard Cache](architecture/DASHBOARD_CACHE.md) | How the query cache works, why it saves Snowflake costs |
 | [Spot Recovery](architecture/SPOT_RECOVERY.md) | How the server automatically recovers when AWS reclaims a spot instance |
 | [Alerting](architecture/ALERTING.md) | Failure alerts, staleness monitoring, Slack webhooks, cooldown system |
+| [GenAI Data Separation](architecture/GENAI_DATA_SEPARATION.md) | How subjects, sources, and projects are kept separate (and together): namespace vs metadata vs database; one chatbot for all subjects; what copies when ported |
 
 ---
 
@@ -84,6 +86,17 @@ Navigate all project documentation from here. Each link goes to the single sourc
 | [kubectl Commands](reference/KUBECTL_COMMANDS.md) | Kubernetes CLI reference |
 | [Glossary](reference/GLOSSARY.md) | Technical terms: ETL, DAG, PV, PVC, K3S, XCom, etc. |
 | [Data Timing](reference/DATA_TIMING.md) | How long after triggering a DAG until data appears on the dashboard |
+| [GenAI / RAG References](reference/GENAI_RAG_REFERENCES.md) | Annotated external best-practice links behind the GenAI design: deletions/tombstones, embedding versioning, chunking, eval, observability, multi-tenant security |
+
+---
+
+## Decisions & Licensing
+
+| Document | What it covers |
+|----------|---------------|
+| [Architecture Decisions](decisions/README.md) | Why each major design choice was made (ADRs 0001–0005), in plain language |
+| [Third-Party Notices](../THIRD_PARTY_NOTICES.md) | Every third-party library, image, dataset, and API used, with its license — the project's attribution and proof-of-right-to-use record |
+| [License Texts](../licenses/README.md) | Full upstream license texts for the components listed in the notices file |
 
 ---
 
@@ -92,6 +105,7 @@ Navigate all project documentation from here. Each link goes to the single sourc
 | Question | Go to |
 |----------|-------|
 | How do I add a new data source? | [DATA_SOURCE_GUIDE.md](DATA_SOURCE_GUIDE.md) |
+| Do stocks and weather (or two sources, or another project) need to be kept separate? | [architecture/GENAI_DATA_SEPARATION.md](architecture/GENAI_DATA_SEPARATION.md) |
 | How do I deploy code changes? | [DEPLOY_GUIDE.md](DEPLOY_GUIDE.md) |
 | How much does this cost per month? | [COSTS.md](COSTS.md) |
 | How do I verify everything works after a deploy? | [VERIFICATION.md](VERIFICATION.md) |
@@ -102,3 +116,5 @@ Navigate all project documentation from here. Each link goes to the single sourc
 | How does alerting work? | [architecture/ALERTING.md](architecture/ALERTING.md) |
 | How do PersistentVolumes work? | [infrastructure/PERSISTENCE.md](infrastructure/PERSISTENCE.md) |
 | What does a term mean? | [reference/GLOSSARY.md](reference/GLOSSARY.md) |
+| What third-party tools/licenses does this use? | [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) |
+| Why was a design choice made this way? | [decisions/README.md](decisions/README.md) |

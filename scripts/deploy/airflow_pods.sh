@@ -942,8 +942,8 @@ step_setup_ml_venv() {
             echo 'ml-venv ready at /opt/ml-venv'
         fi
 
-        # genai: install the Anthropic SDK only when the AI layer is switched on
-        # This runs whether or not the base venv was just rebuilt, so the package is always present when needed
+        # genai: install the Anthropic SDK and vector/embedding libraries only when the AI layer is switched on
+        # This runs whether or not the base venv was just rebuilt, so the packages are always present when needed
         if [ ${GENAI_ENABLED:-false} = true ]; then
             echo 'Checking GenAI dependencies in ml-venv...' &&
             if kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
@@ -954,6 +954,63 @@ step_setup_ml_venv() {
                 kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
                     /opt/ml-venv/bin/pip install --no-cache-dir \"anthropic>=0.50.0\" &&
                 echo 'anthropic installed.'
+            fi
+
+            # sentence-transformers: local embedding model for EPIC 6 (all-MiniLM-L6-v2, 80 MB)
+            if kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                /opt/ml-venv/bin/pip show sentence-transformers > /dev/null 2>&1; then
+                echo 'sentence-transformers already installed — skipping'
+            else
+                echo 'Installing sentence-transformers into ml-venv...' &&
+                kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                    /opt/ml-venv/bin/pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu &&
+                kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                    /opt/ml-venv/bin/pip install --no-cache-dir \"sentence-transformers\" &&
+                echo 'sentence-transformers installed.'
+            fi
+
+            # psycopg2-binary: Postgres client used by pgvector_client.py
+            if kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                /opt/ml-venv/bin/pip show psycopg2-binary > /dev/null 2>&1; then
+                echo 'psycopg2-binary already installed — skipping'
+            else
+                echo 'Installing psycopg2-binary into ml-venv...' &&
+                kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                    /opt/ml-venv/bin/pip install --no-cache-dir \"psycopg2-binary\" &&
+                echo 'psycopg2-binary installed.'
+            fi
+
+            # pgvector: Python adapter that registers the vector type with psycopg2
+            if kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                /opt/ml-venv/bin/pip show pgvector > /dev/null 2>&1; then
+                echo 'pgvector already installed — skipping'
+            else
+                echo 'Installing pgvector into ml-venv...' &&
+                kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                    /opt/ml-venv/bin/pip install --no-cache-dir \"pgvector\" &&
+                echo 'pgvector installed.'
+            fi
+
+            # rank-bm25: BM25 keyword search used by EPIC 8 hybrid retriever
+            if kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                /opt/ml-venv/bin/pip show rank-bm25 > /dev/null 2>&1; then
+                echo 'rank-bm25 already installed — skipping'
+            else
+                echo 'Installing rank-bm25 into ml-venv...' &&
+                kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                    /opt/ml-venv/bin/pip install --no-cache-dir \"rank-bm25\" &&
+                echo 'rank-bm25 installed.'
+            fi
+
+            # numpy<2: pin below 2.0 — sentence-transformers and pgvector both have numpy<2 constraints
+            if kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                /opt/ml-venv/bin/pip show numpy > /dev/null 2>&1; then
+                echo 'numpy already installed — skipping'
+            else
+                echo 'Installing numpy<2 into ml-venv...' &&
+                kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                    /opt/ml-venv/bin/pip install --no-cache-dir \"numpy<2\" &&
+                echo 'numpy<2 installed.'
             fi
         fi
     " || {

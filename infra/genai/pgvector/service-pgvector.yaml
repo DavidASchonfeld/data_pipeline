@@ -1,0 +1,19 @@
+# Service: gives the pgvector database a stable network address that other pods can always reach.
+#
+# Without this, the database pod would get a new random IP every time it restarts — any code
+# trying to connect would break. This file creates a permanent internal hostname:
+#   pgvector.airflow-my-namespace.svc.cluster.local:5432
+# The Airflow scheduler uses that address in genai/retrieval/pgvector_client.py and in
+# genai/config.py (PGVECTOR_HOST default). Postgres listens on port 5432 by convention.
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgvector        # this name becomes the DNS hostname prefix for in-cluster access
+  namespace: airflow-my-namespace
+spec:
+  type: ClusterIP       # internal-only address — not reachable from outside the cluster
+  selector:
+    app: pgvector       # routes traffic to any pod labelled app=pgvector (matches deployment-pgvector.yaml)
+  ports:
+    - port: 5432        # standard Postgres port; clients connect here
+      targetPort: 5432  # forwards to the same port inside the container

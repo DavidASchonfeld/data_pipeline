@@ -23,6 +23,22 @@ LLM_MODEL: str = os.environ.get("LLM_MODEL", "claude-sonnet-4-5")
 # Never hard-code this here — it must come from the environment or a K8s secret.
 LLM_API_KEY: str = os.environ.get("LLM_API_KEY", "")
 
+# ── pgvector connection ───────────────────────────────────────────────────────
+# pgvector is a Postgres database that stores text embeddings (384-number "meaning fingerprints").
+# Future EPICs write filing chunks and weather summaries here; EPIC 8 queries it for semantic search.
+#
+# These values are overridden at runtime by the pgvector-credentials K8s secret (applied by deploy.sh
+# step 2c2d when GENAI_ENABLED=true). The defaults here point to the in-cluster service DNS name so
+# local dev works without env-var overrides once the pod is running.
+
+# Internal hostname of the pgvector pod — set by the K8s Service in service-pgvector.yaml
+PGVECTOR_HOST: str = os.environ.get("PGVECTOR_HOST", "pgvector.airflow-my-namespace.svc.cluster.local")
+
+# Postgres login credentials — must match POSTGRES_USER/PASSWORD/DB in pgvector-secret.yaml
+PGVECTOR_USER: str = os.environ.get("PGVECTOR_USER", "pgvector")
+PGVECTOR_PASSWORD: str = os.environ.get("PGVECTOR_PASSWORD", "")   # empty default — must be set via secret
+PGVECTOR_DB: str = os.environ.get("PGVECTOR_DB", "pgvector")
+
 # ── Cost guardrails ───────────────────────────────────────────────────────────
 # Maximum cost (in USD) allowed for a single AI query — enforced in EPIC 9's orchestrator.
 # Read here so every future epic can reference a single source of truth.

@@ -151,6 +151,21 @@ step_sync_manifests_secrets() {
             echo "Note: infra/genai/secrets/genai-secrets.yaml not found — skipping."
             echo "      Create it from the template at infra/genai/secrets/genai-secrets.yaml.template."
         fi
+
+        echo "=== Step 2c2d: Applying pgvector credentials secret ==="
+        # genai: pgvector-credentials holds POSTGRES_USER/PASSWORD/DB (used by the pod) and PGVECTOR_* (used by Python runners)
+        if [ -f "$PROJECT_ROOT/infra/genai/secrets/pgvector-secret.yaml" ]; then
+            ssh "$EC2_HOST" "mkdir -p $EC2_HOME/infra/genai/secrets"
+            rsync $RSYNC_FLAGS "$PROJECT_ROOT/infra/genai/secrets/pgvector-secret.yaml" \
+                "$EC2_HOST:$EC2_HOME/infra/genai/secrets/pgvector-secret.yaml"
+            ssh "$EC2_HOST" "
+                kubectl apply -f $EC2_HOME/infra/genai/secrets/pgvector-secret.yaml -n airflow-my-namespace &&
+                echo 'pgvector credentials secret applied to airflow-my-namespace.'
+            "
+        else
+            echo "Note: infra/genai/secrets/pgvector-secret.yaml not found — skipping."
+            echo "      Create it from the template at infra/genai/secrets/pgvector-secret.yaml.template."
+        fi
     fi
 
     echo "=== Step 2c3: Deleting stale Airflow migration Job ==="

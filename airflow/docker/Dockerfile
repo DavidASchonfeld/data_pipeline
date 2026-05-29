@@ -56,6 +56,22 @@ RUN /opt/ml-venv/bin/pip install --upgrade pip \
          "chardet>=3.0.2,<6" \
     && /opt/ml-venv/bin/python -c "import sklearn, mlflow, snowflake.connector, pandas; import importlib.metadata; importlib.metadata.version('setuptools'); print('ml-venv imports OK')"
 
+# GenAI packages baked in so they survive pod restarts (runtime pip installs disappear when the pod is replaced).
+# torch is installed first using the CPU-only index — without this, pip on ARM Linux resolves to the full
+# CUDA build (~2.5 GB of GPU libraries that are useless on an EC2 instance with no GPU), which fills the
+# disk past 86% and causes kubelet to evict the scheduler pod mid-run. The CPU wheel is ~200 MB and
+# is equally fast for embedding inference on a t4g.large.
+RUN /opt/ml-venv/bin/pip install --no-cache-dir \
+        torch --index-url https://download.pytorch.org/whl/cpu \
+    && /opt/ml-venv/bin/pip install --no-cache-dir \
+        "anthropic>=0.50.0" \
+        sentence-transformers \
+        psycopg2-binary \
+        pgvector \
+        rank-bm25 \
+        "numpy<2" \
+    && /opt/ml-venv/bin/python -c "import anthropic, sentence_transformers, psycopg2, pgvector; print('genai ml-venv imports OK')"
+
 # requests warns when chardet ≥6 is installed (check: chardet must be <6); also upgrade requests itself
 RUN pip install "requests>=2.32.3" "chardet>=3.0.2,<6"
 

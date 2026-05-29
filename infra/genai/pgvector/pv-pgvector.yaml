@@ -1,0 +1,27 @@
+# PersistentVolume: reserves a 5 GB storage slot on the EC2 server for the pgvector database.
+#
+# pgvector is a special type of Postgres database that stores "meaning fingerprints" (called
+# embeddings) alongside normal text. Future features will use this to answer questions like
+# "find the filing sections most relevant to rising inflation" — without needing exact keyword
+# matches. This file tells Kubernetes: "the database's data files live at
+# /home/ubuntu/pgvector-data on the EC2 server. Keep them even if the pod restarts."
+#
+# Mirrors the pattern used by MLflow (see airflow/manifests/mlflow/pv-mlflow.yaml):
+#   hostPath → folder on EC2, Retain policy → data survives pod deletion, claimRef → pre-binds
+#   this PV so only the pgvector pod can claim it.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pgvector-pv
+spec:
+  capacity:
+    storage: 5Gi      # 5 GB ceiling — more than enough for the two tables defined in configmap-init-sql.yaml
+  accessModes:
+    - ReadWriteOnce   # only one pod at a time can mount this (enforced by Recreate strategy in deployment)
+  hostPath:
+    path: /home/ubuntu/pgvector-data  # actual folder on the EC2 host; created by deploy.sh before apply
+  persistentVolumeReclaimPolicy: Retain   # keep the data folder if the claim is deleted (prevents accidental loss)
+  storageClassName: manual                # tells K8s to use static binding (no dynamic provisioner needed)
+  claimRef:
+    namespace: airflow-my-namespace
+    name: pgvector-pvc   # pre-binds to pvc-pgvector.yaml — no other claim can take this PV
