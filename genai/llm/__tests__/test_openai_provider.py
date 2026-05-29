@@ -1,6 +1,12 @@
 """Offline unit tests for OpenAIProvider — mock the HTTP client so no API calls are made."""
 import json
-from unittest.mock import MagicMock
+import os
+import sys
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from genai.llm.base import LLMProviderError
 
 
 def _fake_completion(content="Hello", finish_reason="stop", tool_calls=None, prompt_tokens=10, completion_tokens=5):
@@ -78,6 +84,7 @@ def test_chat_translates_tools_to_openai_format(openai_prov):
 def test_chat_parses_tool_calls_in_response(openai_prov):
     # confirm tool calls in the response are parsed from JSON strings into dicts
     tc = MagicMock()
+    tc.type = "function"  # match the real SDK: function tool calls carry type="function"
     tc.function.name = "get_weather"
     tc.function.arguments = json.dumps({"city": "NYC"})
     tc.id = "call_abc"
@@ -87,3 +94,40 @@ def test_chat_parses_tool_calls_in_response(openai_prov):
     assert len(result["tool_calls"]) == 1
     assert result["tool_calls"][0]["name"] == "get_weather"
     assert result["tool_calls"][0]["input"] == {"city": "NYC"}
+
+
+def test_client_built_with_timeout_and_retries():
+    # confirm the configured timeout and retry count are passed into the SDK client constructor
+    fake_openai = MagicMock()
+    with patch.dict(sys.modules, {"openai": fake_openai}):
+        with patch.dict(os.environ, {
+            "LLM_API_KEY": "sk-test", "LLM_MODEL": "gpt-4o",
+            "LLM_TIMEOUT_SECONDS": "42", "LLM_MAX_RETRIES": "7",
+        }):
+            import importlib
+            import genai.config as cfg
+            importlib.reload(cfg)
+            import genai.llm.openai_provider as op
+            importlib.reload(op)
+            op.OpenAIProvider()
+    kwargs = fake_openai.OpenAI.call_args[1]
+    assert kwargs["timeout"] == 42
+    assert kwargs["max_retries"] == 7
+
+
+def test_complete_raises_on_empty_choices(openai_prov):
+    # a response with no choices must raise the uniform error, not an opaque IndexError
+    provider, client = openai_prov
+    empty = MagicMock()
+    empty.choices = []
+    client.chat.completions.create.return_value = empty
+    with pytest.raises(LLMProviderError):
+        provider.complete("anything")
+
+
+def test_complete_wraps_sdk_errors(openai_prov):
+    # an SDK-level failure is re-raised as the uniform LLMProviderError
+    provider, client = openai_prov
+    client.chat.completions.create.side_effect = RuntimeError("rate limited")
+    with pytest.raises(LLMProviderError):
+        provider.complete("anything")
