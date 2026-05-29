@@ -95,6 +95,17 @@ def test_fetch_10k_text_end_to_end(edgar, monkeypatch):
     assert "scripts and styles must not leak" not in " ".join(result.values())
 
 
+def test_fetch_10k_exposes_filing_date(edgar, monkeypatch):
+    # fetch_10k surfaces the filing/report dates (which fetch_10k_text drops) so the extraction
+    # runner can populate FCT_FILING_EXTRACTS.filing_date
+    pytest.importorskip("bs4")
+    monkeypatch.setattr(edgar, "_get", _dispatch(_FIXTURE.read_text()))
+    result = edgar.fetch_10k("AAPL", 2023)
+    assert result["filing_date"] == "2023-11-01"   # FY2023 10-K filing date from the fixture
+    assert result["report_date"] == "2023-09-30"
+    assert "Item 1A - Risk Factors" in result["sections"]
+
+
 def test_fetch_empty_html_raises(edgar, monkeypatch):
     pytest.importorskip("bs4")
     monkeypatch.setattr(edgar, "_get", _dispatch("<html><body></body></html>"))

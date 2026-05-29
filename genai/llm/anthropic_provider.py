@@ -72,6 +72,8 @@ class AnthropicProvider(LLMProvider):
         tools: list[dict] | None = None,
         system: str | None = None,
         max_tokens: int = 2048,
+        temperature: float | None = None,
+        tool_choice: str | None = None,
     ) -> dict:
         # chat: send a multi-turn conversation and optionally let the AI call tools
 
@@ -88,6 +90,12 @@ class AnthropicProvider(LLMProvider):
         if tools:
             # translate generic tool specs into Anthropic's expected format
             kwargs["tools"] = self._translate_tools(tools)
+        if temperature is not None:
+            # 0 = deterministic output, which is what extraction wants for reproducibility
+            kwargs["temperature"] = temperature
+        if tool_choice:
+            # force the model to call this specific tool — turns free text into a structured result
+            kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}
 
         try:
             response = self._client.messages.create(**kwargs)
@@ -146,6 +154,10 @@ class AnthropicProvider(LLMProvider):
         return {
             "content": text_content,
             "stop_reason": response.stop_reason,
+            # the resolved model id the API actually used (e.g. claude-sonnet-4-5-2025...) — recorded
+            # by callers like the extraction runner so a result is reproducible/auditable; falls back
+            # to the configured name if the SDK ever omits it
+            "model": getattr(response, "model", None) or self._model,
             "usage": {
                 "input_tokens": response.usage.input_tokens,
                 "output_tokens": response.usage.output_tokens,

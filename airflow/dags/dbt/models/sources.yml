@@ -10,3 +10,12 @@ sources:
         description: "Raw SEC EDGAR XBRL financials — full table replace on each dag_stocks.py run"
       - name: WEATHER_HOURLY
         description: "Raw Open-Meteo hourly forecasts — append-only with dedup in dag_weather.py"
+
+  # genai: LLM-extracted structured facts written by genai/runners/extract_runner.py (not by dbt) —
+  # exposed as a source so the dim_filing_extract model can read it with a tracked dependency edge
+  - name: analytics
+    database: PIPELINE_DB
+    schema: ANALYTICS
+    tables:
+      - name: FCT_FILING_EXTRACTS
+        description: "Structured 10-K extracts (risk factors, revenue guidance) — one row per ticker/filing/section/extract_type"

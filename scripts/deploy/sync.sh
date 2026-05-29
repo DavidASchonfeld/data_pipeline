@@ -11,8 +11,16 @@
 
 step_sync_dags() {
     echo "=== Step 2: Syncing DAG files to EC2 ==="
+    # genai: only ship the genai_dags/ folder when the AI layer is on — this deploy-time exclusion is
+    # the off-switch for those DAGs (the roadmap's "deploy script skips the folder"). When GENAI is
+    # off the DAGs never reach the pod, so they can't register. (Note: --exclude does not DELETE an
+    # already-synced copy; flip GENAI_ENABLED off + full purge per the roadmap removal steps to drop it.)
+    GENAI_DAG_EXCLUDE=""
+    if [ "${GENAI_ENABLED:-false}" != "true" ]; then
+        GENAI_DAG_EXCLUDE="--exclude=genai_dags/"
+    fi
     # Trailing "/" on source means "sync contents of folder", not the folder itself
-    rsync $RSYNC_FLAGS "$PROJECT_ROOT/airflow/dags/" "$EC2_HOST:$EC2_DAG_PATH/"
+    rsync $RSYNC_FLAGS $GENAI_DAG_EXCLUDE "$PROJECT_ROOT/airflow/dags/" "$EC2_HOST:$EC2_DAG_PATH/"
 }
 
 step_sync_helm_dockerfile() {
