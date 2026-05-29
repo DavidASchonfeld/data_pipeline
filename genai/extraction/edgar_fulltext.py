@@ -192,11 +192,13 @@ def _html_to_text(html: str) -> str:
     return soup.get_text(separator="\n")
 
 
-def fetch_10k_text(ticker: str, year: int) -> dict[str, str]:
-    """Fetch a company's 10-K for a fiscal year and return {section_name: text}.
+def fetch_10k(ticker: str, year: int) -> dict:
+    """Fetch a company's 10-K for a fiscal year and return its date metadata plus split sections.
 
-    Sections are Items 1, 1A, 7, 7A; if they can't be cleanly identified the whole filing is
-    returned under the key "full". Raises EdgarError on any fetch or parse failure.
+    Returns {"filing_date": str, "report_date": str, "sections": {section_name: text}}.
+    `filing_date` is when the 10-K was filed with the SEC; `report_date` is the fiscal period it
+    covers. Sections are Items 1, 1A, 7, 7A; if they can't be cleanly identified the whole filing
+    is returned under the key "full". Raises EdgarError on any fetch or parse failure.
     """
     cik = resolve_cik(ticker)
     filing = _find_10k(cik, year)
@@ -210,4 +212,17 @@ def fetch_10k_text(ticker: str, year: int) -> dict[str, str]:
         raise EdgarError(f"Fetched 10-K for {ticker} FY{year} but extracted no text from {doc_url}")
 
     logger.info("Fetched 10-K %s FY%s: %d chars from %s", ticker, year, len(text), filing["document"])
-    return sections.split_sections(text)
+    return {
+        "filing_date": filing["filing_date"],
+        "report_date": filing["report_date"],
+        "sections": sections.split_sections(text),
+    }
+
+
+def fetch_10k_text(ticker: str, year: int) -> dict[str, str]:
+    """Fetch a company's 10-K for a fiscal year and return {section_name: text}.
+
+    Thin wrapper over fetch_10k() that drops the date metadata — kept for callers that only need
+    the section text. See fetch_10k() for the full shape and section details.
+    """
+    return fetch_10k(ticker, year)["sections"]

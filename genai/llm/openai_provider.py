@@ -61,6 +61,8 @@ class OpenAIProvider(LLMProvider):
         tools: list[dict] | None = None,
         system: str | None = None,
         max_tokens: int = 2048,
+        temperature: float | None = None,
+        tool_choice: str | None = None,
     ) -> dict:
         # chat: send a multi-turn conversation and optionally let the AI call tools
 
@@ -77,6 +79,12 @@ class OpenAIProvider(LLMProvider):
         )
         if tools:
             kwargs["tools"] = self._translate_tools(tools)
+        if temperature is not None:
+            # 0 = deterministic output, which is what extraction wants for reproducibility
+            kwargs["temperature"] = temperature
+        if tool_choice:
+            # force the model to call this specific function — turns free text into a structured result
+            kwargs["tool_choice"] = {"type": "function", "function": {"name": tool_choice}}
 
         try:
             response = self._client.chat.completions.create(**kwargs)
@@ -136,6 +144,9 @@ class OpenAIProvider(LLMProvider):
         return {
             "content": message.content or "",
             "stop_reason": choice.finish_reason,
+            # the resolved model id the API actually used — recorded by callers (e.g. the extraction
+            # runner) for reproducibility; falls back to the configured name if the SDK omits it
+            "model": getattr(response, "model", None) or self._model,
             "usage": {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,

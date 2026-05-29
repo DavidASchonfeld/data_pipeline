@@ -956,6 +956,18 @@ step_setup_ml_venv() {
                 echo 'anthropic installed.'
             fi
 
+            # openai: the runner uses /opt/ml-venv, so the OpenAI SDK must live here too (not just the
+            # Airflow venv) for LLM_PROVIDER=openai to work in the extraction runner
+            if kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                /opt/ml-venv/bin/pip show openai > /dev/null 2>&1; then
+                echo 'openai already installed — skipping'
+            else
+                echo 'Installing openai into ml-venv...' &&
+                kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                    /opt/ml-venv/bin/pip install --no-cache-dir \"openai\" &&
+                echo 'openai installed.'
+            fi
+
             # sentence-transformers: local embedding model for EPIC 6 (all-MiniLM-L6-v2, 80 MB)
             if kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
                 /opt/ml-venv/bin/pip show sentence-transformers > /dev/null 2>&1; then
@@ -1023,6 +1035,30 @@ step_setup_ml_venv() {
                     /opt/ml-venv/bin/pip install --no-cache-dir \"numpy<2\" &&
                 echo 'numpy<2 installed.'
             fi
+
+            # pydantic: validates the LLM's structured output in the EPIC 4 extraction runner.
+            # anthropic pulls it transitively, but a first-class schema layer declares it explicitly.
+            if kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                /opt/ml-venv/bin/pip show pydantic > /dev/null 2>&1; then
+                echo 'pydantic already installed — skipping'
+            else
+                echo 'Installing pydantic into ml-venv...' &&
+                kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                    /opt/ml-venv/bin/pip install --no-cache-dir \"pydantic\" &&
+                echo 'pydantic installed.'
+            fi
+
+            # python-dotenv: genai/config.py imports it (optional in code, but install it so the
+            # extraction runner under ml-venv loads config cleanly without falling back to the no-op path)
+            if kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                /opt/ml-venv/bin/pip show python-dotenv > /dev/null 2>&1; then
+                echo 'python-dotenv already installed — skipping'
+            else
+                echo 'Installing python-dotenv into ml-venv...' &&
+                kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                    /opt/ml-venv/bin/pip install --no-cache-dir \"python-dotenv\" &&
+                echo 'python-dotenv installed.'
+            fi
         fi
     " || {
         echo ""
@@ -1046,7 +1082,11 @@ step_run_offline_tests() {
                 genai/llm/__tests__/test_factory.py \
                 genai/llm/__tests__/test_openai_provider.py \
                 genai/llm/__tests__/test_anthropic_provider.py \
-                -m offline -v --no-header -q 2>&1'
+                genai/extraction/__tests__/test_schemas.py \
+                genai/extraction/__tests__/test_prompts.py \
+                genai/extraction/__tests__/test_edgar_fulltext.py \
+                genai/runners/__tests__/test_extract_runner.py \
+                -m \"not live\" -v --no-header -q 2>&1'
     " || {
         echo ""
         echo "ERROR: offline genai tests failed — the deployed code has a logic error."
