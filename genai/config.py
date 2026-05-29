@@ -1,8 +1,14 @@
 import os
 
-from dotenv import load_dotenv  # reads .env for local dev; no-op in production
-
-load_dotenv()
+# python-dotenv is a local-dev convenience that loads a .env file. It is OPTIONAL: in production
+# every value already comes from the environment / K8s secrets, so load_dotenv() is a no-op there.
+# Importing it defensively keeps genai/ runnable under any venv — notably the ml-venv subprocess
+# runner, which has no reason to carry a dev-only dependency.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # reads .env for local dev; no-op in production
+except ModuleNotFoundError:
+    pass
 
 # ── Feature flag ──────────────────────────────────────────────────────────────
 # Think of this as a light switch: when it's off, the AI layer does not run at all.
@@ -46,6 +52,19 @@ EDGAR_TIMEOUT_SECONDS: float = float(os.environ.get("EDGAR_TIMEOUT_SECONDS", "30
 # How many times to retry a transient EDGAR failure (429 rate-limit, 5xx, dropped connection).
 # The retry/backoff is handled once by the requests Session adapter — no second hand-rolled loop.
 EDGAR_MAX_RETRIES: int = int(os.environ.get("EDGAR_MAX_RETRIES", "3"))
+
+# ── Structured extraction (EPIC 4) ─────────────────────────────────────────────
+# Used by genai/runners/extract_runner.py to pull structured facts out of 10-K sections.
+# These caps keep one extraction run cheap and predictable (target under $0.50 per run).
+
+# Largest LLM reply (in tokens) allowed per extraction call — a list of risks or guidance
+# statements never needs the full 2048 default, so capping it lower trims output cost.
+GENAI_EXTRACT_MAX_TOKENS: int = int(os.environ.get("GENAI_EXTRACT_MAX_TOKENS", "1500"))
+
+# Largest slice of a 10-K section (in characters) sent to the LLM. Item 1A "Risk Factors" can
+# run 50k+ characters; trimming to ~24k (≈6k tokens) keeps input cost bounded — the runner adds
+# a visible truncation marker so a clipped section is obvious in the prompt.
+GENAI_MAX_SECTION_CHARS: int = int(os.environ.get("GENAI_MAX_SECTION_CHARS", "24000"))
 
 # ── pgvector connection ───────────────────────────────────────────────────────
 # pgvector is a Postgres database that stores text embeddings (384-number "meaning fingerprints").

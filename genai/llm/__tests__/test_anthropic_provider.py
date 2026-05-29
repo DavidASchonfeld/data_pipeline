@@ -8,7 +8,7 @@ import pytest
 from genai.llm.base import LLMProviderError
 
 
-def _fake_response(text="Hello", stop_reason="end_turn", tool_name=None, tool_input=None, tool_id=None, input_tokens=10, output_tokens=5):
+def _fake_response(text="Hello", stop_reason="end_turn", tool_name=None, tool_input=None, tool_id=None, input_tokens=10, output_tokens=5, model="claude-sonnet-4-6-20250101"):
     # build a minimal fake Anthropic response that matches the shape _normalise_response expects
     text_block = MagicMock()
     text_block.type = "text"
@@ -26,6 +26,7 @@ def _fake_response(text="Hello", stop_reason="end_turn", tool_name=None, tool_in
     response = MagicMock()
     response.content = content
     response.stop_reason = stop_reason
+    response.model = model  # the resolved model id the SDK echoes back
     response.usage.input_tokens = input_tokens
     response.usage.output_tokens = output_tokens
     return response
@@ -99,6 +100,34 @@ def test_chat_parses_tool_calls_in_response(anthropic_prov):
     assert len(result["tool_calls"]) == 1
     assert result["tool_calls"][0]["name"] == "get_weather"
     assert result["tool_calls"][0]["input"] == {"city": "NYC"}
+
+
+def test_chat_returns_resolved_model(anthropic_prov):
+    # confirm chat() surfaces the resolved model id the API echoed back (used to stamp extraction rows)
+    provider, client = anthropic_prov
+    client.messages.create.return_value = _fake_response(model="claude-sonnet-4-6-20250101")
+    result = provider.chat(messages=[{"role": "user", "content": "Hi"}], max_tokens=20)
+    assert result["model"] == "claude-sonnet-4-6-20250101"
+
+
+def test_chat_passes_temperature(anthropic_prov):
+    # temperature is forwarded only when set — default None must NOT add the kwarg (backward-compatible)
+    provider, client = anthropic_prov
+    client.messages.create.return_value = _fake_response()
+    provider.chat(messages=[{"role": "user", "content": "Hi"}], max_tokens=20)
+    assert "temperature" not in client.messages.create.call_args[1]
+    provider.chat(messages=[{"role": "user", "content": "Hi"}], max_tokens=20, temperature=0)
+    assert client.messages.create.call_args[1]["temperature"] == 0
+
+
+def test_chat_passes_tool_choice(anthropic_prov):
+    # a tool-name string is translated into Anthropic's forced-tool shape; default None adds nothing
+    provider, client = anthropic_prov
+    client.messages.create.return_value = _fake_response()
+    provider.chat(messages=[{"role": "user", "content": "Hi"}], max_tokens=20)
+    assert "tool_choice" not in client.messages.create.call_args[1]
+    provider.chat(messages=[{"role": "user", "content": "Hi"}], max_tokens=20, tool_choice="record_risk_factors")
+    assert client.messages.create.call_args[1]["tool_choice"] == {"type": "tool", "name": "record_risk_factors"}
 
 
 def test_client_built_with_timeout_and_retries():

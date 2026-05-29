@@ -9,7 +9,7 @@ import pytest
 from genai.llm.base import LLMProviderError
 
 
-def _fake_completion(content="Hello", finish_reason="stop", tool_calls=None, prompt_tokens=10, completion_tokens=5):
+def _fake_completion(content="Hello", finish_reason="stop", tool_calls=None, prompt_tokens=10, completion_tokens=5, model="gpt-4o-2024-08-06"):
     # build a minimal fake OpenAI response object that matches the shape _normalise_response expects
     message = MagicMock()
     message.content = content
@@ -23,6 +23,7 @@ def _fake_completion(content="Hello", finish_reason="stop", tool_calls=None, pro
     response = MagicMock()
     response.choices = [choice]
     response.usage = usage
+    response.model = model  # the resolved model id the SDK echoes back
     return response
 
 
@@ -94,6 +95,37 @@ def test_chat_parses_tool_calls_in_response(openai_prov):
     assert len(result["tool_calls"]) == 1
     assert result["tool_calls"][0]["name"] == "get_weather"
     assert result["tool_calls"][0]["input"] == {"city": "NYC"}
+
+
+def test_chat_returns_resolved_model(openai_prov):
+    # confirm chat() surfaces the resolved model id the API echoed back (used to stamp extraction rows)
+    provider, client = openai_prov
+    client.chat.completions.create.return_value = _fake_completion(model="gpt-4o-2024-08-06")
+    result = provider.chat(messages=[{"role": "user", "content": "Hi"}], max_tokens=20)
+    assert result["model"] == "gpt-4o-2024-08-06"
+
+
+def test_chat_passes_temperature(openai_prov):
+    # temperature is forwarded only when set — default None must NOT add the kwarg (backward-compatible)
+    provider, client = openai_prov
+    client.chat.completions.create.return_value = _fake_completion()
+    provider.chat(messages=[{"role": "user", "content": "Hi"}], max_tokens=20)
+    assert "temperature" not in client.chat.completions.create.call_args[1]
+    provider.chat(messages=[{"role": "user", "content": "Hi"}], max_tokens=20, temperature=0)
+    assert client.chat.completions.create.call_args[1]["temperature"] == 0
+
+
+def test_chat_passes_tool_choice(openai_prov):
+    # a tool-name string is translated into OpenAI's forced-function shape; default None adds nothing
+    provider, client = openai_prov
+    client.chat.completions.create.return_value = _fake_completion()
+    provider.chat(messages=[{"role": "user", "content": "Hi"}], max_tokens=20)
+    assert "tool_choice" not in client.chat.completions.create.call_args[1]
+    provider.chat(messages=[{"role": "user", "content": "Hi"}], max_tokens=20, tool_choice="record_risk_factors")
+    assert client.chat.completions.create.call_args[1]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "record_risk_factors"},
+    }
 
 
 def test_client_built_with_timeout_and_retries():

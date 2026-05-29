@@ -67,3 +67,19 @@ models:
         data_tests: [not_null]  # new column: city identifier for dashboard dropdown filtering
       - name: temperature_f
         data_tests: [not_null]
+
+  # genai: LLM-extracted 10-K facts joined to dim_company — built/tested via tag:genai_filings
+  - name: dim_filing_extract
+    config:
+      tags: ['genai_filings']
+    description: "Structured 10-K extracts enriched with company dimension"
+    columns:
+      - name: ticker
+        data_tests: [not_null]
+      - name: filing_date
+        data_tests: [not_null]
+      - name: extract_type
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['risk_factors', 'revenue_guidance']  # must match EXTRACT_TYPE_NAMES in genai/extraction/schemas.py

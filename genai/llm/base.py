@@ -18,7 +18,10 @@ class LLMProvider(ABC):
     def complete(self, prompt: str, max_tokens: int = 1024) -> str: ...
 
     # chat: send a conversation history (list of messages) and optionally describe tools the AI can call
-    # Returns a dict with keys: content (str), stop_reason (str), usage (dict), tool_calls (list)
+    # Returns a dict with keys: content (str), stop_reason (str), usage (dict), tool_calls (list), model (str)
+    #   temperature: sampling randomness; pass 0 for deterministic, reproducible output (extraction). None = SDK default.
+    #   tool_choice: a provider-neutral TOOL-NAME string that FORCES the model to call that tool — each
+    #                provider translates it into its own format. None = the model decides whether to call a tool.
     @abstractmethod
     def chat(
         self,
@@ -26,4 +29,6 @@ class LLMProvider(ABC):
         tools: list[dict] | None = None,
         system: str | None = None,
         max_tokens: int = 2048,
+        temperature: float | None = None,
+        tool_choice: str | None = None,
     ) -> dict: ...

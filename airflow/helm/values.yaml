@@ -71,6 +71,9 @@ extraEnvFrom: |
       name: snowflake-credentials  # injects SNOWFLAKE_ACCOUNT, USER, PASSWORD, DATABASE, SCHEMA, WAREHOUSE, ROLE
   - secretRef:
       name: pgvector-credentials   # genai: injects PGVECTOR_HOST/USER/PASSWORD/DB so runners can connect to the vector DB
+  - secretRef:
+      name: genai-credentials      # genai: injects LLM_API_KEY/LLM_PROVIDER/LLM_MODEL so the extraction runner can call the LLM
+      optional: true               # optional: when GENAI_ENABLED=false this secret is never applied — don't block pod startup
 
 dags:
   gitSync:
@@ -266,8 +269,9 @@ triggerer:
       cpu: "300m"
 
 dagProcessor:
-  # Continuously re-parses DAG files. 256Mi request covers normal cycles.
-  # 512Mi limit: if exceeded it signals a DAG code problem (e.g. import loop), not a sizing issue.
+  # Continuously re-parses DAG files. 384Mi request covers real baseline (observed ~335MB RSS) and
+  # keeps its OOM-kill priority low; 768Mi limit gives headroom for the parse-time spike that
+  # OOM-killed the 512Mi cap during a post-deploy parse storm (May 2026). Node has ~11GB free.
   # dagProcessor schema doesn't support startupProbe — only livenessProbe fields.
   # Raise timeout from default 20s: Airflow 3.x loads full provider stack per jobs-check call (30-45s).
   # cpu request lowered 75m→50m (Apr 2026): offset for scheduler increase; DAG parsing is periodic, not CPU-intensive.
@@ -278,10 +282,10 @@ dagProcessor:
     periodSeconds: 60
   resources:
     requests:
-      memory: "256Mi"
+      memory: "384Mi"
       cpu: "50m"
     limits:
-      memory: "512Mi"
+      memory: "768Mi"
       cpu: "500m"
 
 # Run DB migration and user-creation as regular K8s Jobs instead of Helm post-install/upgrade hooks.
