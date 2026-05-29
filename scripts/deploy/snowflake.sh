@@ -75,5 +75,57 @@ conn.close()
 print("Snowflake setup complete — all objects created/verified.")
 PYTHON
 
+    # genai: when the GenAI layer is on, also create the ANALYTICS table the extraction DAG writes to.
+    # Skipped entirely when GENAI_ENABLED is not true, so the base setup is unchanged.
+    if [ "${GENAI_ENABLED:-false}" = "true" ]; then
+        _snowflake_genai_bootstrap
+    fi
+
     echo "=== Snowflake Setup: done ==="
+}
+
+# Apply airflow/dags/sql/analytics_bootstrap.sql (ANALYTICS.FCT_FILING_EXTRACTS) — GenAI EPIC 3.
+# Reuses the same connect + comment-strip + statement-split logic as the base setup above.
+_snowflake_genai_bootstrap() {
+    echo "=== Snowflake Setup (GenAI): applying airflow/dags/sql/analytics_bootstrap.sql ==="
+
+    GENAI_SQL_FILE="$PROJECT_ROOT/airflow/dags/sql/analytics_bootstrap.sql"
+    if [ ! -f "$GENAI_SQL_FILE" ]; then
+        echo "ERROR: GENAI_ENABLED=true but GenAI SQL file not found: $GENAI_SQL_FILE"
+        exit 1
+    fi
+
+    python3 - <<PYTHON
+import snowflake.connector
+import os
+import re
+
+sql_final = open("$GENAI_SQL_FILE").read()
+
+print("Connecting to Snowflake as ACCOUNTADMIN (GenAI bootstrap)...")
+conn = snowflake.connector.connect(
+    account=os.environ["SNOWFLAKE_ACCOUNT"],
+    user=os.environ["SNOWFLAKE_ADMIN_USER"],
+    password=os.environ["SNOWFLAKE_ADMIN_PASSWORD"],
+    role="ACCOUNTADMIN",
+)
+
+cur = conn.cursor()
+
+# Strip -- comments before splitting on semicolons (same reasoning as the base setup).
+sql_no_comments = re.sub(r'--[^\n]*', '', sql_final)
+statements = [s.strip() for s in sql_no_comments.split(";") if s.strip()]
+
+total = len(statements)
+print(f"Executing {total} GenAI SQL statements...")
+for i, stmt in enumerate(statements, 1):
+    preview = stmt.splitlines()[0].strip()
+    print(f"  [{i}/{total}] {preview}")
+    cur.execute(stmt)
+
+conn.close()
+print("GenAI Snowflake bootstrap complete — ANALYTICS.FCT_FILING_EXTRACTS created/verified.")
+PYTHON
+
+    echo "=== Snowflake Setup (GenAI): done ==="
 }

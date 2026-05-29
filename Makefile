@@ -7,7 +7,7 @@ PIP := $(VENV)/bin/pip
 # create the local virtualenv and install base test deps the first time either target runs
 $(VENV)/bin/python3:
 	python3 -m venv $(VENV)
-	$(PIP) install -q pytest dash pandas plotly python-dotenv
+	$(PIP) install -q pytest dash pandas plotly python-dotenv beautifulsoup4
 
 # run all offline tests — safe any time, no API key needed
 test: $(VENV)/bin/python3

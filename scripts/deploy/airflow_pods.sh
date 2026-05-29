@@ -1002,6 +1002,17 @@ step_setup_ml_venv() {
                 echo 'rank-bm25 installed.'
             fi
 
+            # beautifulsoup4: HTML->text parser for the EPIC 3 EDGAR 10-K fetcher (genai/extraction)
+            if kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                /opt/ml-venv/bin/pip show beautifulsoup4 > /dev/null 2>&1; then
+                echo 'beautifulsoup4 already installed — skipping'
+            else
+                echo 'Installing beautifulsoup4 into ml-venv...' &&
+                kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                    /opt/ml-venv/bin/pip install --no-cache-dir \"beautifulsoup4\" &&
+                echo 'beautifulsoup4 installed.'
+            fi
+
             # numpy<2: pin below 2.0 — sentence-transformers and pgvector both have numpy<2 constraints
             if kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
                 /opt/ml-venv/bin/pip show numpy > /dev/null 2>&1; then

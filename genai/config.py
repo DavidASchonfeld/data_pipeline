@@ -32,6 +32,21 @@ LLM_TIMEOUT_SECONDS: float = float(os.environ.get("LLM_TIMEOUT_SECONDS", "60"))
 # internally, so we only set the attempt count — we never add a second retry layer on top.
 LLM_MAX_RETRIES: int = int(os.environ.get("LLM_MAX_RETRIES", "3"))
 
+# ── SEC EDGAR full-text fetch ──────────────────────────────────────────────────
+# Used by genai/extraction/edgar_fulltext.py to download 10-K filings. SEC EDGAR is free,
+# public-domain U.S. government data — no API key — but requires a descriptive User-Agent with
+# contact info (SEC blocks anonymous callers) and fair-access rate limits.
+
+# Contact email baked into the User-Agent so SEC can reach me if a script misbehaves.
+EDGAR_CONTACT_EMAIL: str = os.environ.get("EDGAR_CONTACT_EMAIL", "contact@stocklivedata.dev")
+
+# How long (seconds) to wait on a single EDGAR HTTP request before giving up — fail fast.
+EDGAR_TIMEOUT_SECONDS: float = float(os.environ.get("EDGAR_TIMEOUT_SECONDS", "30"))
+
+# How many times to retry a transient EDGAR failure (429 rate-limit, 5xx, dropped connection).
+# The retry/backoff is handled once by the requests Session adapter — no second hand-rolled loop.
+EDGAR_MAX_RETRIES: int = int(os.environ.get("EDGAR_MAX_RETRIES", "3"))
+
 # ── pgvector connection ───────────────────────────────────────────────────────
 # pgvector is a Postgres database that stores text embeddings (384-number "meaning fingerprints").
 # Future EPICs write filing chunks and weather summaries here; EPIC 8 queries it for semantic search.
