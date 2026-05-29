@@ -69,6 +69,8 @@ extraEnvFrom: |
       name: db-credentials
   - secretRef:
       name: snowflake-credentials  # injects SNOWFLAKE_ACCOUNT, USER, PASSWORD, DATABASE, SCHEMA, WAREHOUSE, ROLE
+  - secretRef:
+      name: pgvector-credentials   # genai: injects PGVECTOR_HOST/USER/PASSWORD/DB so runners can connect to the vector DB
 
 dags:
   gitSync:

@@ -89,16 +89,9 @@ step_auto_bootstrap() {
     ssh "$EC2_HOST" "helm repo add apache-airflow https://airflow.apache.org && helm repo update"
 
     # ── Wait for K3s node to be Ready ─────────────────────────────────────────
-    echo "=== Bootstrap: Waiting for K3s node to be Ready (up to 5 minutes) ==="
-    ssh "$EC2_HOST" "
-        for i in \$(seq 1 30); do
-            if kubectl get nodes 2>/dev/null | grep -q ' Ready'; then
-                echo 'K3s node is Ready'; kubectl get nodes; break
-            fi
-            echo \"Attempt \$i/30 — K3s not ready yet, waiting 10s...\"; sleep 10
-            if [ \$i -eq 30 ]; then echo 'ERROR: K3s did not become Ready after 5 minutes'; exit 1; fi
-        done
-    "
+    # Reuses the hardened _wait_k3s_ready from common.sh so bootstrap gets the same
+    # pre-flight checks, recovery escalation, and diagnostic dump as a normal deploy.
+    _wait_k3s_ready || { echo "ERROR: K3s did not become Ready during bootstrap"; exit 1; }
 
     # ── Kubernetes namespace + PV/PVC ─────────────────────────────────────────
     echo "=== Bootstrap: Creating airflow-my-namespace ==="

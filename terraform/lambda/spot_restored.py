@@ -74,8 +74,12 @@ def handler(event, context):
         asg_instances = asg.describe_auto_scaling_groups(
             AutoScalingGroupNames=[asg_name]
         )["AutoScalingGroups"][0]["Instances"]
+        # include Pending:Proceed — the second instance completes its lifecycle hook ~49s before
+        # spot_restored fires, so it may not have transitioned to InService yet; InService-only
+        # check misses it and lets ASG "oldest first" kill the EIP holder instead
+        _ACTIVE_STATES = {"Pending", "Pending:Wait", "Pending:Proceed", "InService"}
         for inst in asg_instances:
-            if inst["InstanceId"] != new_instance_id and inst["LifecycleState"] == "InService":
+            if inst["InstanceId"] != new_instance_id and inst["LifecycleState"] in _ACTIVE_STATES:
                 ec2.terminate_instances(InstanceIds=[inst["InstanceId"]])
                 logger.info("Terminated non-EIP instance %s so EIP holder survives scale-down", inst["InstanceId"])
                 break

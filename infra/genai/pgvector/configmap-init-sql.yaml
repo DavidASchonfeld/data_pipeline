@@ -1,0 +1,50 @@
+# ConfigMap: holds the SQL that sets up the pgvector database on first boot.
+#
+# The official Postgres container image automatically runs every *.sql file it finds in
+# /docker-entrypoint-initdb.d/ the very first time it starts (when the data folder is empty).
+# On all later restarts it skips that folder entirely, so this SQL only ever runs once.
+# The deployment mounts this ConfigMap at /docker-entrypoint-initdb.d/ so Postgres picks it up.
+#
+# What the SQL does:
+#   1. Enables the pgvector extension — adds the vector(N) column type and similarity operators.
+#   2. Creates ONE generic table, "chunks", that stores text from ANY data source alongside its
+#      embedding (its "meaning fingerprint"). A new data source is just a new "namespace" value
+#      (e.g. 'sec_filings', 'weather', 'my_pdfs') plus whatever it wants in the "metadata" column —
+#      no new tables and no schema changes are ever needed. See docs/decisions/0005-source-agnostic-ingestion.md.
+#   3. Adds indexes so vector search, namespace filtering, and metadata filtering are all fast.
+# The UNIQUE(namespace, external_id) constraint means re-running ingestion never creates duplicates.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pgvector-init-sql
+  namespace: airflow-my-namespace
+data:
+  # IF NOT EXISTS everywhere makes each statement safe to re-run if init is ever triggered again
+  init.sql: |
+    -- load the pgvector extension so vector columns and similarity operators are available
+    CREATE EXTENSION IF NOT EXISTS vector;
+
+    -- one generic table for every source: filings, weather, PDFs, web pages, anything.
+    -- namespace   = which source this row belongs to (e.g. 'sec_filings', 'weather')
+    -- external_id = the source's own natural key for this chunk (e.g. 'AAPL|2023-09-30|item1a|3')
+    -- text        = the chunk of text itself
+    -- embedding   = its 384-dim meaning fingerprint (all-MiniLM-L6-v2 output)
+    -- metadata    = any source-specific fields (ticker, filing_date, city, week_start, ...), filterable at query time
+    CREATE TABLE IF NOT EXISTS chunks (
+        id           BIGSERIAL PRIMARY KEY,
+        namespace    TEXT        NOT NULL,
+        external_id  TEXT        NOT NULL,
+        text         TEXT        NOT NULL,
+        embedding    vector(384),
+        metadata     JSONB       NOT NULL DEFAULT '{}'::jsonb,
+        UNIQUE (namespace, external_id)
+    );
+
+    -- HNSW index: makes "find the chunks closest in meaning" searches fast (cosine distance)
+    CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON chunks USING hnsw (embedding vector_cosine_ops);
+
+    -- almost every query filters by source first, so keep that lookup fast
+    CREATE INDEX IF NOT EXISTS idx_chunks_namespace ON chunks (namespace);
+
+    -- GIN index makes metadata filtering fast, e.g. WHERE metadata->>'ticker' = 'AAPL'
+    CREATE INDEX IF NOT EXISTS idx_chunks_metadata ON chunks USING GIN (metadata);

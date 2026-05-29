@@ -16,12 +16,16 @@ step_deploy_mlflow() {
     #   We pull the image using Docker (which caches layers), then pipe it directly into K3S's image store.
     #   On repeat deploys this is fast because Docker only downloads what's changed.
     # Prune stale images first — separate from the pull so the retry loop below only covers the pull
+    # flock = a "talking stick" for the shared Docker image store. The pgvector deploy job runs at the
+    # same time as this one and uses the same store; without a lock, its cleanup can delete an image this
+    # job is still downloading (the "failed commit on ref" error). flock makes the two jobs take turns:
+    # grab the lock file, run the docker command, release it. -w 600 = wait up to 10 min for our turn.
     ssh "$EC2_HOST" "
         echo 'Pruning old MLflow images from K3S containerd to free ephemeral storage...' &&
         sudo k3s ctr images ls | grep 'mlflow' | awk '{print \$1}' | xargs -r sudo k3s ctr images rm 2>/dev/null || true &&
         echo 'Pruning dangling Docker images to free disk space...' &&
         for _p in 1 2 3 4 5; do
-            out=\$(docker image prune -f 2>&1) && echo \"\$out\" && break
+            out=\$(flock -w 600 /tmp/docker-content-store.lock docker image prune -f 2>&1) && echo \"\$out\" && break
             echo \"\$out\" | grep -q 'prune operation is already running' \
                 && echo \"Prune already running (attempt \$_p/5) — waiting 10s...\" && sleep 10 \
                 || { echo \"\$out\"; break; }
@@ -33,14 +37,16 @@ step_deploy_mlflow() {
     for _pull_attempt in 1 2 3; do
         if ssh "$EC2_HOST" "
             echo 'Pulling MLflow image via Docker (attempt $_pull_attempt/3)...' &&
-            docker pull $MLFLOW_IMAGE
+            # Take the shared Docker-store lock before pulling so pgvector's cleanup can't wipe this download mid-flight.
+            flock -w 600 /tmp/docker-content-store.lock docker pull $MLFLOW_IMAGE
         "; then
             break  # pull succeeded — exit retry loop
         fi
         if [ "$_pull_attempt" -lt 3 ]; then
             echo "MLflow docker pull attempt $_pull_attempt failed — removing partial image and retrying in 15s..."
-            # Remove the partial/corrupted image so Docker downloads it completely fresh next attempt
-            ssh "$EC2_HOST" "docker rmi '$MLFLOW_IMAGE' 2>/dev/null || true"
+            # Remove the partial/corrupted image so Docker downloads it completely fresh next attempt.
+            # Locked too: deleting an image also touches the shared store, so it must wait its turn like the prune/pull above.
+            ssh "$EC2_HOST" "flock -w 600 /tmp/docker-content-store.lock docker rmi '$MLFLOW_IMAGE' 2>/dev/null || true"
             sleep 15
         else
             echo "✗ MLflow docker pull failed after 3 attempts"
@@ -53,7 +59,8 @@ step_deploy_mlflow() {
 
     # Throw away Docker's copy of the MLflow image now that K3S has its own — recovers ~1 GB.
     # Mirrors the cleanup done for airflow-dbt in airflow_image.sh after its K3S import.
-    ssh "$EC2_HOST" "echo 'Pruning Docker image layer cache after MLflow K3S import...' && docker image prune -af --filter 'until=1h' 2>&1 | tail -5" || true
+    # Lock the shared Docker store while cleaning up — pgvector may still be pulling and we must not delete its layers.
+    ssh "$EC2_HOST" "echo 'Pruning Docker image layer cache after MLflow K3S import...' && flock -w 600 /tmp/docker-content-store.lock docker image prune -af --filter 'until=1h' 2>&1 | tail -5" || true
 
     echo "=== Step 2b6: Deploying MLflow to K3s (safe to run multiple times) ==="
     # Re-apply kubectl permissions before any kubectl call — K3s resets k3s.yaml to root-only

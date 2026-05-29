@@ -67,6 +67,7 @@ _print_deploy_summary() {
     summary_lines=$(grep -iE "(WARNING|ERROR|⚠|DeprecationWarning|DEPRECATION:|FutureWarning|UserWarning|✗)" \
         "$DEPLOY_LOGFILE" \
         | grep -v -- "--ignore-not-found" \
+        | grep -vE "::[^ ]+ (PASSED|SKIPPED) \[" \
         | awk '!seen[$0]++') || true  # || true: if grep finds nothing it exits non-zero — this prevents that from stopping the script
     # Run spot detection now so SPOT_INTERRUPTION_DETECTED is known before the fallback below
     if [ "$exit_code" -ne 0 ] && [ "${DEPLOY_INTERRUPTED:-false}" != "true" ]; then
@@ -456,6 +457,100 @@ _check_ssh_prereqs() {
         return 1
     fi
 }
+
+# ── Instance state pre-flight check ──────────────────────────────────────────
+# Before spending 6 minutes retrying SSH, quickly verify that an EC2 instance is
+# actually running and that the Elastic IP is associated with it. A spot termination
+# or a failed EIP re-association would otherwise look identical to a generic SSH timeout.
+# Skips silently if aws CLI or credentials are unavailable (graceful degradation).
+_check_instance_state() {
+    local _profile="${AWS_PROFILE:-terraform-dev}"
+    if ! command -v aws &>/dev/null; then return 0; fi
+    if ! aws sts get-caller-identity --profile "$_profile" &>/dev/null; then return 0; fi
+
+    # look for a running instance with the pipeline Name tag
+    local _instance_id
+    _instance_id=$(aws ec2 describe-instances \
+        --profile "$_profile" --region "$AWS_REGION" \
+        --filters "Name=tag:Name,Values=data-pipeline-ec2" "Name=instance-state-name,Values=running" \
+        --query 'Reservations[0].Instances[0].InstanceId' \
+        --output text 2>/dev/null)
+
+    if [ -z "$_instance_id" ] || [ "$_instance_id" = "None" ]; then
+        echo "✗ No running pipeline instance found (spot may have been reclaimed)"
+        echo "  Run:  ./scripts/deploy.sh --provision"
+        return 1
+    fi
+
+    # confirm the EIP is attached to this instance — a failed Lambda re-association
+    # leaves the instance running but unreachable at the expected public IP
+    local _assoc_id
+    _assoc_id=$(aws ec2 describe-addresses \
+        --profile "$_profile" --region "$AWS_REGION" \
+        --query "Addresses[?InstanceId=='${_instance_id}'].AssociationId | [0]" \
+        --output text 2>/dev/null)
+
+    if [ -z "$_assoc_id" ] || [ "$_assoc_id" = "None" ]; then
+        echo "✗ Instance ${_instance_id} is running but the Elastic IP is not associated with it"
+        echo "  Check:  aws ec2 describe-addresses --profile $_profile --region $AWS_REGION"
+        echo "  Fix:    associate the EIP manually, then retry; or run ./scripts/deploy.sh --provision"
+        return 1
+    fi
+}
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── K3s recovery + diagnostic dump helper ─────────────────────────────────────
+# Called when a readiness wait times out. Dumps everything we'd want for a postmortem
+# (so the deploy log alone is enough to diagnose) and then runs one last hard recovery
+# (killall + clear stale containerd leases + restart). Returns 0 if recovery brought
+# the node Ready within 90s, 1 otherwise.
+_k3s_recover_and_diagnose() {
+    echo "=== K3s recovery + diagnostic dump ==="
+    # Single SSH heredoc keeps the dump contiguous in /tmp/deploy-last.log and avoids
+    # the multi-second per-SSH handshake cost of eight separate calls.
+    ssh "$EC2_HOST" "
+        echo '--- systemctl status k3s ---'
+        sudo systemctl status k3s --no-pager -l 2>&1 | head -40 || true
+        echo '--- journalctl -u k3s (last 100 lines) ---'
+        sudo journalctl -u k3s -n 100 --no-pager 2>&1 || true
+        echo '--- disk + memory ---'
+        df -h / 2>&1 || true
+        free -h 2>&1 || true
+        echo '--- kubectl get nodes -o wide ---'
+        kubectl get nodes -o wide 2>&1 || true
+        echo '--- kubectl describe nodes (head) ---'
+        kubectl describe nodes 2>&1 | head -120 || true
+        echo '--- containerd image count + leases ---'
+        echo -n 'image count: '; sudo k3s ctr images ls 2>/dev/null | wc -l
+        echo 'leases:'
+        sudo k3s ctr leases ls 2>&1 || true
+        echo '--- k3s/containerd processes ---'
+        ps -eo pid,rss,cmd 2>/dev/null | grep -E 'k3s|containerd' | grep -v grep || true
+        echo '--- recent syslog matches (k3s/kubelet/oom/killed) ---'
+        sudo tail -n 200 /var/log/syslog 2>/dev/null | grep -Ei 'k3s|kubelet|oom|killed' | tail -50 || true
+    "
+    echo "--- attempting hard recovery: killall + clear stale leases + start ---"
+    ssh "$EC2_HOST" "
+        sudo /usr/local/bin/k3s-killall.sh 2>/dev/null || true
+        # Stale 'k3s-import' leases from a prior failed image import can block k3s startup.
+        sudo k3s ctr leases ls -q 2>/dev/null | xargs -r sudo k3s ctr leases delete 2>/dev/null || true
+        # Half-uploaded image tarballs in /tmp can pin disk + lock containerd.
+        sudo find /tmp -maxdepth 1 -name 'k3s-import-*.tar' -delete 2>/dev/null || true
+        sudo systemctl start k3s || true
+    "
+    # Re-poll for up to 90s to see if the recovery worked.
+    for _r in $(seq 1 9); do
+        if ssh -o ConnectTimeout=5 "$EC2_HOST" "kubectl get nodes 2>/dev/null | grep -q ' Ready'"; then
+            echo "✓ K3s node Ready after hard recovery (attempt $_r)"
+            ssh "$EC2_HOST" "kubectl get nodes"
+            return 0
+        fi
+        echo "Post-recovery poll $_r/9 — still not Ready, waiting 10s..."
+        [ "$_r" -lt 9 ] && sleep 10
+    done
+    echo "✗ Hard recovery did not bring K3s Ready — see diagnostic dump above"
+    return 1
+}
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── K3s node readiness helper ─────────────────────────────────────────────────
@@ -463,18 +558,48 @@ _check_ssh_prereqs() {
 # Helm and Kafka apply against a NotReady node and pods get stuck in Pending.
 _wait_k3s_ready() {
     echo "=== Waiting for K3s node to be Ready (up to 5 minutes) ==="
-    # 30 attempts × 10s = 5 min — matches the wait in bootstrap.sh and user-data.sh.tpl
+    # Pre-flight 1: disk pressure is the most common silent cause of NotReady — at >88%
+    # kubelet starts evicting and refuses to register the node. Clean before polling.
+    local _disk_use
+    _disk_use=$(ssh -o ConnectTimeout=5 "$EC2_HOST" "df / | awk 'NR==2 {gsub(/%/,\"\",\$5); print \$5}'" 2>/dev/null || echo 0)
+    if [ "${_disk_use:-0}" -gt 88 ]; then
+        echo "Disk at ${_disk_use}% before readiness poll — running _ensure_disk_space first..."
+        _ensure_disk_space || true
+    fi
+    # Pre-flight 2: fast-fail recovery if k3s is stopped/failed — don't burn 5 min polling.
+    local _k3s_state
+    _k3s_state=$(ssh -o ConnectTimeout=5 "$EC2_HOST" "sudo systemctl is-active k3s 2>/dev/null" || echo "unknown")
+    if [ "$_k3s_state" != "active" ]; then
+        # k3s is down — clear any zombie containerd-shim processes from a prior stop, then start
+        echo "K3s service is '$_k3s_state' — starting it before readiness poll..."
+        ssh "$EC2_HOST" "sudo /usr/local/bin/k3s-killall.sh 2>/dev/null || true; sudo systemctl start k3s" || true
+    else
+        # Pre-flight 3: service is 'active' but containerd may be hung — quick ping.
+        # If containerd doesn't respond, restart k3s now rather than waste 50s polling a dead daemon.
+        if ! ssh -o ConnectTimeout=5 "$EC2_HOST" "sudo k3s ctr version >/dev/null 2>&1"; then
+            echo "containerd is unresponsive while k3s reports active — restarting k3s..."
+            ssh "$EC2_HOST" "sudo systemctl restart k3s" || true
+        fi
+    fi
+    # 30 attempts × 10s = 5 min — matches the wait in user-data.sh.tpl
     for _attempt in $(seq 1 30); do
         if ssh -o ConnectTimeout=5 "$EC2_HOST" "kubectl get nodes 2>/dev/null | grep -q ' Ready'"; then
             echo "✓ K3s node is Ready (attempt $_attempt)"
             ssh "$EC2_HOST" "kubectl get nodes"  # print node status so the log shows it
             return 0
         fi
+        # After 5 failed attempts (~50s), restart k3s to break out of a hung-but-running state
+        if [ "$_attempt" -eq 5 ]; then
+            echo "K3s node still not Ready after 50s — restarting k3s service to recover..."
+            ssh "$EC2_HOST" "sudo systemctl restart k3s" || true
+        fi
         echo "K3s not ready yet (attempt $_attempt/30), retrying in 10s..."
         [ "$_attempt" -lt 30 ] && sleep 10
     done
-    echo "✗ K3s node did not become Ready after 5 minutes"
-    return 1
+    echo "✗ K3s node did not become Ready after 5 minutes — running diagnostic dump + hard recovery"
+    # Dump everything + try one last killall/leases/start cycle before giving up.
+    _k3s_recover_and_diagnose
+    return $?
 }
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -499,8 +624,10 @@ _wait_k3s_api_ready() {
         echo "K3s API not ready yet (attempt $_attempt/36), retrying in 10s..."
         [ "$_attempt" -lt 36 ] && sleep 10
     done
-    echo "✗ K3s API server did not become ready after 6 minutes"
-    return 1
+    echo "✗ K3s API server did not become ready after 6 minutes — running diagnostic dump + hard recovery"
+    # Same recovery path as _wait_k3s_ready — node Ready implies API server can come up.
+    _k3s_recover_and_diagnose
+    return $?
 }
 # ─────────────────────────────────────────────────────────────────────────────
 

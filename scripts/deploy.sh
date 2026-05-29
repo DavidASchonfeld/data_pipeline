@@ -48,6 +48,7 @@ source "$DEPLOY_DIR/snowflake.sh"    # step_snowflake_setup
 source "$DEPLOY_DIR/airflow_image.sh" # step_build_airflow_image
 source "$DEPLOY_DIR/kafka.sh"        # step_deploy_kafka
 source "$DEPLOY_DIR/mlflow.sh"       # step_deploy_mlflow, step_fix_mlflow_experiment, step_mlflow_portforward
+source "$DEPLOY_DIR/pgvector.sh"    # step_deploy_pgvector (genai: only sourced; call is gated by GENAI_ENABLED)
 source "$DEPLOY_DIR/flask.sh"        # step_deploy_flask, step_verify_flask
 source "$DEPLOY_DIR/airflow_pods.sh" # step_helm_upgrade, step_verify_airflow_image, step_restart_airflow_pods, step_setup_ml_venv
 source "$DEPLOY_DIR/ami.sh" 2>/dev/null || true   # ami.sh may not exist yet on first deploy
@@ -143,7 +144,8 @@ else
     _EC2_IP=$(ssh -G "$EC2_HOST" 2>/dev/null | awk '/^hostname/ {print $2; exit}')
     ssh-keygen -R "$EC2_HOST" &>/dev/null || true  # remove alias entry
     [ -n "$_EC2_IP" ] && ssh-keygen -R "$_EC2_IP" &>/dev/null || true  # remove IP entry
-    _check_ssh_prereqs  # fast-fail if security group IP has drifted since last --provision
+    _check_ssh_prereqs      # fast-fail if security group IP has drifted since last --provision
+    _check_instance_state   # fast-fail if instance is down or EIP is orphaned (saves 6-min wait)
     _wait_ssh_ready
     _wait_k3s_ready
     echo "=== SSH ready ==="
@@ -235,6 +237,12 @@ if [ "$DAGS_ONLY" = false ]; then
 
     step_deploy_mlflow &  # Steps 2b5-2b6: MLflow manifest rsync + image import + Deployment deploy (~3-5 min)
     MLFLOW_PID=$!
+
+    # genai: run pgvector in parallel with Kafka and MLflow — it's a kubectl manifest apply + image import, same weight as MLflow
+    if [ "${GENAI_ENABLED:-false}" = "true" ]; then
+        step_deploy_pgvector &
+        PGVECTOR_PID=$!
+    fi
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -268,6 +276,8 @@ if [ "$DAGS_ONLY" = false ]; then
     # Flask doesn't need them (it uses Snowflake), so we only wait here, not before Flask.
     _wait_bg $KAFKA_PID  "Kafka deploy (Steps 2b3-2b4)"
     _wait_bg $MLFLOW_PID "MLflow deploy (Steps 2b5-2b6)"
+    # genai: wait for pgvector if it was launched in Phase 2
+    [ "${GENAI_ENABLED:-false}" = "true" ] && _wait_bg $PGVECTOR_PID "pgvector deploy (Step 2b7)"
 
     # Check that K3S didn't automatically delete the Airflow image to free disk space during the ~20 min gap since we built it
     step_verify_airflow_image  # Step 7a

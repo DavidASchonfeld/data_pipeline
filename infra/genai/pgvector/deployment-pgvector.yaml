@@ -1,0 +1,87 @@
+# Deployment: runs one instance of the pgvector database as a pod inside the cluster.
+#
+# pgvector is Postgres 16 with the pgvector extension pre-installed. The extension adds a
+# special "vector" column type that stores 384 numbers representing a piece of text's meaning
+# (called an embedding). Similar sentences produce similar numbers, so future code can find
+# "the filing chunk closest in meaning to this question" without exact keyword matching.
+#
+# On first boot the container automatically runs init.sql (mounted from configmap-init-sql.yaml),
+# which enables the vector extension and creates the filing_chunks and weather_summaries tables.
+# Subsequent restarts skip init.sql because the data directory is already populated.
+#
+# Mirrors the MLflow deployment pattern in airflow/manifests/mlflow/:
+#   imagePullPolicy Never (image imported by deploy.sh), Recreate strategy, init container for
+#   directory ownership, pg_isready probes, resources sized for a constrained t3.large node.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgvector
+  namespace: airflow-my-namespace
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate        # kill the old pod before starting a new one — required because the PVC is ReadWriteOnce (only one writer allowed)
+  selector:
+    matchLabels:
+      app: pgvector
+  template:
+    metadata:
+      labels:
+        app: pgvector
+    spec:
+      # initContainer runs as root to set the data directory permissions Postgres requires (mode 700, UID 999)
+      initContainers:
+        - name: fix-permissions
+          image: busybox
+          command: ["sh", "-c", "chmod 700 /var/lib/postgresql/data && chown -R 999:999 /var/lib/postgresql/data"]
+          volumeMounts:
+            - name: pgvector-data
+              mountPath: /var/lib/postgresql/data
+      containers:
+        - name: pgvector
+          image: pgvector/pgvector:pg16
+          imagePullPolicy: Never    # never pull from the internet; the image is pre-loaded into K3S by step_deploy_pgvector() in scripts/deploy/pgvector.sh
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: pgvector-credentials  # injects POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB + PGVECTOR_* env vars
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+              ephemeral-storage: "100Mi"
+            limits:
+              cpu: "200m"
+              memory: "512Mi"
+              ephemeral-storage: "500Mi"
+          # All three probes run "pg_isready" (a built-in Postgres health check that returns OK once the server accepts connections).
+          # They are wrapped in "sh -c" so that $POSTGRES_USER / $POSTGRES_DB expand — Kubernetes does NOT expand $(VAR) inside probe commands.
+          # startupProbe: blocks liveness/readiness until Postgres finishes first-boot init (runs init.sql)
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 5
+            failureThreshold: 30     # 30 × 5s = 150s max startup window
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 10
+            failureThreshold: 6
+          volumeMounts:
+            - name: pgvector-data
+              mountPath: /var/lib/postgresql/data
+            - name: init-sql
+              mountPath: /docker-entrypoint-initdb.d  # Postgres auto-runs *.sql here on first boot only
+      volumes:
+        - name: pgvector-data
+          persistentVolumeClaim:
+            claimName: pgvector-pvc
+        - name: init-sql
+          configMap:
+            name: pgvector-init-sql
