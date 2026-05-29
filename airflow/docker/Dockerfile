@@ -69,8 +69,9 @@ RUN /opt/ml-venv/bin/pip install --no-cache-dir \
         psycopg2-binary \
         pgvector \
         rank-bm25 \
+        beautifulsoup4 \
         "numpy<2" \
-    && /opt/ml-venv/bin/python -c "import anthropic, sentence_transformers, psycopg2, pgvector; print('genai ml-venv imports OK')"
+    && /opt/ml-venv/bin/python -c "import anthropic, sentence_transformers, psycopg2, pgvector, bs4; print('genai ml-venv imports OK')"
 
 # requests warns when chardet ≥6 is installed (check: chardet must be <6); also upgrade requests itself
 RUN pip install "requests>=2.32.3" "chardet>=3.0.2,<6"

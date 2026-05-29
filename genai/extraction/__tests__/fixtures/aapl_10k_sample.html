@@ -1,0 +1,55 @@
+<!--
+  Trimmed, synthetic 10-K fixture for offline section-splitter tests.
+  NOT a real Apple filing — a few KB of hand-written HTML that mimics the structure of a 10-K
+  (a table of contents that lists every Item, then the real sections with longer bodies) so the
+  splitter's "pick the longest body, ignore the TOC line" logic can be exercised without committing
+  a real ~15 MB filing. SEC filings are public domain; this file keeps the repo small.
+-->
+<html>
+  <head>
+    <title>Synthetic 10-K Fixture</title>
+    <style>.hidden { display: none; }</style>
+    <script>var ignore = "scripts and styles must not leak into extracted text";</script>
+  </head>
+  <body>
+    <h2>Table of Contents</h2>
+    <p>Item 1. Business 3</p>
+    <p>Item 1A. Risk Factors 8</p>
+    <p>Item 7. Management's Discussion and Analysis 25</p>
+    <p>Item 7A. Quantitative and Qualitative Disclosures About Market Risk 40</p>
+    <p>Item 8. Financial Statements 45</p>
+
+    <h2>Part I</h2>
+    <p>Item 1. Business</p>
+    <p>The Company designs, manufactures and markets smartphones, personal computers, tablets,
+    wearables and accessories, and sells a variety of related services. The Company's fiscal year is
+    the 52- or 53-week period that ends on the last Saturday of September. Products include flagship
+    devices and a growing services segment spanning advertising, cloud, payments and subscriptions.</p>
+
+    <p>Item 1A. Risk Factors</p>
+    <p>The Company's business, results of operations and financial condition are subject to numerous
+    risks and uncertainties. Global and regional economic conditions could materially adversely affect
+    demand. The Company faces substantial competition and rapid technological change. Supply chain
+    concentration, component shortages and reliance on outsourcing partners create operational risk.
+    Legal and regulatory developments across many jurisdictions may increase costs or limit operations.</p>
+
+    <h2>Part II</h2>
+    <p>Item 7. Management's Discussion and Analysis of Financial Condition and Results of Operations</p>
+    <p>This section discusses the Company's results of operations and liquidity. Net sales increased
+    year over year, driven by services growth and stronger product mix, partially offset by foreign
+    exchange headwinds. Gross margin expanded due to favorable cost structure and a higher services
+    mix. The Company returned capital to shareholders through dividends and share repurchases while
+    maintaining a strong balance sheet and significant cash and marketable securities.</p>
+
+    <p>Item 7A. Quantitative and Qualitative Disclosures About Market Risk</p>
+    <p>The Company is exposed to market risk from changes in interest rates, foreign currency exchange
+    rates and equity prices. Interest rate risk arises from the investment portfolio and outstanding
+    debt; the Company uses derivative instruments to hedge a portion of these exposures. Foreign
+    currency risk arises from sales and costs denominated in currencies other than the U.S. dollar.</p>
+
+    <h2>Part II (continued)</h2>
+    <p>Item 8. Financial Statements and Supplementary Data</p>
+    <p>The consolidated financial statements and accompanying notes are included in this section,
+    together with the report of the independent registered public accounting firm.</p>
+  </body>
+</html>
