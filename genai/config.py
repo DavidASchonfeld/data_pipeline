@@ -38,6 +38,17 @@ LLM_TIMEOUT_SECONDS: float = float(os.environ.get("LLM_TIMEOUT_SECONDS", "60"))
 # internally, so we only set the attempt count — we never add a second retry layer on top.
 LLM_MAX_RETRIES: int = int(os.environ.get("LLM_MAX_RETRIES", "3"))
 
+# ── Embedding provider (EPIC 6) ─────────────────────────────────────────────────
+# Which service turns text into a vector (a 384-number "meaning fingerprint"). "local" runs the
+# sentence-transformers model on this server — free, no API key, no data leaves the box. Swap to a
+# hosted provider later by adding genai/embedding/<name>_embedder.py and a branch in _factory.py.
+EMBEDDING_PROVIDER: str = os.environ.get("EMBEDDING_PROVIDER", "local")
+
+# The specific local embedding model. all-MiniLM-L6-v2 is small (~80 MB), 384-dimensional, and
+# Apache-2.0 licensed — a solid default for semantic search. Override only if you also rebuild the
+# pgvector table to match the new model's dimension.
+EMBEDDING_MODEL: str = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+
 # ── SEC EDGAR full-text fetch ──────────────────────────────────────────────────
 # Used by genai/extraction/edgar_fulltext.py to download 10-K filings. SEC EDGAR is free,
 # public-domain U.S. government data — no API key — but requires a descriptive User-Agent with
