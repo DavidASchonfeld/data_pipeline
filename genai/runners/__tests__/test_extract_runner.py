@@ -113,13 +113,13 @@ def test_write_uses_scoped_delete_and_parse_json_insert(patched):
     install([_resp(_VALID_RISK), _resp(_VALID_GUIDANCE)])
     er.run_pipeline("AAPL", 2023)
 
-    # a scoped DELETE keyed on (ticker, filing_date) — never a blanket wipe
-    delete = [c for c in conn.cur.execute_calls if "DELETE" in c[0]]
+    # a scoped DELETE keyed on (ticker, filing_date) — never a blanket wipe (extracts table)
+    delete = [c for c in conn.cur.execute_calls if "DELETE" in c[0] and "FCT_FILING_EXTRACTS" in c[0]]
     assert delete and delete[0][1] == ("AAPL", "2023-11-01")
 
-    # inserts go through individual execute() calls (NOT executemany — the SELECT form can't be batch-rewritten)
+    # extract inserts go through individual execute() calls (NOT executemany — the SELECT form can't be batch-rewritten)
     assert not conn.cur.executemany_calls, "must not use executemany for the INSERT...SELECT form"
-    inserts = [c for c in conn.cur.execute_calls if "INSERT" in c[0]]
+    inserts = [c for c in conn.cur.execute_calls if "INSERT" in c[0] and "FCT_FILING_EXTRACTS" in c[0]]
     assert len(inserts) == 2, "one INSERT per extract type"
     insert_sql, first = inserts[0]
     assert "PARSE_JSON(%s)" in insert_sql and "SELECT" in insert_sql
@@ -128,9 +128,26 @@ def test_write_uses_scoped_delete_and_parse_json_insert(patched):
     assert json.loads(first[4])["risks"][0]["title"] == "Supply chain"  # payload is valid JSON
     assert first[5] == "claude-sonnet-4-6-20250101"  # resolved model id
 
-    # the delete + inserts run as one atomic transaction (autocommit toggled off then back on), committed once
-    assert conn.autocommit_calls == [False, True]
+    # two scoped transactions run on this conn — the section-text write, then the extracts write —
+    # each toggling autocommit off then back on, both committed.
+    assert conn.autocommit_calls == [False, True, False, True]
     assert conn.committed and not conn.rolled_back
+
+
+def test_persists_full_section_text(patched):
+    conn, install = patched
+    install([_resp(_VALID_RISK), _resp(_VALID_GUIDANCE)])
+    summary = er.run_pipeline("AAPL", 2023)
+
+    # the cleaned full section text is saved (untruncated) to FCT_FILING_SECTIONS — one row per section
+    section_inserts = [c for c in conn.cur.execute_calls if "INSERT" in c[0] and "FCT_FILING_SECTIONS" in c[0]]
+    assert len(section_inserts) == 2
+    assert summary["sections_written"] == 2
+    _, params = section_inserts[0]
+    assert params == ("AAPL", "2023-11-01", "Item 1A - Risk Factors", "Risk text.")
+    # a scoped DELETE keyed on (ticker, filing_date) precedes the section inserts
+    section_delete = [c for c in conn.cur.execute_calls if "DELETE" in c[0] and "FCT_FILING_SECTIONS" in c[0]]
+    assert section_delete and section_delete[0][1] == ("AAPL", "2023-11-01")
 
 
 def test_write_rolls_back_on_failure(patched, monkeypatch):

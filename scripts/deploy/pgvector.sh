@@ -147,4 +147,68 @@ step_deploy_pgvector() {
     fi
 
     echo '=== pgvector pod is Running ==='
+
+    # Align the database role's password with the secret, and ensure the schema exists — both idempotent,
+    # both guarding against the persistent-volume "only runs on first init" gotcha (see each function).
+    _sync_pgvector_password
+    _ensure_pgvector_schema
+}
+
+# Apply the init SQL to the LIVE database every deploy so the `chunks` table + indexes always exist.
+#
+# WHY this is needed: the official Postgres image only runs /docker-entrypoint-initdb.d/*.sql the FIRST
+# time it initializes an EMPTY data directory. The data lives on a persistent hostPath, so if the data
+# dir already existed when the `chunks` schema was introduced (or was ever initialized empty), the table
+# was never created and the ingest fails with 'relation "chunks" does not exist'. The init SQL is fully
+# idempotent (CREATE EXTENSION/TABLE/INDEX IF NOT EXISTS), so re-applying the mounted file here every
+# deploy guarantees the schema is present without touching any existing rows.
+_ensure_pgvector_schema() {
+    echo "=== Step 2b7d: Ensuring pgvector schema exists (idempotent) ==="
+    local _pod
+    _pod=$(ssh "$EC2_HOST" "kubectl get pod -l app=pgvector -n airflow-my-namespace \
+        -o jsonpath='{.items[0].metadata.name}'" 2>/dev/null || true)
+    if [ -z "$_pod" ]; then
+        echo "WARNING: could not find the pgvector pod — skipping schema check."
+        return 0
+    fi
+    # Re-run the mounted init SQL against the live DB over the local socket (trust auth as the superuser).
+    # bash -c runs IN the pod so $POSTGRES_USER/$POSTGRES_DB expand from the pod env.
+    ssh "$EC2_HOST" "kubectl exec '$_pod' -n airflow-my-namespace -- \
+        bash -c 'psql -v ON_ERROR_STOP=1 -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -f /docker-entrypoint-initdb.d/init.sql'" \
+        && echo "pgvector schema ensured." \
+        || echo "WARNING: pgvector schema ensure failed — the next ingest run may fail."
+}
+
+# Force the pgvector role's password to match the secret's PGVECTOR_PASSWORD.
+#
+# WHY this is needed: Postgres only applies POSTGRES_PASSWORD when it FIRST initializes an empty data
+# directory. The data lives on a persistent hostPath (/home/ubuntu/pgvector-data), so on every later
+# start Postgres ignores POSTGRES_PASSWORD. If the secret's password is ever rotated — or PGVECTOR_PASSWORD
+# was set differently from the POSTGRES_PASSWORD the DB was born with — the live role keeps the OLD
+# password while the Python client connects with PGVECTOR_USER/PGVECTOR_PASSWORD and gets
+# "password authentication failed for user". Running this ALTER every deploy means the role password can
+# never drift from the secret. It is idempotent and safe to repeat.
+#
+# HOW it stays secret-safe: psql runs over the local unix socket as the bootstrap superuser (trust auth,
+# no password needed) and reads BOTH the target user and the new password from the pod's own environment
+# via \getenv — so the password is never placed on a command line, in shell history, or in any log.
+_sync_pgvector_password() {
+    echo "=== Step 2b7c: Syncing pgvector role password to the secret (idempotent) ==="
+    local _pod
+    _pod=$(ssh "$EC2_HOST" "kubectl get pod -l app=pgvector -n airflow-my-namespace \
+        -o jsonpath='{.items[0].metadata.name}'" 2>/dev/null || true)
+    if [ -z "$_pod" ]; then
+        echo "WARNING: could not find the pgvector pod — skipping password sync."
+        return 0
+    fi
+    # bash -c runs IN the pod so $POSTGRES_USER/$POSTGRES_DB expand from the pod env (not the EC2 shell);
+    # the SQL on stdin uses \getenv to pull PGVECTOR_USER/PGVECTOR_PASSWORD from that same pod env.
+    ssh "$EC2_HOST" "kubectl exec -i '$_pod' -n airflow-my-namespace -- \
+        bash -c 'psql -v ON_ERROR_STOP=1 -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\"'" <<'SQL' \
+        && echo "pgvector role password synced to the secret." \
+        || echo "WARNING: pgvector password sync failed — the next ingest run may hit auth errors."
+\getenv pw PGVECTOR_PASSWORD
+\getenv u PGVECTOR_USER
+ALTER USER :"u" PASSWORD :'pw';
+SQL
 }

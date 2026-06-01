@@ -1095,6 +1095,9 @@ step_run_offline_tests() {
                 genai/runners/__tests__/test_embed_runner.py \
                 genai/embedding/__tests__/test_factory.py \
                 genai/embedding/__tests__/test_local_st.py \
+                genai/retrieval/__tests__/test_pgvector_client.py \
+                genai/retrieval/__tests__/test_chunker.py \
+                genai/retrieval/__tests__/test_ingest.py \
                 -m \"not live\" -v --no-header -q 2>&1'
     " || {
         echo ""
