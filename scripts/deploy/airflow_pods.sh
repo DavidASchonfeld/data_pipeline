@@ -1092,6 +1092,9 @@ step_run_offline_tests() {
                 genai/extraction/__tests__/test_weather_summary.py \
                 genai/runners/__tests__/test_extract_runner.py \
                 genai/runners/__tests__/test_summarize_runner.py \
+                genai/runners/__tests__/test_embed_runner.py \
+                genai/embedding/__tests__/test_factory.py \
+                genai/embedding/__tests__/test_local_st.py \
                 -m \"not live\" -v --no-header -q 2>&1'
     " || {
         echo ""
