@@ -1,0 +1,10 @@
+# Files the Airflow DAG processor should NOT try to import as DAGs.
+# Syntax is glob (core.dag_ignore_file_syntax = glob); one pattern per line, matched against the path relative to this folder.
+#
+# anomaly_detector.py is a standalone script, not a DAG. It runs only as a subprocess under
+# /opt/ml-venv (which has mlflow + scikit-learn) — see dag_stocks_consumer.py. Because its header
+# comments contain the words "airflow" and "dag", Airflow's safe-mode discovery would otherwise try
+# to import it with Airflow's own Python, which lacks mlflow, producing a spurious import error that
+# clutters `airflow dags list-import-errors`. Ignoring it here stops that; the subprocess call by
+# absolute path is unaffected.
+anomaly_detector.py

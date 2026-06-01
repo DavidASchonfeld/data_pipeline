@@ -56,11 +56,14 @@ def stock_consumer_pipeline():
         and (b) stocks uses if_exists=replace so re-processing is idempotent.
         Polls for up to 30s then exits (DAG run already triggered, message should be present).
         """
-        from kafka_client import make_consumer  # shared factory: single source of truth for consumer config
+        from kafka_client import make_consumer, ensure_group_bookmark  # shared factory + self-healing offset bootstrap
         from shared.config import KAFKA_STOCKS_TOPIC, KAFKA_STOCKS_GROUP  # deferred: centralized topic/group names
 
         writer: OutputTextWriter = get_writer()  # K8s PVC path or LOCAL_LOG_PATH fallback
 
+        # Plant a committed offset if this group has none yet — without it, a fresh group (after a provision
+        # or Kafka reset) silently skips the triggering message forever. Self-heals the bootstrap gap.
+        ensure_group_bookmark(KAFKA_STOCKS_TOPIC, KAFKA_STOCKS_GROUP)
         consumer = make_consumer(KAFKA_STOCKS_TOPIC, KAFKA_STOCKS_GROUP)  # topic/group names from shared/config.py
 
         records: list[dict[str, Any]] = []
