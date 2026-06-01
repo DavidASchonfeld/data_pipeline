@@ -26,8 +26,11 @@ import os
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("extract_runner")
 
-# ── Snowflake table identifier (mirrors airflow/dags/sql/analytics_bootstrap.sql) ──
+# ── Snowflake table identifiers (mirror airflow/dags/sql/analytics_bootstrap.sql) ──
 _FCT_FILING_EXTRACTS = "PIPELINE_DB.ANALYTICS.FCT_FILING_EXTRACTS"
+# Cleaned full section text lives in its own table so EPIC 7's RAG ingest can chunk + embed it
+# without re-downloading the 10-K from EDGAR every week.
+_FCT_FILING_SECTIONS = "PIPELINE_DB.ANALYTICS.FCT_FILING_SECTIONS"
 
 # Cap on validation retries per extract type — each retry is a paid LLM call, so keep it tight
 # (1 initial attempt + 1 corrective retry). reference §10: bounded retry-on-validation-failure.
@@ -168,6 +171,50 @@ def write_rows(conn, ticker: str, filing_date: str, rows: list[dict]) -> None:
         conn.autocommit(True)
 
 
+# ── Snowflake write: cleaned section text (for EPIC 7 RAG ingest) ────────────────
+
+
+def write_section_text(conn, ticker: str, filing_date: str, sections: dict[str, str]) -> int:
+    """Atomically replace the cleaned full-text rows for one (ticker, filing_date). Returns row count.
+
+    Mirrors write_rows()'s scoped delete+insert transaction. Stores each section's FULL untruncated
+    text (not the LLM-input slice) so EPIC 7 can chunk + embed it later without re-fetching from EDGAR.
+    """
+    cur = conn.cursor()
+    # Safety net — bootstrap SQL also creates this; run the DDL before autocommit(False) (Snowflake
+    # DDL implicitly commits, which would prematurely commit the delete/insert below).
+    cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS {_FCT_FILING_SECTIONS} (
+            ticker        VARCHAR,
+            filing_date   DATE,
+            section       VARCHAR,
+            section_text  VARCHAR,
+            fetched_at    TIMESTAMP_NTZ
+        )
+    """)
+
+    # Plain VARCHAR binds directly through VALUES — no PARSE_JSON needed (unlike the extracts table).
+    insert_sql = f"""
+        INSERT INTO {_FCT_FILING_SECTIONS}
+            (ticker, filing_date, section, section_text, fetched_at)
+        VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP())
+    """
+
+    conn.autocommit(False)
+    try:
+        # Scoped delete — replace only this filing's section rows, never another ticker's.
+        cur.execute(f"DELETE FROM {_FCT_FILING_SECTIONS} WHERE ticker = %s AND filing_date = %s", (ticker, filing_date))
+        for section_name, section_text in sections.items():
+            cur.execute(insert_sql, (ticker, filing_date, section_name, section_text))
+        conn.commit()
+    except Exception:
+        conn.rollback()  # restore the ticker's prior section rows on any failure
+        raise
+    finally:
+        conn.autocommit(True)
+    return len(sections)
+
+
 # ── Pipeline orchestration ───────────────────────────────────────────────────
 
 
@@ -182,6 +229,14 @@ def run_pipeline(ticker: str, year: int) -> dict:
     sections = filing["sections"]
     filing_date = filing["filing_date"]
     provider = get_llm_provider()
+
+    # Persist the cleaned full section text FIRST — before the LLM loop — so EPIC 7's RAG ingest has
+    # the source to chunk later, and so the text is saved even if an extraction step below fails.
+    conn = get_snowflake_conn()
+    try:
+        sections_written = write_section_text(conn, ticker, filing_date, sections)
+    finally:
+        conn.close()
 
     rows: list[dict] = []
     errors: list[str] = []
@@ -215,7 +270,14 @@ def run_pipeline(ticker: str, year: int) -> dict:
     finally:
         conn.close()
 
-    return {"ticker": ticker, "year": year, "filing_date": filing_date, "rows_written": len(rows), "errors": errors}
+    return {
+        "ticker": ticker,
+        "year": year,
+        "filing_date": filing_date,
+        "rows_written": len(rows),
+        "sections_written": sections_written,
+        "errors": errors,
+    }
 
 
 def parse_args() -> argparse.Namespace:

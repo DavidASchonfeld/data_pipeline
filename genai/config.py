@@ -98,6 +98,20 @@ PGVECTOR_USER: str = os.environ.get("PGVECTOR_USER", "pgvector")
 PGVECTOR_PASSWORD: str = os.environ.get("PGVECTOR_PASSWORD", "")   # empty default — must be set via secret
 PGVECTOR_DB: str = os.environ.get("PGVECTOR_DB", "pgvector")
 
+# ── RAG ingest (EPIC 7) ─────────────────────────────────────────────────────────
+# How the ingest DAG slices long filing text before turning each slice into a vector. A "token" is
+# roughly a word-piece; the chunker approximates tokens from word count (~0.75 words/token) so no
+# tokenizer dependency is needed. ~500-token chunks with a 50-token overlap is a common RAG default —
+# big enough to hold context, small enough to retrieve precisely; the overlap avoids cutting a fact in half.
+GENAI_CHUNK_TARGET_TOKENS: int = int(os.environ.get("GENAI_CHUNK_TARGET_TOKENS", "500"))
+GENAI_CHUNK_OVERLAP_TOKENS: int = int(os.environ.get("GENAI_CHUNK_OVERLAP_TOKENS", "50"))
+
+# How many text chunks to embed per batch. Lowered from 32 to 16 for RAM headroom: the first
+# production ingest peaked at 1446Mi in the scheduler pod (under the 1.5 GB cap, but tight), and a
+# smaller batch shrinks the per-batch tensor memory at a negligible throughput cost. Raise it again
+# only if a future profile shows comfortable headroom.
+GENAI_EMBED_BATCH_SIZE: int = int(os.environ.get("GENAI_EMBED_BATCH_SIZE", "16"))
+
 # ── Cost guardrails ───────────────────────────────────────────────────────────
 # Maximum cost (in USD) allowed for a single AI query — enforced in EPIC 9's orchestrator.
 # Read here so every future epic can reference a single source of truth.
