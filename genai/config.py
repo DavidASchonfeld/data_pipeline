@@ -66,6 +66,11 @@ GENAI_EXTRACT_MAX_TOKENS: int = int(os.environ.get("GENAI_EXTRACT_MAX_TOKENS", "
 # a visible truncation marker so a clipped section is obvious in the prompt.
 GENAI_MAX_SECTION_CHARS: int = int(os.environ.get("GENAI_MAX_SECTION_CHARS", "24000"))
 
+# ── Weather summary (EPIC 5) ───────────────────────────────────────────────────
+# Largest LLM reply (in tokens) allowed per weather-summary call. A 2–4 sentence summary needs far
+# less than the 2048 default, so capping it low trims output cost across the ~10 cities per run.
+GENAI_WEATHER_MAX_TOKENS: int = int(os.environ.get("GENAI_WEATHER_MAX_TOKENS", "400"))
+
 # ── pgvector connection ───────────────────────────────────────────────────────
 # pgvector is a Postgres database that stores text embeddings (384-number "meaning fingerprints").
 # Future EPICs write filing chunks and weather summaries here; EPIC 8 queries it for semantic search.
