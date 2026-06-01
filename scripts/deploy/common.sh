@@ -517,9 +517,9 @@ _k3s_recover_and_diagnose() {
         df -h / 2>&1 || true
         free -h 2>&1 || true
         echo '--- kubectl get nodes -o wide ---'
-        kubectl get nodes -o wide 2>&1 || true
+        sudo k3s kubectl get nodes -o wide 2>&1 || true
         echo '--- kubectl describe nodes (head) ---'
-        kubectl describe nodes 2>&1 | head -120 || true
+        sudo k3s kubectl describe nodes 2>&1 | head -120 || true
         echo '--- containerd image count + leases ---'
         echo -n 'image count: '; sudo k3s ctr images ls 2>/dev/null | wc -l
         echo 'leases:'
@@ -537,16 +537,20 @@ _k3s_recover_and_diagnose() {
         # Half-uploaded image tarballs in /tmp can pin disk + lock containerd.
         sudo find /tmp -maxdepth 1 -name 'k3s-import-*.tar' -delete 2>/dev/null || true
         sudo systemctl start k3s || true
+        # the restart above resets k3s.yaml to root-only (600) — re-unlock it for the plain-kubectl deploy steps that follow
+        sudo chmod 644 /etc/rancher/k3s/k3s.yaml 2>/dev/null || true
     "
-    # Re-poll for up to 90s to see if the recovery worked.
-    for _r in $(seq 1 9); do
-        if ssh -o ConnectTimeout=5 "$EC2_HOST" "kubectl get nodes 2>/dev/null | grep -q ' Ready'"; then
+    # Re-poll for up to 3 minutes — after a killall+restart the CNI/metrics layer needs 1-3 min to
+    # reconverge before the node reports Ready (the 90s used before was too short on 2026-05-31).
+    # Read via `sudo k3s kubectl` so a still-locked kubeconfig can't mask a Ready node (the 2026-05-31 false-negative).
+    for _r in $(seq 1 18); do
+        if ssh -o ConnectTimeout=5 "$EC2_HOST" "sudo k3s kubectl get nodes 2>/dev/null | grep -q ' Ready'"; then
             echo "✓ K3s node Ready after hard recovery (attempt $_r)"
-            ssh "$EC2_HOST" "kubectl get nodes"
+            ssh "$EC2_HOST" "sudo k3s kubectl get nodes"
             return 0
         fi
-        echo "Post-recovery poll $_r/9 — still not Ready, waiting 10s..."
-        [ "$_r" -lt 9 ] && sleep 10
+        echo "Post-recovery poll $_r/18 — still not Ready, waiting 10s..."
+        [ "$_r" -lt 18 ] && sleep 10
     done
     echo "✗ Hard recovery did not bring K3s Ready — see diagnostic dump above"
     return 1
@@ -557,7 +561,13 @@ _k3s_recover_and_diagnose() {
 # SSH can succeed 2-3 min before K3s finishes starting — without this wait,
 # Helm and Kafka apply against a NotReady node and pods get stuck in Pending.
 _wait_k3s_ready() {
-    echo "=== Waiting for K3s node to be Ready (up to 5 minutes) ==="
+    echo "=== Waiting for K3s node to be Ready (up to 10 minutes) ==="
+    # Pre-flight 0: re-unlock the kubeconfig. K3s resets /etc/rancher/k3s/k3s.yaml to root-only (600) on
+    # every restart, and a prior deploy's recovery restart can leave it locked. That made plain `kubectl`
+    # in this poll fail with "permission denied" and report a perfectly healthy (Ready) node as NotReady
+    # for the entire window — the 2026-05-31 deploy hang. The poll below also reads via `sudo k3s kubectl`
+    # (immune to the file mode); this chmod additionally unlocks it for the plain-kubectl steps that follow.
+    ssh "$EC2_HOST" "sudo chmod 644 /etc/rancher/k3s/k3s.yaml 2>/dev/null || true"
     # Pre-flight 1: disk pressure is the most common silent cause of NotReady — at >88%
     # kubelet starts evicting and refuses to register the node. Clean before polling.
     local _disk_use
@@ -581,22 +591,31 @@ _wait_k3s_ready() {
             ssh "$EC2_HOST" "sudo systemctl restart k3s" || true
         fi
     fi
-    # 30 attempts × 10s = 5 min — matches the wait in user-data.sh.tpl
-    for _attempt in $(seq 1 30); do
-        if ssh -o ConnectTimeout=5 "$EC2_HOST" "kubectl get nodes 2>/dev/null | grep -q ' Ready'"; then
+    # 60 attempts × 10s = 10 min — generous so a CPU-starved node (image-build spike) can converge.
+    for _attempt in $(seq 1 60); do
+        # Read via `sudo k3s kubectl` (k3s's built-in client, reads the root kubeconfig directly) so a
+        # 600-locked k3s.yaml can never make a Ready node look NotReady — the 2026-05-31 false-negative.
+        if ssh -o ConnectTimeout=5 "$EC2_HOST" "sudo k3s kubectl get nodes 2>/dev/null | grep -q ' Ready'"; then
             echo "✓ K3s node is Ready (attempt $_attempt)"
-            ssh "$EC2_HOST" "kubectl get nodes"  # print node status so the log shows it
+            ssh "$EC2_HOST" "sudo k3s kubectl get nodes"  # print node status so the log shows it
             return 0
         fi
-        # After 5 failed attempts (~50s), restart k3s to break out of a hung-but-running state
-        if [ "$_attempt" -eq 5 ]; then
-            echo "K3s node still not Ready after 50s — restarting k3s service to recover..."
-            ssh "$EC2_HOST" "sudo systemctl restart k3s" || true
+        # 3 min in and still not Ready: restart ONLY if k3s is genuinely stuck (service down or containerd
+        # unresponsive). A node that is merely slow to converge — CPU starvation during the image build, or
+        # CNI/metrics re-establishing — recovers faster if we DON'T restart, since a restart kicks off a
+        # fresh CNI reconvergence that itself takes 1-3 min (the cause of the 2026-05-31 near-miss timeout).
+        if [ "$_attempt" -eq 18 ]; then
+            if ssh -o ConnectTimeout=5 "$EC2_HOST" "[ \"\$(sudo systemctl is-active k3s 2>/dev/null)\" = active ] && sudo k3s ctr version >/dev/null 2>&1"; then
+                echo "K3s still converging after 3 min, but service + containerd are healthy — continuing to wait (no restart)."
+            else
+                echo "K3s genuinely stuck after 3 min (service down or containerd unresponsive) — restarting once..."
+                ssh "$EC2_HOST" "sudo systemctl restart k3s; sudo chmod 644 /etc/rancher/k3s/k3s.yaml 2>/dev/null || true" || true
+            fi
         fi
-        echo "K3s not ready yet (attempt $_attempt/30), retrying in 10s..."
-        [ "$_attempt" -lt 30 ] && sleep 10
+        echo "K3s not ready yet (attempt $_attempt/60), retrying in 10s..."
+        [ "$_attempt" -lt 60 ] && sleep 10
     done
-    echo "✗ K3s node did not become Ready after 5 minutes — running diagnostic dump + hard recovery"
+    echo "✗ K3s node did not become Ready after 10 minutes — running diagnostic dump + hard recovery"
     # Dump everything + try one last killall/leases/start cycle before giving up.
     _k3s_recover_and_diagnose
     return $?
@@ -608,23 +627,30 @@ _wait_k3s_ready() {
 # initializes later than kubectl get nodes, so we verify it explicitly.
 # /healthz returns "ok" when the API server is fully ready.
 _wait_k3s_api_ready() {
-    echo "=== Waiting for K3s API server to be ready (up to 6 minutes) ==="
-    # 36 attempts × 10s = 6 min; uses kubectl's own kubeconfig so no curl/TLS issues
-    for _attempt in $(seq 1 36); do
-        if ssh -o ConnectTimeout=5 "$EC2_HOST" "kubectl get --raw /healthz 2>/dev/null | grep -q 'ok'"; then
+    echo "=== Waiting for K3s API server to be ready (up to 8 minutes) ==="
+    # 48 attempts × 10s = 8 min; uses kubectl's own kubeconfig so no curl/TLS issues
+    # Read via `sudo k3s kubectl` so a 600-locked k3s.yaml (after a restart) can't make a healthy API look down.
+    ssh "$EC2_HOST" "sudo chmod 644 /etc/rancher/k3s/k3s.yaml 2>/dev/null || true"
+    for _attempt in $(seq 1 48); do
+        if ssh -o ConnectTimeout=5 "$EC2_HOST" "sudo k3s kubectl get --raw /healthz 2>/dev/null | grep -q 'ok'"; then
             echo "✓ K3s API server ready (attempt $_attempt)"
             return 0
         fi
-        # After 5 failed attempts (~50s), actively restart k3s to break out of a stuck/crashed state
-        if [ "$_attempt" -eq 5 ]; then
-            echo "K3s API unresponsive after 50s — restarting k3s service to recover..."
-            ssh "$EC2_HOST" "sudo systemctl restart k3s" || true
-            echo "K3s restarted — waiting for it to come back up..."
+        # 3 min in and still unready: restart ONLY if k3s is genuinely stuck (service down or containerd
+        # unresponsive), not merely slow — an eager restart triggers a fresh CNI/API reconvergence that
+        # makes the wait longer, not shorter (same lesson as _wait_k3s_ready, 2026-05-31).
+        if [ "$_attempt" -eq 18 ]; then
+            if ssh -o ConnectTimeout=5 "$EC2_HOST" "[ \"\$(sudo systemctl is-active k3s 2>/dev/null)\" = active ] && sudo k3s ctr version >/dev/null 2>&1"; then
+                echo "API still initializing after 3 min, but service + containerd are healthy — continuing to wait (no restart)."
+            else
+                echo "K3s genuinely stuck after 3 min (service down or containerd unresponsive) — restarting once..."
+                ssh "$EC2_HOST" "sudo systemctl restart k3s; sudo chmod 644 /etc/rancher/k3s/k3s.yaml 2>/dev/null || true" || true
+            fi
         fi
-        echo "K3s API not ready yet (attempt $_attempt/36), retrying in 10s..."
-        [ "$_attempt" -lt 36 ] && sleep 10
+        echo "K3s API not ready yet (attempt $_attempt/48), retrying in 10s..."
+        [ "$_attempt" -lt 48 ] && sleep 10
     done
-    echo "✗ K3s API server did not become ready after 6 minutes — running diagnostic dump + hard recovery"
+    echo "✗ K3s API server did not become ready after 8 minutes — running diagnostic dump + hard recovery"
     # Same recovery path as _wait_k3s_ready — node Ready implies API server can come up.
     _k3s_recover_and_diagnose
     return $?

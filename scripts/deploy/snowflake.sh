@@ -3,24 +3,46 @@
 # Sourced by deploy.sh; all variables from common.sh are available here.
 #
 # Required env vars in .env.deploy (in addition to the normal SNOWFLAKE_* service-account vars):
-#   SNOWFLAKE_ADMIN_USER     — your personal Snowflake login (needs ACCOUNTADMIN — required to create users and schemas)
-#   SNOWFLAKE_ADMIN_PASSWORD — admin password (never committed)
-#   SNOWFLAKE_ACCOUNT        — account identifier, e.g. abc12345.us-east-1
+#   SNOWFLAKE_ACCOUNT              — account identifier, e.g. abc12345.us-east-1
+#   SNOWFLAKE_ADMIN_USER          — the ACCOUNTADMIN login the bootstrap connects as (a dedicated DEPLOY_USER
+#                                   is recommended over a personal login — see scripts/deploy/setup_deploy_user.sh)
+#   AND ONE OF:
+#   SNOWFLAKE_ADMIN_PRIVATE_KEY_PATH — path to an RSA .p8 key for that user (RECOMMENDED: bypasses MFA, runs
+#                                   headlessly). Generate + register it with scripts/deploy/setup_deploy_user.sh.
+#   SNOWFLAKE_ADMIN_PASSWORD      — admin password (LEGACY: fails if the user has MFA enrolled, which Snowflake
+#                                   now enforces on password logins — error 250001/251012).
 #
-# The script uses snowflake-connector-python (already a project dependency — installed in the
-# anomaly-detection ml-venv and available via pip in most environments).
+# All admin DDL is applied through scripts/deploy/apply_snowflake_sql.py (one place for connect + auth + split).
+
+# Path to the shared SQL applier (handles key-pair-or-password auth + comment-strip + statement split).
+_APPLY_SQL() { python3 "$PROJECT_ROOT/scripts/deploy/apply_snowflake_sql.py" "$1"; }
 
 step_snowflake_setup() {
     echo "=== Snowflake Setup: applying scripts/snowflake_setup.sql ==="
 
-    # Verify the required admin credentials are present before attempting a connection
-    for var in SNOWFLAKE_ACCOUNT SNOWFLAKE_ADMIN_USER SNOWFLAKE_ADMIN_PASSWORD; do
+    # Verify the account + admin user are present, plus at least one auth method.
+    for var in SNOWFLAKE_ACCOUNT SNOWFLAKE_ADMIN_USER; do
         if [ -z "${!var:-}" ]; then
             echo "ERROR: $var is not set in .env.deploy — required for --snowflake-setup"
-            echo "  SNOWFLAKE_ADMIN_USER / SNOWFLAKE_ADMIN_PASSWORD — your personal SYSADMIN credentials"
             exit 1
         fi
     done
+    # Prefer key-pair auth (MFA-exempt, headless); fall back to password (blocked if the user has MFA).
+    if [ -n "${SNOWFLAKE_ADMIN_PRIVATE_KEY_PATH:-}" ]; then
+        if [ ! -f "$SNOWFLAKE_ADMIN_PRIVATE_KEY_PATH" ]; then
+            echo "ERROR: SNOWFLAKE_ADMIN_PRIVATE_KEY_PATH is set but the file is missing: $SNOWFLAKE_ADMIN_PRIVATE_KEY_PATH"
+            exit 1
+        fi
+        echo "Admin auth: RSA key-pair as $SNOWFLAKE_ADMIN_USER (MFA-exempt)."
+    elif [ -n "${SNOWFLAKE_ADMIN_PASSWORD:-}" ]; then
+        echo "Admin auth: password as $SNOWFLAKE_ADMIN_USER."
+        echo "  NOTE: if this fails with 250001/251012, the user has MFA enrolled. Switch to key-pair:"
+        echo "        scripts/deploy/setup_deploy_user.sh"
+    else
+        echo "ERROR: set SNOWFLAKE_ADMIN_PRIVATE_KEY_PATH (recommended) or SNOWFLAKE_ADMIN_PASSWORD in .env.deploy"
+        echo "  Run scripts/deploy/setup_deploy_user.sh to create the recommended headless DEPLOY_USER + key."
+        exit 1
+    fi
 
     SQL_FILE="$PROJECT_ROOT/scripts/snowflake_setup.sql"
     if [ ! -f "$SQL_FILE" ]; then
@@ -28,54 +50,13 @@ step_snowflake_setup() {
         exit 1
     fi
 
-    # Ensure snowflake-connector-python is available locally (it lives in the EC2 ml-venv, not Mac system Python).
-    # Use `python3 -m pip` (not `pip3`) so the package is installed into the exact Python that runs the next block.
-    python3 -m pip install --quiet snowflake-connector-python
+    # Ensure the connector + crypto (for key-pair auth) are available in the local Python that runs the applier.
+    # Use `python3 -m pip` (not `pip3`) so the package lands in the exact Python apply_snowflake_sql.py runs under.
+    python3 -m pip install --quiet snowflake-connector-python cryptography
 
-    # Run the setup SQL via Python (snowflake-connector-python is already a project dependency)
-    python3 - <<PYTHON
-import snowflake.connector
-import os
-import sys
-import re
+    _APPLY_SQL "$SQL_FILE"
 
-# Read the SQL file
-sql_final = open("$SQL_FILE").read()
-
-# Connect as ACCOUNTADMIN — the top-level role in Snowflake. SYSADMIN cannot create schemas or users,
-# so ACCOUNTADMIN is required for a full first-time setup (warehouses, databases, schemas, roles, users).
-print("Connecting to Snowflake as ACCOUNTADMIN...")
-conn = snowflake.connector.connect(
-    account=os.environ["SNOWFLAKE_ACCOUNT"],
-    user=os.environ["SNOWFLAKE_ADMIN_USER"],
-    password=os.environ["SNOWFLAKE_ADMIN_PASSWORD"],
-    role="ACCOUNTADMIN",  # must be ACCOUNTADMIN — SYSADMIN lacks CREATE SCHEMA and CREATE USER privileges
-)
-
-cur = conn.cursor()
-
-# Remove -- comments before splitting on semicolons.
-# Without this, a semicolon inside a comment (e.g. "landing zone; written by Airflow")
-# would be treated as a statement boundary, sending the leftover comment text to Snowflake as SQL.
-sql_no_comments = re.sub(r'--[^\n]*', '', sql_final)
-
-# Split on semicolons; skip anything that is blank after stripping whitespace
-statements = [s.strip() for s in sql_no_comments.split(";") if s.strip()]
-
-total = len(statements)
-print(f"Executing {total} SQL statements...")
-
-for i, stmt in enumerate(statements, 1):
-    # Show the first line of each statement so progress is readable in the log
-    preview = stmt.splitlines()[0].strip()
-    print(f"  [{i}/{total}] {preview}")
-    cur.execute(stmt)
-
-conn.close()
-print("Snowflake setup complete — all objects created/verified.")
-PYTHON
-
-    # genai: when the GenAI layer is on, also create the ANALYTICS table the extraction DAG writes to.
+    # genai: when the GenAI layer is on, also create the ANALYTICS + MARTS tables the GenAI DAGs write to.
     # Skipped entirely when GENAI_ENABLED is not true, so the base setup is unchanged.
     if [ "${GENAI_ENABLED:-false}" = "true" ]; then
         _snowflake_genai_bootstrap
@@ -84,48 +65,22 @@ PYTHON
     echo "=== Snowflake Setup: done ==="
 }
 
-# Apply airflow/dags/sql/analytics_bootstrap.sql (ANALYTICS.FCT_FILING_EXTRACTS) — GenAI EPIC 3.
-# Reuses the same connect + comment-strip + statement-split logic as the base setup above.
+# Apply the GenAI admin DDL (ANALYTICS.FCT_FILING_EXTRACTS — EPIC 3/4, then MARTS.FCT_WEATHER_SUMMARIES — EPIC 5).
+# Only reached when GENAI_ENABLED=true. Uses the same shared applier (so it inherits the key-pair auth above).
 _snowflake_genai_bootstrap() {
-    echo "=== Snowflake Setup (GenAI): applying airflow/dags/sql/analytics_bootstrap.sql ==="
+    echo "=== Snowflake Setup (GenAI): applying ANALYTICS + MARTS bootstrap DDL ==="
 
     GENAI_SQL_FILE="$PROJECT_ROOT/airflow/dags/sql/analytics_bootstrap.sql"
-    if [ ! -f "$GENAI_SQL_FILE" ]; then
-        echo "ERROR: GENAI_ENABLED=true but GenAI SQL file not found: $GENAI_SQL_FILE"
-        exit 1
-    fi
+    WEATHER_SQL_FILE="$PROJECT_ROOT/airflow/dags/sql/weather_summaries_table.sql"
+    for f in "$GENAI_SQL_FILE" "$WEATHER_SQL_FILE"; do
+        if [ ! -f "$f" ]; then
+            echo "ERROR: GENAI_ENABLED=true but GenAI SQL file not found: $f"
+            exit 1
+        fi
+    done
 
-    python3 - <<PYTHON
-import snowflake.connector
-import os
-import re
-
-sql_final = open("$GENAI_SQL_FILE").read()
-
-print("Connecting to Snowflake as ACCOUNTADMIN (GenAI bootstrap)...")
-conn = snowflake.connector.connect(
-    account=os.environ["SNOWFLAKE_ACCOUNT"],
-    user=os.environ["SNOWFLAKE_ADMIN_USER"],
-    password=os.environ["SNOWFLAKE_ADMIN_PASSWORD"],
-    role="ACCOUNTADMIN",
-)
-
-cur = conn.cursor()
-
-# Strip -- comments before splitting on semicolons (same reasoning as the base setup).
-sql_no_comments = re.sub(r'--[^\n]*', '', sql_final)
-statements = [s.strip() for s in sql_no_comments.split(";") if s.strip()]
-
-total = len(statements)
-print(f"Executing {total} GenAI SQL statements...")
-for i, stmt in enumerate(statements, 1):
-    preview = stmt.splitlines()[0].strip()
-    print(f"  [{i}/{total}] {preview}")
-    cur.execute(stmt)
-
-conn.close()
-print("GenAI Snowflake bootstrap complete — ANALYTICS.FCT_FILING_EXTRACTS created/verified.")
-PYTHON
+    _APPLY_SQL "$GENAI_SQL_FILE"      # ANALYTICS.FCT_FILING_EXTRACTS (EPIC 3/4)
+    _APPLY_SQL "$WEATHER_SQL_FILE"    # MARTS.FCT_WEATHER_SUMMARIES (EPIC 5)
 
     echo "=== Snowflake Setup (GenAI): done ==="
 }
