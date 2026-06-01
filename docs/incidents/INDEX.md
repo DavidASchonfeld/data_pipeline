@@ -37,6 +37,7 @@ For the failure mode catalog (what *can* go wrong, not what *did* go wrong), see
 | 2026-04-13 | Pods stuck in Init:0/1: wait-for-airflow-migrations timed out on cold Postgres | [wait-for-migrations](airflow/2026-04-13-wait-for-migrations-timeout.md) |
 | 2026-04-13 | Migration job timeout: kubectl wait ignores Failed jobs | [kubectl-wait-blind-spot](airflow/2026-04-13-migration-job-timeout-kubectl-wait-blind-spot.md) |
 | 2026-04-13 | PostgreSQL ImagePullBackOff: ECR Public repository empty | [postgresql-imagepullbackoff](airflow/2026-04-13-postgresql-imagepullbackoff-ecr-public-empty.md) |
+| 2026-05-31 | Weather ingestion silently stopped (Apr 21): producer DAGs left paused after reprovision | [weather-ingestion-stopped](airflow/2026-05-31-weather-ingestion-stopped-producer-dags-paused.md) |
 | — | Early bugs: config drift, PV path, API limits, probes (Bugs 1–8) | [early-bugs-config](airflow/early-bugs-config-and-infra.md) |
 | — | Early bugs: OOMKill, upgrade, missing secret, probes (Bugs 9–16) | [early-bugs-upgrade](airflow/early-bugs-upgrade-and-migration.md) |
 | — | OpenLineage dbt fixes | [openlineage-fixes](airflow/OPENLINEAGE_DBT_FIXES.md) |
@@ -85,6 +86,7 @@ For the failure mode catalog (what *can* go wrong, not what *did* go wrong), see
 | 2026-04-17 | Deploy warnings: stale containerd lease error + port 5500 already in use on port-forward restart | [containerd-lease-port5500](deploy/2026-04-17-containerd-lease-error-and-port5500-in-use.md) |
 | 2026-05-12 | sentence-transformers pulled 2.5 GB CUDA build → disk pressure → kubelet evicted scheduler → AI packages wiped; fixed with CPU-only torch + baked into Dockerfile | [sentence-transformers-cuda-disk-wipe](airflow/2026-05-12-sentence-transformers-cuda-disk-wipe-mlvenv.md) |
 | 2026-05-28 | pgvector + MLflow parallel jobs raced on the shared Docker image store (one job's prune deleted the other's in-flight pull → "failed commit on ref"); fix: flock lock serializes the Docker ops | [pgvector-mlflow-prune-pull-race](deploy/2026-05-28-pgvector-mlflow-parallel-docker-prune-pull-race.md) |
+| 2026-05-31 | Full deploy hung on "K3s node not Ready" while the node was actually Ready: the readiness poll used plain `kubectl`, which couldn't read the root-locked kubeconfig (k3s re-locks k3s.yaml to 600 on every restart) → "permission denied" misread as NotReady; fix: poll via `sudo k3s kubectl` + re-chmod after restarts (plus longer waits / no eager restart) | [k3s-notready-eager-restart](deploy/2026-05-31-k3s-node-notready-eager-restart-timeout.md) |
 
 ### Snowflake
 
@@ -97,6 +99,7 @@ For the failure mode catalog (what *can* go wrong, not what *did* go wrong), see
 | 2026-05-09 | Snowflake's MFA mandate blocked PIPELINE_USER (password+MFA can't run unattended); fixed via service-account auth policy | [mfa-blocking-pipeline](snowflake/2026-05-09-snowflake-mfa-blocking-pipeline.md) |
 | 2026-05-09 | Migrated PIPELINE_USER from password to RSA key-pair auth (Phase 1 of long-term fix to MFA outage); password retained as fallback | [rsa-keypair-migration](snowflake/2026-05-09-pipeline-user-rsa-keypair-migration.md) |
 | 2026-05-10 | PIPELINE_SERVICE_ACCOUNT_POLICY (PASSWORD-only) blocked the new KEYPAIR logins with errno 250001; policy UNSET+DROPped | [auth-policy-blocking-keypair](snowflake/2026-05-10-auth-policy-blocking-keypair-login.md) |
+| 2026-05-31 | `--snowflake-setup` blocked: the ADMIN bootstrap login still used password auth → MFA wall (250001/251012); fixed with a key-pair, password-free DEPLOY_USER + a shared apply_snowflake_sql.py | [setup-admin-mfa-deploy-user](snowflake/2026-05-31-snowflake-setup-admin-mfa-deploy-user-keypair.md) |
 
 ### Kafka
 
