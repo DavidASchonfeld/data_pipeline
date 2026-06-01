@@ -9,6 +9,17 @@ def _has_new_rows(row_count: int) -> bool:
     return row_count > 0
 
 
+def _is_genai_enabled() -> bool:
+    """Return True only when the GenAI layer is on — gates the optional weather-summary task.
+
+    Read at task runtime (not parse time): the value is correct in-pod because GENAI_ENABLED is carried
+    in the genai-credentials secret, which is only applied when the layer is enabled (see sync.sh).
+    """
+    from shared.config import GENAI_ENABLED  # deferred — avoid coupling parse-time import order
+
+    return GENAI_ENABLED
+
+
 def check_daily_gate(variable_key: str, writer: OutputTextWriter) -> int:
     """Return 0 (skip) if already processed today, 1 (proceed) to continue.
 

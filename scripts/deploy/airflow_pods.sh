@@ -876,20 +876,24 @@ step_restart_airflow_pods() {
         echo 'Kafka consumer group offsets check complete.'
     " || echo "WARNING: Kafka offset reset failed — run Steps 8 and 10 of RESTORE_VERIFICATION.md manually before triggering pipelines."
 
-    # Phase C2: Unpause consumer DAGs.
-    # Airflow registers all new DAGs as paused by default — triggered runs queue but never start until unpaused.
+    # Phase C2: Unpause the pipeline DAGs (producers + consumers).
+    # Airflow registers all new DAGs as paused by default — and a fresh metadata DB (every reprovision/spot
+    # replacement wipes it) resets every DAG back to that paused default. Both producers (API_Weather-Pull_Data,
+    # Stock_Market_Pipeline) AND both consumers must be unpaused here, or the producers never fetch/publish and
+    # the consumers sit idle with nothing to read. (sec_filing_extract is intentionally left paused.)
     # We use direct psql (not `airflow dags unpause`) to avoid importing the full provider stack
     # into the scheduler pod, which OOM-kills it (exit 137) the same way `airflow variables set` does.
-    echo "=== Unpausing consumer DAGs via PostgreSQL ==="
+    echo "=== Unpausing pipeline DAGs (producers + consumers) via PostgreSQL ==="
     ssh "$EC2_HOST" "
         PGPASS=\$(kubectl get secret airflow-postgresql -n airflow-my-namespace \
             -o jsonpath='{.data.postgres-password}' | base64 -d)
         kubectl exec airflow-postgresql-0 -n airflow-my-namespace -- \
             env PGPASSWORD=\"\$PGPASS\" psql -U postgres -d postgres -c \
             \"UPDATE dag SET is_paused = false
-              WHERE dag_id IN ('stock_consumer_pipeline', 'weather_consumer_pipeline');\"
-    " && echo "Consumer DAGs unpaused." \
-      || echo "WARNING: failed to unpause consumer DAGs — unpause manually via Airflow UI before triggering pipelines."
+              WHERE dag_id IN ('stock_consumer_pipeline', 'weather_consumer_pipeline',
+                               'API_Weather-Pull_Data', 'Stock_Market_Pipeline');\"
+    " && echo "Pipeline DAGs unpaused." \
+      || echo "WARNING: failed to unpause pipeline DAGs — unpause manually via Airflow UI before triggering pipelines."
 }
 
 step_setup_ml_venv() {
@@ -1085,7 +1089,9 @@ step_run_offline_tests() {
                 genai/extraction/__tests__/test_schemas.py \
                 genai/extraction/__tests__/test_prompts.py \
                 genai/extraction/__tests__/test_edgar_fulltext.py \
+                genai/extraction/__tests__/test_weather_summary.py \
                 genai/runners/__tests__/test_extract_runner.py \
+                genai/runners/__tests__/test_summarize_runner.py \
                 -m \"not live\" -v --no-header -q 2>&1'
     " || {
         echo ""

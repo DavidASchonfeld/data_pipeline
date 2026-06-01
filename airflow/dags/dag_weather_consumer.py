@@ -1,6 +1,8 @@
 # General Libraries
 
 import json
+import logging
+import subprocess
 from typing import Any
 from datetime import timedelta, date
 
@@ -13,8 +15,17 @@ from shared.dbt_utils import make_dbt_operator  # shared factory: eliminates cop
 # My Files
 from file_logger import OutputTextWriter  # renamed from outputTextWriter
 from shared.utils import get_writer, log_df_preview  # shared log writer factory and DataFrame preview helper
-from shared.gate_utils import _has_new_rows  # shared gate: True if rows > 0 — avoids duplicating in both consumer DAGs
+from shared.gate_utils import _has_new_rows, _is_genai_enabled  # shared gates: new-rows + GenAI on/off
 from alerting import on_failure_alert, on_retry_alert, on_success_alert  # Slack + PVC log alerts
+
+logger = logging.getLogger(__name__)
+
+# genai (EPIC 5): paths for the weather-summary subprocess. genai/ is baked into the image at /opt/airflow,
+# and the heavy SDK/Snowflake libs live in /opt/ml-venv — so the summary runs as a subprocess (same
+# pattern as dag_sec_extract.py), keeping the LLM SDK out of the scheduler process.
+_ML_PYTHON = "/opt/ml-venv/bin/python"
+_SUMMARIZE_MODULE = "genai.runners.summarize_runner"
+_AIRFLOW_HOME = "/opt/airflow"  # cwd so `python -m genai...` can import the genai package
 
 
 @dag(  # type:ignore
@@ -23,7 +34,7 @@ from alerting import on_failure_alert, on_retry_alert, on_success_alert  # Slack
         "depends_on_past": False,
         "retries": 1,
         "retry_delay": timedelta(minutes=5),
-        "execution_timeout": timedelta(minutes=20),  # hard ceiling: covers consume + write + dbt_run + dbt_test
+        "execution_timeout": timedelta(minutes=20),  # per-task hard ceiling: covers consume / write / dbt / summary
         'on_failure_callback': on_failure_alert,
         'on_success_callback': on_success_alert,
         'on_retry_callback': on_retry_alert,
@@ -45,6 +56,7 @@ def weather_consumer_pipeline():
 
     #### Pipeline stages:
     consume_from_kafka()  →  write_to_snowflake()  →  check_new_rows  →  dbt_run  →  dbt_test
+      →  gate_genai_enabled  →  summarize_week()   (last two only when GENAI_ENABLED=true)
     """
 
     @task()
@@ -57,11 +69,14 @@ def weather_consumer_pipeline():
         and (b) weather dedup logic filters already-seen timestamps before inserting.
         Polls for up to 30s then exits (DAG run already triggered, message should be present).
         """
-        from kafka_client import make_consumer  # shared factory: single source of truth for consumer config
+        from kafka_client import make_consumer, ensure_group_bookmark  # shared factory + self-healing offset bootstrap
         from shared.config import KAFKA_WEATHER_TOPIC, KAFKA_WEATHER_GROUP  # deferred: centralized topic/group names
 
         writer: OutputTextWriter = get_writer()  # K8s PVC path or LOCAL_LOG_PATH fallback
 
+        # Plant a committed offset if this group has none yet — without it, a fresh group (after a provision
+        # or Kafka reset) silently skips the triggering message forever. Self-heals the bootstrap gap.
+        ensure_group_bookmark(KAFKA_WEATHER_TOPIC, KAFKA_WEATHER_GROUP)
         consumer = make_consumer(KAFKA_WEATHER_TOPIC, KAFKA_WEATHER_GROUP)  # topic/group names from shared/config.py
 
         records: list[dict[str, Any]] = []
@@ -176,6 +191,44 @@ def weather_consumer_pipeline():
             raise
 
 
+    @task()
+    def summarize_week() -> dict:
+        """
+        ### Summarize (GenAI, opt-in)
+        Write one plain-English weather summary per city for the current week into
+        MARTS.FCT_WEATHER_SUMMARIES. Runs the summarize_runner under /opt/ml-venv as a subprocess so the
+        LLM SDK never loads in the scheduler process. Gated upstream by GENAI_ENABLED — when the layer is
+        off this task is skipped entirely, so the base pipeline makes no LLM calls.
+        """
+        # Monday of the current week (America/New_York) — the runner replaces this week's rows idempotently.
+        now = pendulum.now("America/New_York")
+        week_start = now.start_of("week").to_date_string()  # pendulum weeks start on Monday → "YYYY-MM-DD"
+        logger.info("Summarizing weather for week starting %s via %s", week_start, _SUMMARIZE_MODULE)
+
+        # Run the heavy work in the ml-venv subprocess — keeps the SDK out of the scheduler process.
+        result = subprocess.run(
+            [_ML_PYTHON, "-m", _SUMMARIZE_MODULE, "--mode", "weather", "--week-start", week_start],
+            capture_output=True,
+            text=True,
+            timeout=600,   # hard cap; ≤10 short, no-model LLM calls fit comfortably
+            cwd=_AIRFLOW_HOME,
+        )
+
+        # Surface the runner's logs in the Airflow task log for debugging.
+        for line in result.stdout.splitlines():
+            logger.info("[runner] %s", line)
+        if result.returncode != 0:
+            logger.error("[runner stderr] %s", result.stderr)
+            raise RuntimeError(f"summarize_runner failed for week {week_start} (rc={result.returncode})")
+
+        # The last stdout line is the JSON summary; parse it as this task's return value.
+        last_line = result.stdout.strip().splitlines()[-1]
+        summary = json.loads(last_line)
+        logger.info("week %s: wrote %s rows for %s cities, %s errors",
+                    week_start, summary.get("rows_written"), summary.get("cities"), len(summary.get("errors", [])))
+        return summary
+
+
     # ── Wiring the pipeline ───────────────────────────────────────────────────
     records   : XComArg = consume_from_kafka()
     row_count : XComArg = write_to_snowflake(records)   # type: ignore[arg-type]
@@ -194,7 +247,14 @@ def weather_consumer_pipeline():
     # dbt_test: checks not_null, unique, and accepted_values on weather models
     dbt_test = make_dbt_operator("dbt_test", "test", "weather")  # same factory, test sub-command
 
-    check_new_rows >> dbt_run >> dbt_test  # dbt only runs if rows were actually written
+    # genai (EPIC 5): gate the optional weather summary on GENAI_ENABLED. When off, the summary task is
+    # skipped and the pipeline is unchanged; when on, it runs after dbt so STG_WEATHER_HOURLY is fresh.
+    gate_genai = ShortCircuitOperator(
+        task_id="gate_genai_enabled",
+        python_callable=_is_genai_enabled,
+    )
+
+    check_new_rows >> dbt_run >> dbt_test >> gate_genai >> summarize_week()  # dbt runs only on new rows; summary only when GenAI is on
 
 
 dag = weather_consumer_pipeline()
