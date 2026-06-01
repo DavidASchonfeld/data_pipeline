@@ -5,7 +5,9 @@ notes.txt
 constants.py
 logs
 .env
-.env.deploy
+# ignore the real deploy secrets and any local backups/variants (.bak, .local, …) — but keep the tracked template
+.env.deploy*
+!.env.deploy.example
 airflow_env/
 .venv/
 # prevent timestamped log files from being committed
