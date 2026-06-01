@@ -31,3 +31,16 @@ def test_local_embedder_returned_for_local_provider():
 
         from genai.embedding.local_st import LocalSentenceTransformerEmbedder
         assert isinstance(factory.get_embedder(), LocalSentenceTransformerEmbedder)
+
+
+def test_get_embedder_is_memoized():
+    # Repeated calls must return the SAME instance so the ~80 MB model loads once, not per call
+    # (a fresh instance per call reloads the model every retrieval query — the EPIC 8 latency bug).
+    with patch.dict(os.environ, {"EMBEDDING_PROVIDER": "local"}):
+        import importlib
+        import genai.config as cfg
+        importlib.reload(cfg)
+        import genai.embedding._factory as factory
+        importlib.reload(factory)
+
+        assert factory.get_embedder() is factory.get_embedder()

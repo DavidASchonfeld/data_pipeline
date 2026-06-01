@@ -32,3 +32,30 @@ class LLMProvider(ABC):
         temperature: float | None = None,
         tool_choice: str | None = None,
     ) -> dict: ...
+
+    # build_tool_turn: given a normalised chat() response that asked to call tools, plus the string
+    # outputs of running those tools (keyed by tool-call id), return the messages to APPEND to the
+    # conversation so the next chat() turn carries the results back to the model. The wire format
+    # differs per provider, so this lives here (with an Anthropic-shaped default) and each provider
+    # overrides it as needed — the agent orchestrator stays provider-agnostic and never touches
+    # provider-specific message shapes itself.
+    def build_tool_turn(self, response: dict, tool_outputs: dict[str, str]) -> list[dict]:
+        # Default = Anthropic's content-block shape. Reconstruct the assistant turn (any text, then a
+        # tool_use block per call) from the normalised response, then a user turn with one
+        # tool_result per call referencing its tool_use id. Anthropic requires every tool_use to have
+        # a matching tool_result, in this assistant-then-user order.
+        assistant_blocks: list[dict] = []
+        if response.get("content"):
+            assistant_blocks.append({"type": "text", "text": response["content"]})
+        for call in response.get("tool_calls", []):
+            assistant_blocks.append({
+                "type": "tool_use", "id": call["id"], "name": call["name"], "input": call["input"],
+            })
+        result_blocks = [
+            {"type": "tool_result", "tool_use_id": call["id"], "content": tool_outputs.get(call["id"], "")}
+            for call in response.get("tool_calls", [])
+        ]
+        return [
+            {"role": "assistant", "content": assistant_blocks},
+            {"role": "user", "content": result_blocks},
+        ]

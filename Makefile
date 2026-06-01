@@ -5,9 +5,10 @@ PYTHON := $(VENV)/bin/python3
 PIP := $(VENV)/bin/pip
 
 # create the local virtualenv and install base test deps the first time either target runs
+# sqlglot is here (not just in test-all) because the EPIC 9 SQL safety layer's offline tests parse SQL
 $(VENV)/bin/python3:
 	python3 -m venv $(VENV)
-	$(PIP) install -q pytest dash pandas plotly python-dotenv beautifulsoup4
+	$(PIP) install -q pytest dash pandas plotly python-dotenv beautifulsoup4 sqlglot
 
 # run all offline tests — safe any time, no API key needed
 test: $(VENV)/bin/python3

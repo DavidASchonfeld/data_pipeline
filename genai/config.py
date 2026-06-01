@@ -112,6 +112,38 @@ GENAI_CHUNK_OVERLAP_TOKENS: int = int(os.environ.get("GENAI_CHUNK_OVERLAP_TOKENS
 # only if a future profile shows comfortable headroom.
 GENAI_EMBED_BATCH_SIZE: int = int(os.environ.get("GENAI_EMBED_BATCH_SIZE", "16"))
 
+# ── RAG retrieval (EPIC 8) ──────────────────────────────────────────────────────
+# How the hybrid retriever finds and ranks passages for the chat feature. It runs two searches at
+# once — keyword (BM25) and meaning (vector) — and blends their ranked lists with Reciprocal Rank
+# Fusion (RRF): a passage's fused score is the sum, over each list it appears in, of
+# weight / (RRF_CONSTANT + its_rank). A passage both searches agree on therefore scores highest.
+
+# How many passages a single retrieve() call returns by default (callers may override per call).
+GENAI_RETRIEVAL_DEFAULT_K: int = int(os.environ.get("GENAI_RETRIEVAL_DEFAULT_K", "5"))
+
+# How many candidates each search arm pulls BEFORE fusion. Kept well above K (≈4×) so the blend has
+# enough overlap to work with; the final top-K is sliced from the fused list.
+GENAI_RETRIEVAL_CANDIDATE_POOL: int = int(os.environ.get("GENAI_RETRIEVAL_CANDIDATE_POOL", "20"))
+
+# The RRF damping constant. 60 is the canonical value from the original RRF paper (Cormack et al.):
+# big enough that the gap between rank 1 and rank 2 isn't overwhelming, so lower-ranked agreements
+# still count.
+GENAI_RRF_CONSTANT: int = int(os.environ.get("GENAI_RRF_CONSTANT", "60"))
+
+# How much each search arm contributes to the fused score. Equal weights (0.5 / 0.5) treat keyword
+# and meaning search as equally trustworthy — tune later with the EPIC 11 eval harness.
+GENAI_RRF_VECTOR_WEIGHT: float = float(os.environ.get("GENAI_RRF_VECTOR_WEIGHT", "0.5"))
+GENAI_RRF_BM25_WEIGHT: float = float(os.environ.get("GENAI_RRF_BM25_WEIGHT", "0.5"))
+
+# How long (seconds) the in-memory BM25 keyword index is reused before it is rebuilt from pgvector.
+# 1 hour: long enough to keep queries fast, short enough that newly-ingested chunks show up promptly.
+GENAI_BM25_TTL_SECONDS: int = int(os.environ.get("GENAI_BM25_TTL_SECONDS", "3600"))
+
+# On/off switch for an OPTIONAL re-ranking pass that re-orders the fused top results for relevance.
+# Default OFF: re-ranking is enabled with measured evidence, and the measurement tool (recall@k /
+# faithfulness) is EPIC 11 — see the rerank seam in genai/retrieval/hybrid_retriever.py.
+GENAI_RERANK_ENABLED: bool = os.environ.get("GENAI_RERANK_ENABLED", "false").lower() == "true"
+
 # ── Cost guardrails ───────────────────────────────────────────────────────────
 # Maximum cost (in USD) allowed for a single AI query — enforced in EPIC 9's orchestrator.
 # Read here so every future epic can reference a single source of truth.
@@ -119,3 +151,28 @@ GENAI_MAX_COST_PER_QUERY: float = float(os.environ.get("GENAI_MAX_COST_PER_QUERY
 
 # Maximum total AI spend (in USD) allowed per day — also enforced in EPIC 9.
 GENAI_DAILY_BUDGET: float = float(os.environ.get("GENAI_DAILY_BUDGET", "2.00"))
+
+# ── Agent orchestrator (EPIC 9) ─────────────────────────────────────────────────
+# How many tool-using turns the orchestrator may take on a single question before it must give a
+# final answer. 5 is plenty for "search filings + check a table + summarize" while bounding cost and
+# guaranteeing the loop always terminates.
+GENAI_AGENT_MAX_TURNS: int = int(os.environ.get("GENAI_AGENT_MAX_TURNS", "5"))
+
+# Per-model price list used to turn token counts into a dollar figure for the per-query cost cap.
+# Values are USD per 1,000,000 tokens (input, output) — keep these in sync with the provider's public
+# pricing. Lookup is longest-PREFIX match (see genai/agent/cost.py) so dated model ids like
+# "claude-sonnet-4-5-20250101" resolve to the "claude-sonnet-4-5" entry.
+LLM_PRICING: dict[str, dict[str, float]] = {
+    "claude-opus-4":     {"input": 15.00, "output": 75.00},
+    "claude-sonnet-4-5": {"input": 3.00,  "output": 15.00},
+    "claude-sonnet-4":   {"input": 3.00,  "output": 15.00},
+    "claude-haiku-4":    {"input": 1.00,  "output": 5.00},
+    "claude-3-5-sonnet": {"input": 3.00,  "output": 15.00},
+    "claude-3-5-haiku":  {"input": 0.80,  "output": 4.00},
+    "gpt-4o":            {"input": 2.50,  "output": 10.00},
+    "gpt-4o-mini":       {"input": 0.15,  "output": 0.60},
+}
+
+# Conservative fallback when a model id matches nothing above — priced at the Sonnet tier so an
+# unknown model is never under-costed (the cap errs toward stopping early, not overspending).
+LLM_PRICING_DEFAULT: dict[str, float] = {"input": 3.00, "output": 15.00}

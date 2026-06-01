@@ -121,6 +121,21 @@ _print_deploy_summary() {
             echo "    > $line"
         done <<< "$summary_lines"
         echo ""
+        # Plain-English note for the recurring Hugging Face BUILD warning, so it is never a mystery.
+        # Triggers only when that specific warning is present in the summary above.
+        if printf '%s' "$summary_lines" | grep -qi "unauthenticated requests to the HF Hub"; then
+            echo "  -- About the 'Hugging Face' warning above ----------------------"
+            echo "  Harmless + expected. During the image BUILD, the embedding model's"
+            echo "  weights (~90 MB) are downloaded once from Hugging Face. That single"
+            echo "  download is anonymous, which is all this warning means. At RUNTIME the"
+            echo "  app runs OFFLINE and never downloads anything — your live system is fine."
+            echo "  Staying anonymous can't block you permanently; worst case a busy/shared"
+            echo "  build IP is rate-limited and a DEPLOY (never the running app) needs a retry."
+            echo "  To silence it for good: make a FREE huggingface.co account, create a"
+            echo "  read-only access token, then wire it in as HF_TOKEN (see the doc below)."
+            echo "  Why/how: docs/incidents/airflow/2026-06-01-embedding-model-weights-not-baked-hf-download.md"
+            echo "  ---------------------------------------------------------------"
+        fi
         if [ "$exit_code" -eq 0 ]; then
             echo "  Script ran to completion despite the above — review before closing."
         else

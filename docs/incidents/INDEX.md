@@ -38,6 +38,7 @@ For the failure mode catalog (what *can* go wrong, not what *did* go wrong), see
 | 2026-04-13 | Migration job timeout: kubectl wait ignores Failed jobs | [kubectl-wait-blind-spot](airflow/2026-04-13-migration-job-timeout-kubectl-wait-blind-spot.md) |
 | 2026-04-13 | PostgreSQL ImagePullBackOff: ECR Public repository empty | [postgresql-imagepullbackoff](airflow/2026-04-13-postgresql-imagepullbackoff-ecr-public-empty.md) |
 | 2026-05-31 | Weather ingestion silently stopped (Apr 21): producer DAGs left paused after reprovision | [weather-ingestion-stopped](airflow/2026-05-31-weather-ingestion-stopped-producer-dags-paused.md) |
+| 2026-06-01 | Embedding model weights not baked into image: re-downloaded from HuggingFace on every pod restart | [embedding-weights-not-baked](airflow/2026-06-01-embedding-model-weights-not-baked-hf-download.md) |
 | — | Early bugs: config drift, PV path, API limits, probes (Bugs 1–8) | [early-bugs-config](airflow/early-bugs-config-and-infra.md) |
 | — | Early bugs: OOMKill, upgrade, missing secret, probes (Bugs 9–16) | [early-bugs-upgrade](airflow/early-bugs-upgrade-and-migration.md) |
 | — | OpenLineage dbt fixes | [openlineage-fixes](airflow/OPENLINEAGE_DBT_FIXES.md) |

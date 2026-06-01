@@ -93,6 +93,30 @@ class OpenAIProvider(LLMProvider):
             raise LLMProviderError(f"OpenAI request failed (model={self._model}): {exc}") from exc
         return self._normalise_response(response)
 
+    def build_tool_turn(self, response: dict, tool_outputs: dict[str, str]) -> list[dict]:
+        # OpenAI threads tool results differently from Anthropic: the assistant message carries a
+        # `tool_calls` array (arguments as a JSON string), followed by one `role: "tool"` message per
+        # call keyed by tool_call_id. Override the base (Anthropic-shaped) default so the orchestrator
+        # works unchanged when LLM_PROVIDER=openai.
+        assistant_tool_calls = [
+            {
+                "id": call["id"],
+                "type": "function",
+                "function": {"name": call["name"], "arguments": json.dumps(call["input"])},
+            }
+            for call in response.get("tool_calls", [])
+        ]
+        assistant_msg = {
+            "role": "assistant",
+            "content": response.get("content") or None,
+            "tool_calls": assistant_tool_calls,
+        }
+        tool_msgs = [
+            {"role": "tool", "tool_call_id": call["id"], "content": tool_outputs.get(call["id"], "")}
+            for call in response.get("tool_calls", [])
+        ]
+        return [assistant_msg, *tool_msgs]
+
     def _translate_tools(self, tools: list[dict]) -> list[dict]:
         # convert the generic tool spec format into the structure OpenAI's API expects
         translated = []

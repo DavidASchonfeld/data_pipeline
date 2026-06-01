@@ -1018,6 +1018,18 @@ step_setup_ml_venv() {
                 echo 'rank-bm25 installed.'
             fi
 
+            # sqlglot: parses agent SQL into an AST so the EPIC 9 safety layer can allow only read-only
+            # SELECTs against MARTS/ANALYTICS (genai/agent/sql_safety.py) — never regex on raw SQL
+            if kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                /opt/ml-venv/bin/pip show sqlglot > /dev/null 2>&1; then
+                echo 'sqlglot already installed — skipping'
+            else
+                echo 'Installing sqlglot into ml-venv...' &&
+                kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                    /opt/ml-venv/bin/pip install --no-cache-dir \"sqlglot\" &&
+                echo 'sqlglot installed.'
+            fi
+
             # beautifulsoup4: HTML->text parser for the EPIC 3 EDGAR 10-K fetcher (genai/extraction)
             if kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
                 /opt/ml-venv/bin/pip show beautifulsoup4 > /dev/null 2>&1; then
@@ -1098,6 +1110,10 @@ step_run_offline_tests() {
                 genai/retrieval/__tests__/test_pgvector_client.py \
                 genai/retrieval/__tests__/test_chunker.py \
                 genai/retrieval/__tests__/test_ingest.py \
+                genai/retrieval/__tests__/test_retriever.py \
+                genai/agent/__tests__/test_import.py \
+                genai/agent/__tests__/test_cost.py \
+                genai/agent/__tests__/test_build_tool_turn.py \
                 -m \"not live\" -v --no-header -q 2>&1'
     " || {
         echo ""
@@ -1111,6 +1127,9 @@ step_run_offline_tests() {
 step_run_core_tests() {
     # run all offline tests locally before touching any pods — equivalent to `make test`, catches both dashboard/DAG and genai errors early
     echo "=== Running core offline tests locally ==="
+    # the EPIC 9 SQL safety layer imports sqlglot; make sure this local python3 has it (the ml-venv
+    # gets it separately during pod setup). A quick no-op if it's already installed.
+    python3 -m pip install --quiet sqlglot 2>/dev/null || true
     python3 -m pytest "$PROJECT_ROOT/tests/" "$PROJECT_ROOT/genai/" -m "not live" --no-header 2>&1 || {
         echo ""
         echo "ERROR: core offline tests failed — fix the logic error before deploying."

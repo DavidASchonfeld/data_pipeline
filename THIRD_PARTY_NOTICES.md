@@ -65,6 +65,7 @@ This file lists every third-party tool, library, container image, dataset, and e
 | psycopg2-binary | — | **LGPL-3.0** | https://www.psycopg.org |
 | pgvector (Python client) | — | MIT | https://github.com/pgvector/pgvector-python |
 | rank-bm25 | — | Apache-2.0 | https://github.com/dorianbrown/rank_bm25 |
+| sqlglot | — | MIT | https://github.com/tobymao/sqlglot |
 | beautifulsoup4 | — | MIT | https://www.crummy.com/software/BeautifulSoup/ |
 | pydantic | — | MIT | https://github.com/pydantic/pydantic |
 | python-dotenv | — | BSD-3-Clause | https://github.com/theskumar/python-dotenv |

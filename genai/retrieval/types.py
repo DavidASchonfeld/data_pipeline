@@ -21,3 +21,20 @@ class Chunk:
     external_id: str
     text: str
     metadata: dict = field(default_factory=dict)
+
+
+@dataclass
+class Passage:
+    """One retrieval result read BACK OUT of pgvector by EPIC 8's hybrid retriever.
+
+    id maps to chunks.id (the row's BIGSERIAL primary key). source is a human-readable origin
+    (e.g. "sec_edgar" / "open_meteo"), copied from metadata["source"]. score is the fused RRF score
+    (higher = more relevant). metadata is the row's JSONB blob verbatim, so callers can read
+    ticker/section/city/etc. and the EPIC 10 UI can attribute each passage to its source.
+    """
+
+    id: int
+    text: str
+    source: str
+    score: float
+    metadata: dict = field(default_factory=dict)

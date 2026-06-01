@@ -57,6 +57,9 @@ pytest
 pgvector (Python client)
     Copyright (c) 2021-2025 Andrew Kane
 
+sqlglot
+    Copyright (c) 2023 Toby Mao
+
 pydantic
     Copyright (c) 2017 to present Pydantic Services Inc. and individual contributors.
 

@@ -70,11 +70,25 @@ RUN /opt/ml-venv/bin/pip install --no-cache-dir \
         psycopg2-binary \
         pgvector \
         rank-bm25 \
+        sqlglot \
         beautifulsoup4 \
         pydantic \
         python-dotenv \
         "numpy<2" \
-    && /opt/ml-venv/bin/python -c "import anthropic, openai, sentence_transformers, psycopg2, pgvector, bs4, pydantic, dotenv; print('genai ml-venv imports OK')"
+    && /opt/ml-venv/bin/python -c "import anthropic, openai, sentence_transformers, psycopg2, pgvector, sqlglot, bs4, pydantic, dotenv; print('genai ml-venv imports OK')"
+
+# Bake the embedding model weights (all-MiniLM-L6-v2, ~90 MB) into the image. The model RUNS locally
+# either way, but its weight file is normally downloaded from HuggingFace on first use and cached on the
+# container's EPHEMERAL filesystem — so every pod restart re-fetches it from HF, unauthenticated, inside
+# the retrieval hot path (an outage or anonymous rate-limit there would break retrieval). HF_HOME pins a
+# fixed in-image cache dir so the runtime load (genai/embedding/local_st.py uses the same "all-MiniLM-L6-v2"
+# id) hits this baked copy. Must match EMBEDDING_MODEL in genai/config.py.
+ENV HF_HOME=/opt/ml-venv/hf-cache
+RUN /opt/ml-venv/bin/python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+# With the weights baked in, force offline mode so huggingface_hub never contacts the Hub at runtime
+# (eliminates the network call AND the 'unauthenticated requests to the HF Hub' warning).
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
 
 # requests warns when chardet ≥6 is installed (check: chardet must be <6); also upgrade requests itself
 RUN pip install "requests>=2.32.3" "chardet>=3.0.2,<6"
