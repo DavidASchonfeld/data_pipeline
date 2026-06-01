@@ -1,0 +1,179 @@
+================================================================================
+COPYRIGHT NOTICES
+================================================================================
+
+This file records the verbatim upstream copyright line for each third-party
+component listed in ../THIRD_PARTY_NOTICES.md, grouped by license family.
+
+Why this file exists: the MIT and BSD licenses embed a per-project copyright
+holder in their text. Rather than duplicate the (identical) license body once
+per dependency, this project keeps ONE canonical body per family (MIT.txt,
+BSD-3-Clause.txt, Apache-2.0.txt, ...) and pairs it with the specific copyright
+line below. Canonical body + the matching line here = the retained "copyright
+notice and license text" each permissive license requires.
+
+Copyright lines were copied from each project's upstream LICENSE/NOTICE file.
+Lines marked (best-effort) could not be read from a machine-readable LICENSE and
+are taken from the project's documented authorship — verify before relying on
+them commercially. This inventory is best-effort and is not legal advice.
+
+================================================================================
+MIT  —  full text in MIT.txt
+================================================================================
+
+beautifulsoup4
+    Copyright (c) Leonard Richardson
+    (full text retained separately in beautifulsoup4-LICENSE.txt, which also
+    covers the bundled html5lib and soupsieve MIT notices)
+
+gunicorn
+    2009-2026 (c) Benoît Chesneau <benoitc@gunicorn.org>
+    2009-2015 (c) Paul J. Davis <paul.joseph.davis@gmail.com>
+
+dash
+    Copyright (c) 2015-2024 Plotly Technologies Inc.
+
+plotly
+    Copyright (c) 2016-2024 Plotly Technologies Inc.
+
+SQLAlchemy
+    Copyright 2005-2026 SQLAlchemy authors and contributors <see AUTHORS file>.
+
+PyMySQL
+    Copyright (c) 2010, 2013 PyMySQL contributors
+
+flask-limiter
+    Copyright (c) 2023 Ali-Akber Saifee
+
+flask-cors
+    Copyright (C) 2025 Cory Dolphin
+
+anthropic (Python SDK)
+    Copyright 2023 Anthropic, PBC.
+
+pytest
+    Copyright (c) 2004 Holger Krekel and others
+
+pgvector (Python client)
+    Copyright (c) 2021-2025 Andrew Kane
+
+pydantic
+    Copyright (c) 2017 to present Pydantic Services Inc. and individual contributors.
+
+setuptools
+    Author: Python Packaging Authority <distutils-sig@python.org>.
+    (Confirmed via package metadata. The upstream LICENSE ships the MIT body
+    with no year/holder line — there is no formal copyright-holder line to
+    retain, so the project author above is the correct attribution.)
+
+================================================================================
+BSD 3-Clause  —  full text in BSD-3-Clause.txt
+================================================================================
+
+Flask
+    Copyright 2010 Pallets
+
+python-dotenv
+    Copyright (c) 2014, Saurabh Kumar (python-dotenv), 2013, Ted Tieken
+    (django-dotenv-rw), 2013, Jacob Kaplan-Moss (django-dotenv)
+
+pandas
+    Copyright (c) 2008-2011, AQR Capital Management, LLC, Lambda Foundry, Inc.
+    and PyData Development Team
+    Copyright (c) 2011-2026, Open source contributors.
+
+scikit-learn
+    Copyright (c) 2007-2026 The scikit-learn developers.
+
+numpy
+    Copyright (c) 2005-2025, NumPy Developers.
+
+PyTorch (torch)
+    Copyright (c) 2016-     Facebook, Inc            (Adam Paszke)
+    Copyright (c) 2014-     Facebook, Inc            (Soumith Chintala)
+    Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+    Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+    Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+    Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+    Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+    Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+    Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+    Copyright (c) 2016-present, Facebook Inc. All rights reserved.
+    (plus the Caffe2 contributor copyrights — Google Inc., Yangqing Jia, Kakao
+    Brain, Cruise LLC, Tri Dao, Arm Limited, and the respective contributors —
+    as enumerated in PyTorch's upstream LICENSE.)
+
+================================================================================
+Apache License 2.0  —  full text in Apache-2.0.txt
+================================================================================
+
+The Apache-2.0 body carries no per-project copyright line, so none is needed
+here. Where a project distributes a NOTICE file, Apache-2.0 §4(d) requires
+retaining it; those are saved alongside as <project>-NOTICE.txt.
+
+Components under Apache-2.0:
+    snowflake-connector-python   (NOTICE: snowflake-connector-python-NOTICE.txt)
+    snowflake-sqlalchemy
+    flask-talisman
+    requests                     (NOTICE: requests-NOTICE.txt)
+    Apache Airflow + providers   (NOTICE: airflow-NOTICE.txt)
+    openai (Python SDK)
+    kafka-python
+    dbt-core
+    dbt-snowflake
+    openlineage-dbt (OpenLineage)
+    MLflow
+    sentence-transformers
+    rank-bm25
+    Apache Kafka                 (NOTICE: kafka-NOTICE.txt)
+    K3s
+    Docker Engine
+    sentence-transformers/all-MiniLM-L6-v2 (embedding model weights)
+
+================================================================================
+PostgreSQL License  —  full text in PostgreSQL.txt
+================================================================================
+
+PostgreSQL 16 (inside the pgvector image)
+pgvector/pgvector (PostgreSQL extension + container image)
+    Portions Copyright (c) 1996-2026, The PostgreSQL Global Development Group
+    Portions Copyright (c) 1994, The Regents of the University of California
+
+================================================================================
+LGPL-2.1  —  full text in LGPL-2.1.txt
+================================================================================
+
+chardet
+    Copyright (c) Dan Blanchard, Ian Cordasco, and contributors
+    (originally authored by Mark Pilgrim). Used as an unmodified pip dependency.
+
+================================================================================
+LGPL-3.0  —  full text in LGPL-3.0.txt
+================================================================================
+
+psycopg2 / psycopg2-binary
+    Copyright (c) Federico Di Gregorio <fog@initd.org>, Daniele Varrazzo, and
+    The Psycopg Team. (Confirmed via package metadata: author "Federico Di
+    Gregorio", license "LGPL with exceptions".) Used as an unmodified pip
+    dependency.
+
+================================================================================
+GPL-2.0  —  full text in GPL-2.0.txt
+================================================================================
+
+busybox (init-container image only)
+    Copyright (c) Erik Andersen, Rob Landley, Denys Vlasenko, and others.
+    (best-effort holder list.) Used as an UNMODIFIED upstream container image
+    to fix directory permissions — not modified, not redistributed as source.
+
+================================================================================
+BUSL-1.1 (Business Source License)  —  full text in BUSL-1.1.txt
+================================================================================
+
+Terraform
+    Licensor: International Business Machines Corporation (IBM) / HashiCorp.
+    License text copyright (c) 2020 MariaDB Corporation Ab.
+    Source-available, NOT open source. Permitted: provisioning our own
+    infrastructure. Forbidden: offering Terraform itself as a competing
+    commercial service. OpenTofu (MPL-2.0) is a drop-in fork if a fully open
+    license is preferred.
