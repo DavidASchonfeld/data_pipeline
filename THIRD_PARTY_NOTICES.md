@@ -4,7 +4,7 @@ This file lists every third-party tool, library, container image, dataset, and e
 
 **How this project uses third-party software:** by depending on it (installing it, or running an unmodified upstream container image) and calling its public interfaces. No third-party source code is copied into this repository.
 
-**Keeping it current:** add a row whenever a dependency is added, removed, or version-bumped. Full upstream license texts (which most permissive licenses require you to retain) belong in the `licenses/` folder next to this file.
+**Keeping it current:** add a row whenever a dependency is added, removed, or version-bumped. Full upstream license texts (which most permissive licenses require you to retain) live in the `licenses/` folder next to this file: one canonical body per license family (`MIT.txt`, `Apache-2.0.txt`, …), a `COPYRIGHT-NOTICES.txt` manifest mapping each component below to its verbatim upstream copyright line, and the `NOTICE` files for the Apache-2.0 projects that ship one. See `licenses/README.md` for the layout.
 
 > **Disclaimer:** This inventory is maintained on a best-effort basis and is not legal advice. Licenses can change between versions — verify each one against the version actually installed before relying on it commercially. The items under "Licenses needing attention" are starting points for that review, not conclusions.
 
