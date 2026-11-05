@@ -22,7 +22,7 @@ This file lists every third-party tool, library, container image, dataset, and e
 | pandas | 2.2.2 | BSD-3-Clause | https://pandas.pydata.org |
 | SQLAlchemy | 2.0.30 | MIT | https://www.sqlalchemy.org |
 | PyMySQL | 1.1.1 | MIT | https://github.com/PyMySQL/PyMySQL |
-| snowflake-connector-python | 3.10.1 | Apache-2.0 | https://github.com/snowflakedb/snowflake-connector-python |
+| snowflake-connector-python | 3.10.1 (dashboard) / 3.18.0 (ml-venv) | Apache-2.0 | https://github.com/snowflakedb/snowflake-connector-python |
 | snowflake-sqlalchemy | 1.6.1 | Apache-2.0 | https://github.com/snowflakedb/snowflake-sqlalchemy |
 | flask-limiter | 3.5.0 | MIT | https://github.com/alisaifee/flask-limiter |
 | flask-talisman | 1.1.0 | Apache-2.0 | https://github.com/GoogleCloudPlatform/flask-talisman |
@@ -54,7 +54,7 @@ This file lists every third-party tool, library, container image, dataset, and e
 
 | Library | Version | License | Project |
 |---|---|---|---|
-| MLflow | 2.15.1 | Apache-2.0 | https://mlflow.org |
+| MLflow | 3.13.0 | Apache-2.0 | https://mlflow.org |
 | scikit-learn | 1.5.2 | BSD-3-Clause | https://scikit-learn.org |
 | pandas | 2.2.2 | BSD-3-Clause | https://pandas.pydata.org |
 | setuptools | <75 | MIT | https://github.com/pypa/setuptools |

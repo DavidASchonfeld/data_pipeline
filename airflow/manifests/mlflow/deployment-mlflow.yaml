@@ -25,29 +25,39 @@ spec:
               mountPath: /mlflow-data
       containers:
         - name: mlflow
-          image: ghcr.io/mlflow/mlflow:latest
+          # Pinned, NOT :latest — a floating tag let MLflow drift to a newer 3.x DB schema and then
+          # CrashLoopBackOff the pod (2026-06-02). Pin server + client to the SAME exact version (the client
+          # is mlflow in airflow/docker/Dockerfile's ml-venv) and bump deliberately, never via :latest.
+          # NOTE: ghcr.io mlflow tags carry a `v` prefix (v3.13.0, not 3.13.0). To bump: change this image,
+          # MLFLOW_IMAGE in scripts/deploy/mlflow.sh, and the ml-venv mlflow pin all to the same new version.
+          image: ghcr.io/mlflow/mlflow:v3.13.0
           imagePullPolicy: Never    # image is pre-imported into K3S containerd by deploy.sh Step 2b5a
           ports:
             - containerPort: 5500
-          # sqlite backend keeps MLflow self-contained — no external DB needed
-          command:
-            - mlflow
-            - server
-            - --backend-store-uri
-            - sqlite:////mlflow-data/mlflow.db
-            - --artifacts-destination    # server writes artifact bytes here on the PVC
-            - /mlflow-data/artifacts
-            - --default-artifact-root    # clients receive this proxied URI — no direct /mlflow-data mount needed
-            - mlflow-artifacts:/
-            - --serve-artifacts          # proxy artifact uploads via HTTP — clients upload through tracking server
-            - --host
-            - "0.0.0.0"
-            - --port
-            - "5500"
-            - --workers          # cap at 1 worker — node is CPU/memory constrained, multiple workers OOMKill
-            - "1"
-            - --allowed-hosts    # allow K8s probe IPs through security middleware
-            - "*"
+          # sqlite backend keeps MLflow self-contained — no external DB needed.
+          #
+          # Self-heal schema drift on startup: `mlflow db upgrade` migrates the existing DB forward to the
+          # pinned image's schema (alembic, non-destructive — run history is preserved) BEFORE serving. This
+          # both recovers the 2026-06-02 incident (the DB sat at 3.x revision 7d34483879f0 while plain
+          # `mlflow server` refuses to auto-migrate) and self-heals any future deliberate version bump.
+          # GUARD: only upgrade an EXISTING db — `mlflow db upgrade` on a brand-new/empty file errors
+          # ("no such table: metrics"); on first boot `mlflow server` initializes the DB itself. (Both
+          # behaviours were reproduced and verified locally against mlflow 3.13.0 before this deploy.)
+          # `exec` makes mlflow server PID 1 so it still receives K8s stop signals.
+          command: ["sh", "-c"]
+          args:
+            - >-
+              DB=/mlflow-data/mlflow.db;
+              if [ -f "$DB" ]; then mlflow db upgrade "sqlite:///$DB"; fi;
+              exec mlflow server
+              --backend-store-uri "sqlite:///$DB"
+              --artifacts-destination /mlflow-data/artifacts
+              --default-artifact-root mlflow-artifacts:/
+              --serve-artifacts
+              --host 0.0.0.0
+              --port 5500
+              --workers 1
+              --allowed-hosts '*'
           resources:
             requests:
               cpu: "50m"
@@ -59,7 +69,7 @@ spec:
               ephemeral-storage: "100Mi"
             limits:
               cpu: "300m"
-              # raised from 1Gi: OOMKilled because ghcr.io/mlflow/mlflow:latest lazy-loads numpy/pandas/sklearn
+              # raised from 1Gi: OOMKilled because the mlflow image lazy-loads numpy/pandas/sklearn
               # the first time Airflow logs an experiment. Memory profile: base MLflow+uvicorn ~400MB +
               # lazy ML lib load ~600MB = ~1GB spike. 1536Mi gives ~500MB of safe headroom above observed peak.
               memory: "1536Mi"

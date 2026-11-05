@@ -241,9 +241,12 @@ def run_model(df: pd.DataFrame, contamination: float, n_estimators: int) -> tupl
         sig = infer_signature(input_ex, model.predict(features_df).astype(float))
 
         # log_model() saves the trained model as an artifact file inside this MLflow run.
-        # "isolation_forest" is the subfolder name inside the run's artifact directory.
-        # With the signature attached, MLflow can validate inputs at inference time.
-        mlflow.sklearn.log_model(model, "isolation_forest", input_example=input_ex, signature=sig)
+        # name="isolation_forest" is the subfolder name inside the run's artifact directory. MLflow 3.x
+        # renamed the old positional `artifact_path` argument to the keyword `name` and deprecated the old
+        # form (it logs a "`artifact_path` is deprecated, please use `name`" warning) — using `name=` here
+        # is the non-deprecated, forward-compatible call. With the signature attached, MLflow can validate
+        # inputs at inference time.
+        mlflow.sklearn.log_model(model, name="isolation_forest", input_example=input_ex, signature=sig)
 
         run_id = mlflow.active_run().info.run_id
 

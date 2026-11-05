@@ -48,6 +48,7 @@ For the failure mode catalog (what *can* go wrong, not what *did* go wrong), see
 
 | Date | Issue | File |
 |------|-------|------|
+| 2026-06-02 | `:latest` drifted to a newer DB schema → CrashLoopBackOff blocked the whole deploy; pinned server+client to v3.13.0 + guarded self-heal migration | [latest-schema-drift](mlflow/2026-06-02-mlflow-latest-schema-drift-crashloop.md) |
 | 2026-04-10 | pkg_resources missing after setuptools update | [pkg-resources](mlflow/2026-04-10-mlflow-pkg-resources-missing.md) |
 | 2026-04-10 | Fix not propagating (image caching) | [fix-not-propagating](mlflow/2026-04-10-mlflow-fix-not-propagating.md) |
 | 2026-04-10 | Artifact permission error + chardet warning | [artifact-permission](mlflow/2026-04-10-mlflow-artifact-permission-and-chardet-warning.md) |

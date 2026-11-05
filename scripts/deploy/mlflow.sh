@@ -2,7 +2,18 @@
 # Module: mlflow — MLflow manifest sync, image import, deployment, artifact root fix, and port-forward.
 # Sourced by deploy.sh; all variables from common.sh are available here.
 
-MLFLOW_IMAGE="ghcr.io/mlflow/mlflow:latest"
+# Pinned to an exact version on purpose — NOT :latest. With :latest, a new MLflow release can ship a
+# newer DB schema or a changed client/server API and silently break a deploy that worked the day before
+# (this happened 2026-06-02 — see docs/incidents/mlflow/2026-06-02-mlflow-latest-schema-drift-crashloop.md).
+# Keep this in lockstep with the image in airflow/manifests/mlflow/deployment-mlflow.yaml AND the mlflow
+# client pinned in airflow/docker/Dockerfile's ml-venv — server and client should be the SAME version.
+# NOTE: the ghcr.io mlflow image tags carry a `v` prefix (v3.13.0, not 3.13.0) — a plain `3.13.0` returns
+# "not found". Browse tags:
+#   curl -s "https://ghcr.io/token?scope=repository:mlflow/mlflow:pull" | ... then GET /v2/mlflow/mlflow/tags/list
+# TO BUMP: change this tag, the manifest image, AND the ml-venv mlflow pin to the same new version,
+# redeploy, confirm MLflow comes up (the manifest's guarded `mlflow db upgrade` migrates the SQLite schema
+# forward automatically).
+MLFLOW_IMAGE="ghcr.io/mlflow/mlflow:v3.13.0"
 
 step_deploy_mlflow() {
     echo "=== Step 2b5: Syncing MLflow manifests to EC2 ==="
@@ -178,7 +189,7 @@ step_fix_mlflow_experiment() {
     # Updating the row directly avoids that problem: we set the correct artifact path and mark it active again in one step.
     ssh "$EC2_HOST" "kubectl exec -n airflow-my-namespace deployment/mlflow -- python3 -c \"
 import sqlite3, time, sys
-db = sqlite3.connect('/mlflow-data/mlflow.db')
+db = sqlite3.connect('/mlflow-data/mlflow.db')  # the backend store (matches --backend-store-uri in deployment-mlflow.yaml)
 # Check current state first — skip if already correct to stay safe to run multiple times
 row = db.execute(\\\"SELECT experiment_id, artifact_location, lifecycle_stage FROM experiments WHERE name='anomaly_detection'\\\").fetchone()
 if row is None:

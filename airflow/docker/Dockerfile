@@ -47,10 +47,10 @@ USER airflow
 # requests/chardet pinned here to match airflow_pods.sh fallback install — fast-path verify uses these baked versions
 RUN /opt/ml-venv/bin/pip install --upgrade pip \
     && /opt/ml-venv/bin/pip install \
-         mlflow==2.15.1 \
+         mlflow==3.13.0 \
          scikit-learn==1.5.2 \
          pandas==2.2.2 \
-         snowflake-connector-python==3.10.1 \
+         snowflake-connector-python==3.18.0 \
          "setuptools<75" \
          "requests>=2.32.0" \
          "chardet>=3.0.2,<6" \
