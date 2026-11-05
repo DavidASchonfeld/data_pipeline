@@ -4,7 +4,7 @@
 > 1. **The big picture** — what the AI features are meant to do for this project (not a step-by-step plan).
 > 2. **What's actually built so far** — and where each piece lives.
 >
-> For the detailed, step-by-step engineering plan, see `GENAI_ROADMAP.md` (kept in the folder just outside the code repository). For install/uninstall instructions, see `genai/README.md`.
+> For the reasoning behind the design, see the decision records in `docs/decisions/`. For install/uninstall instructions, see `genai/README.md`.
 
 ---
 
@@ -37,7 +37,7 @@ To make sure the AI stays trustworthy, there's a built-in "exam." A fixed list o
 ### The safety rule underneath everything
 - **One master on/off switch.** A single setting (`GENAI_ENABLED`) turns the entire AI layer on or off. When it's off — which is the default — the existing pipeline and dashboard behave **exactly** as they did before, with zero AI activity and zero extra cost.
 - **Spending limits.** There are hard caps on how much a single question can cost and how much can be spent per day, so the AI bill can never run away.
-- **Swappable AI brain.** The project isn't locked into one AI company. Today it uses Anthropic's Claude; switching to OpenAI or a free local model is a one-line setting change.
+- **Swappable AI brain.** The project isn't locked into one AI company. Today it uses Anthropic; switching to OpenAI is a one-line setting change.
 - **Runs on the same single server.** No new machine is added. The AI work is carefully sandboxed so it never crashes the existing pipeline.
 
 ---
@@ -70,23 +70,34 @@ To make sure the AI stays trustworthy, there's a built-in "exam." A fixed list o
 
 ## What's actually built so far
 
-The work is organized into 11 numbered stages ("EPICs"). Here's the honest status today.
+The first build was organized into 11 numbered stages. Here's the honest status (updated 2026-11-04).
 
 | Stage | What it delivers | Status |
 |------|------------------|--------|
-| **1. Foundation + AI connection** | The on/off switch, the settings file, and a working connection to the AI (Anthropic, with OpenAI ready as a backup) | ✅ **Done & verified** |
-| **2. The "meaning" database + AI toolbox** | The special search database (pgvector) and all the AI software libraries the server needs | 🟡 **Built — final verification pending** |
-| 3. Filing reader | Downloads a company's full annual report and splits it into named sections | ⬜ Not started |
-| 4. Filing fact-extractor | Sends those sections to the AI and saves the key facts to the database | ⬜ Not started |
-| 5. Weather summaries | The optional weather-paragraph step | ⬜ Not started |
-| 6. "Meaning fingerprint" maker | Turns any text into numbers that capture its meaning | ⬜ Not started |
-| 7. Loader | Loads filing text and summaries into the search database | ⬜ Not started |
-| 8. Search engine | Finds the most relevant passages for a question (keyword + meaning combined) | ⬜ Not started |
-| 9. The decision-maker | The AI "brain" that picks which tools to use and writes the final answer | ⬜ Not started |
-| 10. Chat tab | The two-panel chat screen on the website | ⬜ Not started |
-| 11. The exam | Automatic answer-grading and score tracking | ⬜ Not started |
+| **1. Foundation + AI connection** | The on/off switch, the settings file, and a working connection to the AI (Anthropic, with OpenAI ready as a backup) | ✅ Done |
+| **2. The "meaning" database + AI toolbox** | The pgvector search database and the AI software libraries the server needs | ✅ Done |
+| **3. Filing reader** | Downloads a company's full annual report and splits it into named sections | ✅ Done |
+| **4. Filing fact-extractor** | Sends those sections to the AI and saves the key facts to Snowflake | ✅ Done |
+| **5. Weather summaries** | The optional weekly weather paragraph per city | ✅ Done |
+| **6. "Meaning translator" (embedder)** | Translates any text into a list of numbers that captures its meaning, so passages that mean similar things sit close together | ✅ Done |
+| **7. Loader** | Loads filing text and weather summaries into the search database, skipping anything unchanged | ✅ Done |
+| **8. Search engine** | Finds the most relevant passages for a question (keyword + meaning combined) | ✅ Done |
+| **9. The decision-maker** | The AI "brain" that picks which tools to use and writes the final answer | ✅ Done |
+| **10. Chat tab** | The two-panel chat screen on the website, backed by a small AI service running in its own pod | ✅ Built — live check pending |
+| **11. The exam** | Automatic answer-grading and score tracking | ⬜ Moved into the next phase (below) |
 
-**In short:** the foundation is finished, the database and AI libraries are in place (just needing a final "yes, it's running" check), and the four headline features (stages 3–11) are the road ahead.
+**In short:** the whole question-answering loop works end to end. The "exam" hasn't been built yet.
+
+### What comes next
+
+The next phase rebuilds this layer as a cleaner, reusable package (`agent_data/`) and grows it into a governed data product:
+- **Layered storage for filings:** raw → cleaned → search-ready, with every passage traceable back to its exact SEC filing.
+- **A governed data service:** a small API, plus an MCP server so AI agents can call it as tools. Agents can only use approved financial metrics, never free-form SQL.
+- **Access tiers and audit logging:** a record of who asked what.
+- **The exam:** a labelled set of test questions that measures search quality with real numbers.
+- **Deployment profiles:** the same code runs on AWS (today's system), on Azure, or on a laptop for testing.
+
+The design choices are recorded in `docs/decisions/0006`–`0010`.
 
 ---
 
@@ -97,14 +108,19 @@ Everything is kept in self-contained folders so the whole AI layer can be remove
 | Piece | Where it lives | What it is, in plain terms |
 |------|----------------|----------------------------|
 | The on/off switch & all settings | `genai/config.py` | One file that holds the master switch, which AI to use, and the spending caps |
-| The AI connection | `genai/llm/` | The code that actually talks to the AI service. `anthropic_provider.py` is the default; `openai_provider.py` is the ready-made backup; `_factory.py` picks the right one based on the setting |
-| The search-database client | `genai/retrieval/pgvector_client.py` | The code that connects to the "meaning" database safely and efficiently |
-| The "meaning" database itself | `infra/genai/pgvector/` | The setup files (manifests) that create the pgvector database on the server, including which tables it holds |
-| Secret keys (templates) | `infra/genai/secrets/` | Fill-in-the-blank templates for the AI API key and database password (the real, filled-in versions are kept off of GitHub) |
-| Deploy steps | `scripts/deploy/pgvector.sh` and the AI section of `scripts/deploy/airflow_pods.sh` | The automated steps that install the database and AI libraries onto the server — but only when the switch is on |
-| Plain-English code comments | Throughout every file above | Each file opens with a short, jargon-free explanation of what it does and why |
+| The AI connection | `genai/llm/` | The code that talks to the AI service; `_factory.py` picks Anthropic or OpenAI based on the setting |
+| Filing reader + section splitter | `genai/extraction/` | Downloads 10-K filings politely (rate-limited) and splits out the risk, business and management-discussion sections |
+| The "meaning translator" | `genai/embedding/` | Turns text into meaning-numbers using a small free model that runs on the server |
+| Loader + search engine | `genai/retrieval/` | Splits text into passages, loads them, and searches by keyword and by meaning, then blends the two rankings |
+| The decision-maker | `genai/agent/` | The tool-calling loop, its tools, the SQL safety check, and the cost cap |
+| Background jobs | `genai/runners/`, `airflow/dags/genai_dags/` | The scheduled jobs that extract facts and load the search database, run in a separate Python environment so they can't starve the scheduler of memory |
+| The AI service | `genai/service/app.py`, `infra/genai/genai-api/` | A small web service, in its own pod, that the chat tab calls |
+| Chat tab | `dashboard/chat/` | The two-panel chat screen |
+| The "meaning" database itself | `infra/genai/pgvector/` | The manifests that create the pgvector database on the server |
+| Secret keys (templates) | `infra/genai/secrets/` | Fill-in-the-blank templates; the real values are kept off GitHub |
+| Deploy steps | `scripts/deploy/pgvector.sh`, `scripts/deploy/genai_api.sh`, the AI section of `scripts/deploy/airflow_pods.sh` | Automated install steps that run only when the switch is on |
 | Install / uninstall guide | `genai/README.md` | How to turn the layer on, off, or remove it entirely |
-| Design decisions | `docs/decisions/0001`–`0004` | Short notes explaining *why* key choices were made (the on/off switch, the swappable AI, how secrets are handled, caching) |
+| Design decisions | `docs/decisions/` | Short notes explaining *why* key choices were made |
 
 ---
 
@@ -120,4 +136,4 @@ No. The AI layer is fully separated and gated. With the switch off it's invisibl
 The design specifically prevents that. The chat feature answers only from passages found in this project's own data, and it shows those sources next to every answer.
 
 **What's the very next step?**
-Confirm Stage 2 is running on the server (the database pod is up and the AI libraries import correctly), tick its checkboxes in `GENAI_ROADMAP.md`, then begin Stage 3 (the filing reader).
+Run the live check for the chat tab, then start the rebuild described under "What comes next."

@@ -292,7 +292,7 @@ For a portfolio project, this is fine. For production, you'd use:
 
 ### Summary
 
-"I use K8s Secrets for credential management, which are base64-encoded and adequate for this single-user development environment. For production, I'd implement AWS Secrets Manager with External Secrets Operator for encryption at rest and centralized rotation."
+I use K8s Secrets for credential management. They are only base64-encoded, which is adequate for this single-user environment. For a production system I would use AWS Secrets Manager with External Secrets Operator, for encryption at rest and centralized rotation.
 
 ---
 

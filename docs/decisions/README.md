@@ -25,6 +25,11 @@ Each ADR has a number (0001, 0002, …) and a title. Open any one of them — th
 | [0003](0003-secret-handling-pattern.md) | Secret-handling pattern | How API keys and passwords are kept out of the codebase |
 | [0004](0004-prompt-caching-provider-internal.md) | Prompt caching is provider-internal | Why caching is handled inside each provider, not as a shared setting |
 | [0005](0005-source-agnostic-ingestion.md) | Source-agnostic ingestion | How the layer is made to ingest "anything" later — one reader interface + a generic schema, without rewriting the engine |
+| [0006](0006-rewrite-alongside-then-cut-over.md) | Rebuild alongside, then cut over | Why the AI layer is rebuilt as a new package next to the old one, with a measured switch-over |
+| [0007](0007-governed-metric-catalog.md) | Governed metric catalog | Why agents get numbers from approved metrics instead of writing their own SQL |
+| [0008](0008-platform-profiles-and-engine-domain-split.md) | Deployment profiles + engine/domain split | How the same code runs on AWS, Azure or a laptop, and how parts are reused in other projects |
+| [0009](0009-delta-lake-via-delta-rs.md) | Delta Lake via delta-rs | Where the raw → cleaned → search-ready filing layers are stored, and why without Spark |
+| [0010](0010-optional-langgraph-agent-runner.md) | Optional LangGraph agent runner | Why the agent loop sits behind an interface with a native and a LangGraph version |
 
 ## How to add a new ADR
 

@@ -1,6 +1,6 @@
 # ADR 0005: Source-Agnostic Ingestion (Document + Reader Port)
 
-- Status: Proposed
+- Status: Accepted (generic `chunks` table built; carried forward and extended by [ADR 0006](0006-rewrite-alongside-then-cut-over.md) and [ADR 0008](0008-platform-profiles-and-engine-domain-split.md))
 - Date: 2026-05-28
 
 ## Context

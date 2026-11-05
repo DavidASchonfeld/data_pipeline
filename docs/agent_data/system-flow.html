@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EDGAR Agent Data Flow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #eef2f5;
+    --sheet: #f8fafb;
+    --ink: #14233a;
+    --muted: #51627a;
+    --rule: #c6d0da;
+    --edge: #6d7d92;
+    --focus: #1f6feb;
+    --k-source: #4b6f9e;
+    --k-process: #7556c4;
+    --k-store: #13877a;
+    --k-serve: #b5761a;
+    --k-agent: #c2412d;
+    --k-gov: #3a7f49;
+    --tint: 0.10;
+    --sans: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #0f1722;
+      --sheet: #152030;
+      --ink: #e4ebf3;
+      --muted: #9aabc0;
+      --rule: #2b3b50;
+      --edge: #7f91a8;
+      --focus: #6ea8ff;
+      --k-source: #7fa3d6;
+      --k-process: #a78bf0;
+      --k-store: #3fc1ad;
+      --k-serve: #e3a548;
+      --k-agent: #f07a63;
+      --k-gov: #6cc07d;
+      --tint: 0.16;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--sans); }
+  main { max-width: 1480px; margin: 0 auto; padding: 32px 24px 48px; }
+  h1 { font-size: 1.75rem; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 8px; }
+  .lead { color: var(--muted); max-width: 72ch; line-height: 1.55; margin: 0 0 24px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 16px; }
+  .controls span { color: var(--muted); font-size: 0.9rem; margin-right: 4px; }
+  .controls button {
+    font: inherit; font-size: 0.9rem; padding: 6px 14px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--rule); background: var(--sheet); color: var(--ink);
+  }
+  .controls button[aria-pressed="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  .controls button:focus-visible, .node:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+  .layout { display: grid; grid-template-columns: 1fr; gap: 16px; }
+  .canvas { background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; overflow-x: auto; }
+  .canvas svg { display: block; width: 100%; min-width: 980px; height: auto; }
+  .panel { background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; padding: 20px 24px; min-height: 120px; }
+  .panel > * { max-width: 78ch; }
+  .panel h2 { font-size: 1.15rem; margin: 0 0 4px; font-weight: 600; }
+  .panel .kind { font-size: 0.85rem; color: var(--muted); margin: 0 0 14px; }
+  .panel p, .panel li { line-height: 1.5; font-size: 0.93rem; }
+  .panel ul { padding-left: 18px; margin: 8px 0 14px; }
+  .panel h3 { font-size: 0.9rem; font-weight: 600; margin: 14px 0 6px; }
+  .tags { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tags span { font-size: 0.8rem; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--rule); color: var(--ink); }
+  .empty { color: var(--muted); }
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 16px 0 0; font-size: 0.85rem; color: var(--muted); }
+  .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; border: 1.5px solid; }
+  .legend .dash { width: 22px; height: 0; border: 0; border-top: 1.5px dashed var(--edge); border-radius: 0; vertical-align: 3px; }
+  code { font-family: var(--mono); font-size: 0.85em; }
+
+  svg text { font-family: var(--sans); }
+  svg .mono { font-family: var(--mono); }
+  .node { cursor: pointer; transition: opacity 160ms ease; }
+  .node rect.box { transition: stroke-width 120ms ease; }
+  .node:hover rect.box, .node.selected rect.box { stroke-width: 2.5; }
+  .edge { transition: opacity 160ms ease; }
+  .dim { opacity: 0.16; }
+  @media (prefers-reduced-motion: reduce) { .node, .edge, .node rect.box { transition: none; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>SEC EDGAR agent-ready data product</h1>
+  <p class="lead">How filings flow from SEC sources through a Delta lakehouse (S3, ADLS Gen2, or a local folder, chosen by deployment profile) into a hybrid search index and governed data services that an AI agent calls as tools. Pick a path to trace it, or select any component to see its details below the diagram.</p>
+
+  <div class="controls" role="group" aria-label="Highlight a path">
+    <span>Trace a path:</span>
+    <button type="button" data-path="all" aria-pressed="true">Everything</button>
+    <button type="button" data-path="docs" aria-pressed="false">Documents to search index</button>
+    <button type="button" data-path="structured" aria-pressed="false">Structured financials</button>
+    <button type="button" data-path="query" aria-pressed="false">Agent answering a question</button>
+    <button type="button" data-path="stream" aria-pressed="false">Phase 4 streaming</button>
+  </div>
+
+  <div class="layout">
+    <div class="canvas"><svg id="flow" viewBox="0 0 1640 920" role="img" aria-label="System flow from SEC sources through the lakehouse to search, data services and the AI agent"></svg></div>
+    <aside class="panel" id="panel" aria-live="polite">
+      <p class="empty">Select a component in the diagram to see what it does and the technology behind it.</p>
+    </aside>
+  </div>
+
+  <div class="legend" aria-label="Legend">
+    <span><i style="border-color:var(--k-source)"></i>Source</span>
+    <span><i style="border-color:var(--k-process)"></i>Processing</span>
+    <span><i style="border-color:var(--k-store)"></i>Storage and index</span>
+    <span><i style="border-color:var(--k-serve)"></i>Data service</span>
+    <span><i style="border-color:var(--k-agent)"></i>Consumer</span>
+    <span><i style="border-color:var(--k-gov)"></i>Cross-cutting control</span>
+    <span><i class="dash"></i>Phase 4 (optional streaming)</span>
+  </div>
+</main>
+
+<script>
+(function () {
+  const KIND = {
+    source: { color: 'var(--k-source)', label: 'Source' },
+    process: { color: 'var(--k-process)', label: 'Processing' },
+    store: { color: 'var(--k-store)', label: 'Storage and index' },
+    serve: { color: 'var(--k-serve)', label: 'Data service' },
+    agent: { color: 'var(--k-agent)', label: 'Consumer' },
+    gov: { color: 'var(--k-gov)', label: 'Cross-cutting control' }
+  };
+
+  // Components: position, label lines, and detail-panel content.
+  const nodes = [
+    { id: 'a1', kind: 'source', x: 40, y: 130, w: 200, title: 'SEC Submissions API',
+      lines: ['Filing index per company', 'Lists 10-K and 10-Q', 'accession numbers'],
+      what: 'The per-company filing index at data.sec.gov/submissions. Used to discover which filings exist and which are new since the last run.',
+      tech: ['JSON over HTTPS', 'Descriptive User-Agent required', 'About 10 requests per second limit'] },
+    { id: 'a2', kind: 'source', x: 40, y: 240, w: 200, title: 'EDGAR filing archive',
+      lines: ['Primary HTML document', 'for each filing', 'sec.gov/Archives/edgar'],
+      what: 'The full text of each filing. Long, messy, semi-structured HTML with tables, headers, and boilerplate: the unstructured half of the project.',
+      tech: ['HTML documents', 'Amended filings (10-K/A) handled explicitly', 'Exhibits skipped in v1'] },
+    { id: 'a3', kind: 'source', x: 40, y: 350, w: 200, title: 'XBRL Company Facts',
+      lines: ['Structured financials', 'Feeds existing pipeline', 'Kafka into Snowflake'],
+      what: 'Structured XBRL financial facts. Already ingested by the existing Airflow + Kafka + Snowflake pipeline; reused here as governed numeric context for the agent.',
+      tech: ['data.sec.gov/api/xbrl/companyfacts', 'Existing Kafka consumers', 'Existing Airflow DAGs'] },
+    { id: 'a4', kind: 'source', x: 40, y: 570, w: 200, title: 'New-filing events', phase4: true,
+      lines: ['Phase 4, optional', 'Kafka or Event Hubs', 'Kafka-compatible endpoint'],
+      what: 'An event stream of newly published filings. The existing Kafka setup carries over because Azure Event Hubs exposes a Kafka endpoint.',
+      tech: ['Kafka (AWS)', 'Azure Event Hubs (Azure)', 'Kafka protocol clients'] },
+
+    { id: 'b1', kind: 'process', x: 300, y: 130, w: 220, title: 'Rate-limited SEC client',
+      lines: ['Discover and fetch', 'Retries with backoff', 'Skips ingested filings'],
+      what: 'Compares the submissions index with ingestion_log, fetches only new filings, and lands them untouched in Bronze with a content hash. Idempotent: reruns never duplicate work.',
+      tech: ['Python (httpx or aiohttp)', 'Airflow DAG edgar_documents', 'SHA-256 content hash'] },
+    { id: 'b2', kind: 'process', x: 300, y: 240, w: 220, title: 'Parse and sectionize',
+      lines: ['Docling into elements', 'Maps Item 1A, Item 7', 'Strips TOC and headers'],
+      what: 'Converts raw HTML into ordered headings, paragraphs, and tables, then maps headings to canonical 10-K items with a rules plus regex classifier. Tables are kept as Markdown.',
+      tech: ['Docling (Unstructured as alternative)', 'PySpark or Python workers', 'parser_version recorded'] },
+    { id: 'b3', kind: 'process', x: 300, y: 350, w: 220, title: 'Chunk and PII scan',
+      lines: ['400 to 800 tokens', 'Contextual chunk headers', 'Presidio sets pii_flag'],
+      what: 'Splits each section on paragraph boundaries with overlap, keeps tables as their own chunks, prepends company, form, year, and section to each chunk, and scans for PII.',
+      tech: ['Versioned chunk strategy', 'Deterministic chunk_id hash', 'Microsoft Presidio'] },
+    { id: 'b4', kind: 'process', x: 300, y: 460, w: 220, title: 'Embedder',
+      lines: ['Local model or Azure OpenAI', 'Only new or changed chunks', 'Batched, rate-limited'],
+      what: 'Translates each chunk into a list of numbers that captures its meaning, so passages that mean similar things sit close together. Only new or changed chunks are translated. Vectors are stored per model, so swapping models is a new set of rows and an easy evaluation experiment.',
+      tech: ['sentence-transformers (AWS, local)', 'Azure OpenAI embeddings (Azure)', 'Embedder interface'] },
+    { id: 'b5', kind: 'process', x: 300, y: 570, w: 220, title: 'Structured Streaming', phase4: true,
+      lines: ['Phase 4, optional', 'Spark micro-batches', 'Incremental re-index'],
+      what: 'Consumes new-filing events and runs the same parse, chunk, and embed steps in micro-batches, so a new filing becomes searchable within minutes instead of the next batch run.',
+      tech: ['Spark Structured Streaming', 'Delta Lake sink', 'Checkpointing'] },
+
+    { id: 'c1', kind: 'store', x: 596, y: 160, w: 218, title: 'Bronze',
+      lines: ['Raw HTML and JSON sidecar', 'ingestion_log, hash, URL', 'cik / form partitions'], monoLines: [1],
+      what: 'Immutable raw landing zone (S3 on AWS, ADLS Gen2 on Azure, a folder locally). Every later layer can be rebuilt from here, and every chunk traces back to a URL and content hash.',
+      tech: ['Delta Lake via delta-rs', 'S3 / ADLS Gen2 / local folder', 'ingestion_log table'] },
+    { id: 'c2', kind: 'store', x: 596, y: 270, w: 218, title: 'Silver',
+      lines: ['silver.filings', 'silver.filing_elements', 'Gate: Item 1A, 7 found'], monoLines: [0, 1],
+      what: 'Clean, typed filing metadata and one row per parsed element. A quality gate quarantines any 10-K where Risk Factors or MD&A were not detected.',
+      tech: ['Delta Lake', 'Great Expectations or Soda Core', 'Partitioned by fiscal_year'] },
+    { id: 'c3', kind: 'store', x: 596, y: 380, w: 218, title: 'Gold',
+      lines: ['gold.chunks (CDF on)', 'gold.chunk_embeddings', 'access_tier on every row'], monoLines: [0, 1],
+      what: 'Retrieval-ready chunks and embeddings. Change Data Feed lets the index sync read only what changed; access_tier on every row is the hook for governed context delivery.',
+      tech: ['Delta Lake with Change Data Feed', 'Unity Catalog grants', 'Deterministic chunk_id'] },
+    { id: 'c4', kind: 'store', x: 596, y: 486, w: 218, title: 'Ops tables',
+      lines: ['ops.retrieval_audit', 'gold.index_sync_log', 'Feeds audit dbt model'], monoLines: [0, 1],
+      what: 'One audit row per tool call (who asked what, with which filters, which chunks returned) plus a log of every index sync. A dbt model summarizes calls per caller and out-of-scope attempts.',
+      tech: ['Delta Lake', 'dbt', 'Written by the data service and index sync'] },
+    { id: 'c5', kind: 'store', x: 596, y: 588, w: 218, h: 52, title: 'Streaming micro-batches', phase4: true,
+      lines: ['Phase 4 into Bronze to Gold'],
+      what: 'Streaming writes land in the same medallion tables, so batch and streaming share one model and one set of quality gates.',
+      tech: ['Delta Lake streaming sink'] },
+
+    { id: 'd1', kind: 'store', x: 880, y: 200, w: 220, title: 'Hybrid search index',
+      lines: ['Keyword plus meaning search', 'Fused with RRF', 'Filterable metadata'],
+      what: 'Hybrid keyword plus vector index with Reciprocal Rank Fusion. Metadata filters (ticker, year, section, access_tier) are applied on every query.',
+      tech: ['pgvector + Postgres full-text (AWS, local)', 'Azure AI Search (Azure)', 'SearchIndex interface'] },
+    { id: 'd2', kind: 'store', x: 880, y: 400, w: 220, title: 'Snowflake + dbt marts',
+      lines: ['Existing RAW to MARTS', 'Approved metric views', 'dbt tests, Elementary'],
+      what: 'The existing warehouse. Approved dbt views back a fixed metric catalog, so the agent gets numbers through parameterized queries, never free-form SQL.',
+      tech: ['Snowflake', 'dbt', 'Elementary for test history'] },
+
+    { id: 'e1', kind: 'serve', x: 1160, y: 200, w: 220, title: 'FastAPI data service',
+      lines: ['Scopes, access_tier filter', 'Pydantic schemas, citations', 'Audit row per call'],
+      what: 'The single place where business rules live: auth, scopes, top_k caps, server-side access filters, structured errors, and audit logging. Agents never touch stores directly.',
+      tech: ['FastAPI', 'K3s pod (AWS) or Container Apps (Azure)', 'API keys, then Entra ID on Azure'] },
+    { id: 'e2', kind: 'serve', x: 1160, y: 400, w: 220, title: 'MCP server',
+      lines: ['search_filings, get_chunk', 'list_filings', 'query_financials'], monoLines: [0, 1, 2],
+      what: 'A thin wrapper exposing the same service functions as MCP tools, with schemas generated from the Pydantic models, so the REST API and the agent interface never drift apart.',
+      tech: ['Python MCP SDK', 'Tool schemas from Pydantic'] },
+
+    { id: 'f2', kind: 'agent', x: 1420, y: 200, w: 200, title: 'Apps, tests, CI eval',
+      lines: ['REST /v1/search and more', 'Golden-set eval runner', 'Recall@k, MRR in CI'],
+      what: 'Anything that is not an agent calls the REST API, including the evaluation harness that runs on every pull request and fails the build if Recall@5 regresses.',
+      tech: ['pytest', 'GitHub Actions', 'eval/golden.jsonl'] },
+    { id: 'f1', kind: 'agent', x: 1420, y: 400, w: 200, title: 'AI agent',
+      lines: ['Native loop or LangGraph', 'Plan, retrieve, check', 'Answers with citations'],
+      what: 'A deliberately thin agent: it plans which tools to call, retrieves, reformulates once if results are poor, and answers with citations to chunks and metrics. Tool calls are capped per question.',
+      tech: ['Native loop or LangGraph', 'MCP client', 'Run logs for evaluation'] }
+  ];
+
+  const govChips = [
+    { id: 'g1', title: 'Unity Catalog', line: 'Owners, tags, table grants',
+      what: 'Registers every Delta table with owner, description, and tags. The pipeline principal writes only its layer; the data service reads Gold only.',
+      tech: ['Unity Catalog', 'OpenMetadata locally'] },
+    { id: 'g2', title: 'OpenLineage + Marquez', line: 'SEC URL to index, end to end',
+      what: 'Airflow, Spark, and dbt emit lineage events into Marquez, giving one graph from source URL to Gold chunks to the search index.',
+      tech: ['OpenLineage', 'Marquez'] },
+    { id: 'g3', title: 'Quality gates', line: 'Block promotion on failure',
+      what: 'Checks at every layer boundary: fetch, Bronze to Silver, Silver to Gold, Gold to index, and marts. Failures quarantine or block, then alert.',
+      tech: ['Great Expectations or Soda Core', 'dbt tests + Elementary'] },
+    { id: 'g4', title: 'Audit and access tiers', line: 'Server-side, never optional',
+      what: 'Caller scopes map to a maximum access tier enforced inside the service. A test proves a public caller can never retrieve restricted chunks.',
+      tech: ['FastAPI middleware', 'ops.retrieval_audit'] },
+    { id: 'g5', title: 'OpenTelemetry', line: 'Latency, errors, freshness',
+      what: 'Traces and metrics from the service and pipelines: p95 latency, error and empty-result rates per tool, and filing-to-searchable freshness.',
+      tech: ['OpenTelemetry', 'Azure Monitor or Prometheus + Grafana'] },
+    { id: 'g6', title: 'Evaluation harness', line: 'Golden set, run in CI',
+      what: '30 to 50 labelled questions measuring Recall@5, MRR, answer correctness, citation accuracy, and abstention. Experiments compare keyword, vector, and hybrid retrieval.',
+      tech: ['pytest', 'LLM-as-judge with hand spot checks'] },
+    { id: 'g7', title: 'Terraform + GitHub Actions', line: 'AWS and Azure, one command each',
+      what: 'All AWS and Azure resources in Terraform, plus budget alerts. CI runs lint, tests, and the eval.',
+      tech: ['Terraform (aws + azurerm)', 'GitHub Actions'] },
+    { id: 'g8', title: 'Secrets + identities', line: 'K8s secrets or Key Vault',
+      what: 'Secrets live in Kubernetes secrets on AWS and in Key Vault on Azure, where services use managed identities instead of keys wherever possible.',
+      tech: ['Kubernetes secrets', 'Azure Key Vault + managed identities', 'Microsoft Entra ID'] }
+  ];
+
+  // Connectors: hand-routed through the gaps between columns.
+  const edges = [
+    { id: 'a1b1', d: 'M240 174 H300' },
+    { id: 'a2b1', d: 'M240 284 H270 V198 H300' },
+    { id: 'b1c1', d: 'M520 174 H550 V204 H596' },
+    { id: 'c1b2', d: 'M596 232 H540 V272 H520' },
+    { id: 'b2c2', d: 'M520 300 H560 V314 H596' },
+    { id: 'c2b3', d: 'M596 344 H540 V382 H520' },
+    { id: 'b3c3', d: 'M520 410 H560 V424 H596' },
+    { id: 'c3b4', d: 'M596 446 H540 V490 H520' },
+    { id: 'b4c3', d: 'M520 522 H572 V460 H596' },
+    { id: 'a4b5', d: 'M240 614 H300', phase4: true },
+    { id: 'b5c5', d: 'M520 614 H596', phase4: true },
+    { id: 'c3d1', d: 'M814 410 H848 V244 H880' },
+    { id: 'a3d2', d: 'M40 394 H24 V704 H990 V488' },
+    { id: 'd1e1', d: 'M1100 244 H1160' },
+    { id: 'd2e1', d: 'M1100 444 H1130 V274 H1160' },
+    { id: 'e1e2', d: 'M1270 288 V400' },
+    { id: 'e1f2', d: 'M1380 244 H1420' },
+    { id: 'e2f1', d: 'M1380 444 H1420' }
+  ];
+
+  const edgeLabels = [
+    { x: 856, y: 322, t: 'index_sync', mono: true },
+    { x: 856, y: 338, t: 'CDF upserts' },
+    { x: 300, y: 696, t: 'Existing ELT: Kafka consumers load Snowflake RAW, dbt builds MARTS' },
+    { x: 1136, y: 340, t: 'approved', anchor: 'end' },
+    { x: 1136, y: 356, t: 'views only', anchor: 'end' },
+    { x: 1280, y: 340, t: 'wraps the same' },
+    { x: 1280, y: 356, t: 'functions' }
+  ];
+
+  const paths = {
+    docs: { n: ['a1', 'a2', 'b1', 'c1', 'b2', 'c2', 'b3', 'c3', 'b4', 'd1'],
+            e: ['a1b1', 'a2b1', 'b1c1', 'c1b2', 'b2c2', 'c2b3', 'b3c3', 'c3b4', 'b4c3', 'c3d1'] },
+    structured: { n: ['a3', 'd2', 'e1', 'e2', 'f1'], e: ['a3d2', 'd2e1', 'e1e2', 'e2f1'] },
+    query: { n: ['f1', 'e2', 'e1', 'd1', 'd2', 'c4'], e: ['e2f1', 'e1e2', 'd1e1', 'd2e1'] },
+    stream: { n: ['a4', 'b5', 'c5', 'c3', 'd1'], e: ['a4b5', 'b5c5', 'c3d1'] }
+  };
+
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.getElementById('flow');
+  const el = (name, attrs, parent, text) => {
+    const e = document.createElementNS(NS, name);
+    for (const k in attrs) {
+      const v = String(attrs[k]);
+      // CSS variables are applied as styles so theme colours resolve in every browser.
+      if (v.includes('var(')) e.style.setProperty(k, v);
+      else e.setAttribute(k, v);
+    }
+    if (text != null) e.textContent = text;
+    if (parent) parent.appendChild(e);
+    return e;
+  };
+
+  const defs = el('defs', {}, svg);
+  const marker = el('marker', { id: 'arrow', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '7', markerHeight: '7', orient: 'auto-start-reverse' }, defs);
+  el('path', { d: 'M0 0L10 5L0 10z', fill: 'var(--edge)' }, marker);
+
+  // Orchestration band.
+  const band = el('g', {}, svg);
+  el('rect', { x: 40, y: 20, width: 1060, height: 48, rx: 8, fill: 'var(--k-process)', 'fill-opacity': 'var(--tint)', stroke: 'var(--k-process)', 'stroke-width': 1.25 }, band);
+  el('text', { x: 60, y: 49, 'font-size': 14, 'font-weight': 600, fill: 'var(--ink)' }, band, 'Apache Airflow orchestrates every batch step');
+  el('text', { x: 1080, y: 49, 'font-size': 12, 'text-anchor': 'end', fill: 'var(--muted)', class: 'mono' }, band, 'edgar_documents · index_sync · eval_nightly');
+
+  // Column headings.
+  [['Sources', 40], ['Ingest and process', 300], ['Serving stores', 880], ['Data services', 1160], ['Consumers', 1420]].forEach(([t, x]) => {
+    el('text', { x, y: 108, 'font-size': 13, 'font-weight': 600, fill: 'var(--muted)' }, svg, t);
+  });
+
+  // Lakehouse container.
+  const lake = el('g', {}, svg);
+  el('rect', { x: 580, y: 120, width: 250, height: 532, rx: 10, fill: 'none', stroke: 'var(--k-store)', 'stroke-width': 1.25, 'stroke-dasharray': '2 0' }, lake);
+  el('text', { x: 596, y: 145, 'font-size': 13, 'font-weight': 600, fill: 'var(--ink)' }, lake, 'Delta lakehouse (S3 · ADLS Gen2 · local)');
+
+  const edgeLayer = el('g', { fill: 'none', 'stroke-width': 1.5 }, svg);
+  const edgeEls = {};
+  edges.forEach(e => {
+    edgeEls[e.id] = el('path', { d: e.d, class: 'edge', stroke: 'var(--edge)', 'marker-end': 'url(#arrow)', 'stroke-dasharray': e.phase4 ? '6 5' : 'none' }, edgeLayer);
+  });
+  edgeLabels.forEach(l => {
+    el('text', { x: l.x, y: l.y, 'font-size': 11.5, fill: 'var(--muted)', 'text-anchor': l.anchor || 'start', class: (l.mono ? 'mono ' : '') + 'edge-label' }, svg, l.t);
+  });
+
+  const nodeEls = {};
+  const byId = {};
+  const addInteraction = (g, item) => {
+    g.setAttribute('class', 'node');
+    g.setAttribute('tabindex', '0');
+    g.setAttribute('role', 'button');
+    g.setAttribute('aria-label', item.title);
+    g.addEventListener('click', () => select(item.id));
+    g.addEventListener('keydown', ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); select(item.id); } });
+  };
+
+  nodes.forEach(n => {
+    const h = n.h || 40 + 16 * n.lines.length;
+    const c = KIND[n.kind].color;
+    const g = el('g', {}, svg);
+    el('rect', { class: 'box', x: n.x, y: n.y, width: n.w, height: h, rx: 8, fill: c, 'fill-opacity': 'var(--tint)', stroke: c, 'stroke-width': 1.5, 'stroke-dasharray': n.phase4 ? '6 5' : 'none' }, g);
+    el('text', { x: n.x + 12, y: n.y + 22, 'font-size': 14, 'font-weight': 600, fill: 'var(--ink)' }, g, n.title);
+    n.lines.forEach((t, i) => {
+      const mono = (n.monoLines || []).includes(i);
+      el('text', { x: n.x + 12, y: n.y + (n.h ? 40 : 42 + 16 * i), 'font-size': mono ? 11 : 11.5, fill: 'var(--muted)', class: mono ? 'mono' : '' }, g, t);
+    });
+    addInteraction(g, n);
+    nodeEls[n.id] = g;
+    byId[n.id] = n;
+  });
+
+  // Cross-cutting band.
+  const gov = el('g', {}, svg);
+  el('rect', { x: 40, y: 736, width: 1580, height: 168, rx: 10, fill: 'none', stroke: 'var(--k-gov)', 'stroke-width': 1.25 }, gov);
+  el('text', { x: 56, y: 762, 'font-size': 13, 'font-weight': 600, fill: 'var(--ink)' }, gov, 'Cross-cutting: governance, quality, observability, delivery (applies to every layer above)');
+  govChips.forEach((chip, i) => {
+    const col = i % 4, row = Math.floor(i / 4);
+    const x = 56 + col * 390, y = 778 + row * 62;
+    const g = el('g', {}, svg);
+    el('rect', { class: 'box', x, y, width: 374, height: 52, rx: 8, fill: 'var(--k-gov)', 'fill-opacity': 'var(--tint)', stroke: 'var(--k-gov)', 'stroke-width': 1.5 }, g);
+    el('text', { x: x + 12, y: y + 21, 'font-size': 13.5, 'font-weight': 600, fill: 'var(--ink)' }, g, chip.title);
+    el('text', { x: x + 12, y: y + 40, 'font-size': 11.5, fill: 'var(--muted)' }, g, chip.line);
+    const item = Object.assign({ kind: 'gov' }, chip);
+    addInteraction(g, item);
+    nodeEls[chip.id] = g;
+    byId[chip.id] = item;
+  });
+
+  // Detail panel.
+  const panel = document.getElementById('panel');
+  let selected = null;
+  function select(id) {
+    const item = byId[id];
+    if (selected) nodeEls[selected].classList.remove('selected');
+    selected = id;
+    nodeEls[id].classList.add('selected');
+    panel.innerHTML = '';
+    const h2 = document.createElement('h2'); h2.textContent = item.title; panel.appendChild(h2);
+    const k = document.createElement('p'); k.className = 'kind';
+    k.textContent = KIND[item.kind].label + (item.phase4 ? ', Phase 4 (optional)' : '');
+    panel.appendChild(k);
+    const p = document.createElement('p'); p.textContent = item.what; panel.appendChild(p);
+    const h3 = document.createElement('h3'); h3.textContent = 'Technology'; panel.appendChild(h3);
+    const ul = document.createElement('ul');
+    item.tech.forEach(t => { const li = document.createElement('li'); li.textContent = t; ul.appendChild(li); });
+    panel.appendChild(ul);
+  }
+
+  // Path highlighting.
+  const buttons = document.querySelectorAll('.controls button');
+  const labels = svg.querySelectorAll('.edge-label');
+  function trace(name) {
+    buttons.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.path === name)));
+    const all = name === 'all';
+    const p = paths[name] || { n: [], e: [] };
+    Object.keys(nodeEls).forEach(id => nodeEls[id].classList.toggle('dim', !all && !p.n.includes(id)));
+    Object.keys(edgeEls).forEach(id => edgeEls[id].classList.toggle('dim', !all && !p.e.includes(id)));
+    labels.forEach(l => l.classList.toggle('dim', !all));
+  }
+  buttons.forEach(b => b.addEventListener('click', () => trace(b.dataset.path)));
+})();
+</script>
+</body>
+</html>
