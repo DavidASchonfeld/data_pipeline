@@ -494,3 +494,111 @@ tr.row-stale td {
     text-align: center;
     vertical-align: middle;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Chat tab (EPIC 10)
+   Styling for the RAG chat page (dashboard/chat/). Uses the same CSS custom
+   properties as the rest of the dashboard so the palette stays in one place.
+   Served to the chat Dash app because register() points its assets_folder here.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Explainer card: sets honest expectations about what the assistant can see. */
+.chat-explainer {
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-light);
+    border-left: 3px solid var(--accent-blue);
+    border-radius: var(--radius);
+    padding: 12px 16px;
+    margin: 16px 0;
+    color: var(--text-secondary);
+}
+
+/* Question input: full-width, multi-line, themed to match dropdowns/buttons. */
+.chat-input {
+    width: 100%;
+    min-height: 70px;
+    box-sizing: border-box;
+    background-color: var(--bg-surface);
+    color: var(--text-primary);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    font-family: inherit;
+    font-size: 0.95rem;
+    margin-bottom: 10px;
+    resize: vertical;
+}
+
+/* Live trace: a compact list of the tool turns the agent took. */
+.chat-trace-wrap { margin-top: 18px; }
+
+.chat-trace__list {
+    list-style: none;
+    padding-left: 0;
+    margin: 0;
+}
+
+.chat-trace__step {
+    padding: 6px 10px;
+    border-left: 2px solid var(--border-light);
+    margin-bottom: 4px;
+    color: var(--text-secondary);
+}
+
+/* A graceful refusal (e.g. a blocked SQL query) is shown, not hidden. */
+.chat-trace__error { color: #f87171; }
+
+/* Two side-by-side output windows; stacks on narrow screens. */
+.chat-windows {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-top: 18px;
+}
+
+@media (max-width: 800px) {
+    .chat-windows { grid-template-columns: 1fr; }
+}
+
+.chat-window {
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    box-shadow: var(--shadow);
+}
+
+/* Source passage cards in the left window. */
+.chat-source-card {
+    background-color: var(--bg-base);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    margin-bottom: 10px;
+}
+
+.chat-source-badge {
+    display: inline-block;
+    background-color: var(--bg-elevated);
+    color: var(--accent-blue-bright);
+    border-radius: var(--radius-sm);
+    padding: 2px 8px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-bottom: 6px;
+}
+
+.chat-source-text {
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    margin: 0;
+    white-space: pre-wrap;
+}
+
+/* The model's answer in the right window. */
+.chat-answer-md { color: var(--text-primary); }
+
+/* Friendly error shown when the assistant service is unreachable. */
+.chat-error { color: #f87171; }

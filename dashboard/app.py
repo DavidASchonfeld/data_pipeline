@@ -19,7 +19,7 @@ from routes import register_routes
 from callbacks import register_callbacks, register_weather_callbacks  # weather callbacks added for the second Dash app
 from db import prewarm_cache  # imported here to fire pre-warming without going through the callback layer
 from security import init_security, ALLOWED_CITIES, ALLOWED_TICKERS  # centralised security — rate limiting, headers, CORS; allowlists for dropdowns
-from config import FLASK_SECRET_KEY  # centralised dashboard configuration
+from config import FLASK_SECRET_KEY, GENAI_ENABLED  # centralised dashboard configuration; GENAI_ENABLED gates the chat tab (EPIC 10)
 from spot import build_spot_layout_components, register_spot_callbacks, build_offline_layout_components, register_offline_callbacks  # spot interruption + offline detection banners
 
 app = Flask(__name__)
@@ -38,6 +38,14 @@ dash_app = dash.Dash(
 )
 
 TICKERS = sorted(ALLOWED_TICKERS)  # single source of truth — derived from the security allowlist
+
+
+# Chat nav link — only shown when the GenAI layer is on, so a GENAI-off dashboard has no dangling link
+# to a route that isn't registered. Returns a list so it can be spread into a nav's children.
+def _chat_nav_link():
+    if not GENAI_ENABLED:
+        return []
+    return [html.A("Chat →", href="/chat/", className="dash-nav__link")]
 
 dash_app.layout = html.Div(
     className="dash-page",  # CSS class handles max-width, centering, and padding
@@ -60,6 +68,7 @@ dash_app.layout = html.Div(
                 href="/weather/",  # points to the weather Dash app mounted below
                 className="dash-nav__link",  # CSS class styles this as a pill-button link
             ),
+            *_chat_nav_link(),  # Chat → link, present only when GENAI_ENABLED
         ]),
 
         # ── Ticker selector ───────────────────────────────────────────────
@@ -188,6 +197,7 @@ weather_dash_app.layout = html.Div(
                 href="/dashboard/",  # points back to the stocks Dash app
                 className="dash-nav__link",  # CSS class styles this as a pill-button link
             ),
+            *_chat_nav_link(),  # Chat → link, present only when GENAI_ENABLED
         ]),
 
         # Auto-refresh interval — triggers data callbacks every 15 minutes to match the weather cache TTL
@@ -299,6 +309,15 @@ register_weather_callbacks(weather_dash_app)  # wire the weather callbacks onto 
 register_spot_callbacks(weather_dash_app, "weather")  # wire spot interruption callbacks onto the weather Dash app
 register_offline_callbacks(weather_dash_app, "weather")  # wire offline detection banner onto the weather Dash app
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ── Chat tab (EPIC 10) — registered only when the GenAI layer is on ───────────
+# genai: one conditional block is the entire wiring. When GENAI_ENABLED is false this never runs, so
+# there is no /chat/ route and the dashboard behaves exactly as before. Removing the chat layer is
+# deleting the dashboard/chat/ folder and this block. The chat app calls the agent over HTTP (the
+# genai-api pod), so importing it pulls in none of the heavy genai dependencies.
+if GENAI_ENABLED:
+    from chat import register
+    register(app)  # mounts the chat Dash app at /chat/ on the same Flask server
 
 # Pre-warm the cache synchronously before Gunicorn forks workers (requires --preload in Dockerfile).
 # Running this here means every forked worker inherits a hot _QUERY_CACHE via copy-on-write,

@@ -117,15 +117,18 @@ print('ECR credential helper configured')
     #   continue if the pod was already gone (first deploy or already fully deleted).
     ssh "$EC2_HOST" "kubectl delete pod $FLASK_POD -n default --ignore-not-found=true && kubectl wait --for=delete pod/$FLASK_POD -n default --timeout=30s 2>/dev/null || true"
 
-    # pod-flask.yaml in git contains ${ECR_REGISTRY} as a placeholder for the ECR image URI.
-    # We substitute the real value from .env.deploy before applying, so the AWS account ID
-    # stays out of version control. envsubst replaces ${ECR_REGISTRY} with the actual URI.
-    # service-flask.yaml has no secrets, so it's applied as-is.
+    # pod-flask.yaml in git contains ${ECR_REGISTRY} as a placeholder for the ECR image URI, and
+    # ${GENAI_ENABLED} as the chat-tab flag (EPIC 10). We substitute both from .env.deploy before applying,
+    # so the AWS account ID stays out of version control. GENAI_ENABLED defaults to false so a deploy that
+    # never set it leaves the chat tab off. service-flask.yaml has no secrets, so it's applied as-is.
     # envsubst lives at /opt/homebrew/bin on Apple Silicon Macs; we fall back to sed if it's not available
+    local _genai_enabled="${GENAI_ENABLED:-false}"
     if command -v envsubst &>/dev/null; then
-        ECR_REGISTRY="$ECR_REGISTRY" envsubst '${ECR_REGISTRY}' < "$PROJECT_ROOT/dashboard/manifests/pod-flask.yaml" > /tmp/pod-flask-rendered.yaml
+        ECR_REGISTRY="$ECR_REGISTRY" GENAI_ENABLED="$_genai_enabled" \
+            envsubst '${ECR_REGISTRY} ${GENAI_ENABLED}' < "$PROJECT_ROOT/dashboard/manifests/pod-flask.yaml" > /tmp/pod-flask-rendered.yaml
     else
-        sed "s|\${ECR_REGISTRY}|$ECR_REGISTRY|g" "$PROJECT_ROOT/dashboard/manifests/pod-flask.yaml" > /tmp/pod-flask-rendered.yaml
+        sed -e "s|\${ECR_REGISTRY}|$ECR_REGISTRY|g" -e "s|\${GENAI_ENABLED}|$_genai_enabled|g" \
+            "$PROJECT_ROOT/dashboard/manifests/pod-flask.yaml" > /tmp/pod-flask-rendered.yaml
     fi
     rsync $RSYNC_FLAGS /tmp/pod-flask-rendered.yaml "$EC2_HOST:/tmp/pod-flask.yaml"
     rsync $RSYNC_FLAGS "$PROJECT_ROOT/dashboard/manifests/service-flask.yaml" "$EC2_HOST:/tmp/"

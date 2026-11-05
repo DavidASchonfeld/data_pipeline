@@ -49,6 +49,7 @@ source "$DEPLOY_DIR/airflow_image.sh" # step_build_airflow_image
 source "$DEPLOY_DIR/kafka.sh"        # step_deploy_kafka
 source "$DEPLOY_DIR/mlflow.sh"       # step_deploy_mlflow, step_fix_mlflow_experiment, step_mlflow_portforward
 source "$DEPLOY_DIR/pgvector.sh"    # step_deploy_pgvector (genai: only sourced; call is gated by GENAI_ENABLED)
+source "$DEPLOY_DIR/genai_api.sh"   # step_deploy_genai_api (genai: only sourced; call is gated by GENAI_ENABLED)
 source "$DEPLOY_DIR/flask.sh"        # step_deploy_flask, step_verify_flask
 source "$DEPLOY_DIR/airflow_pods.sh" # step_helm_upgrade, step_verify_airflow_image, step_restart_airflow_pods, step_setup_ml_venv
 source "$DEPLOY_DIR/ami.sh" 2>/dev/null || true   # ami.sh may not exist yet on first deploy
@@ -281,6 +282,11 @@ if [ "$DAGS_ONLY" = false ]; then
 
     # Check that K3S didn't automatically delete the Airflow image to free disk space during the ~20 min gap since we built it
     step_verify_airflow_image  # Step 7a
+
+    # genai: deploy the genai-api service (the agent behind an HTTP endpoint for the chat tab). It reuses
+    # the airflow-dbt:$BUILD_TAG image just verified above and the secrets applied in Phase 3, so it runs
+    # here once both are guaranteed present. Gated by GENAI_ENABLED — a no-op deploy otherwise.
+    [ "${GENAI_ENABLED:-false}" = "true" ] && step_deploy_genai_api  # Step 7f
 fi
 
 # Restart the scheduler, dag-processor, and triggerer pods — waiting for all three in parallel takes ~360s max instead of 18 min one at a time

@@ -1114,6 +1114,7 @@ step_run_offline_tests() {
                 genai/agent/__tests__/test_import.py \
                 genai/agent/__tests__/test_cost.py \
                 genai/agent/__tests__/test_build_tool_turn.py \
+                genai/service/__tests__/test_app.py \
                 -m \"not live\" -v --no-header -q 2>&1'
     " || {
         echo ""

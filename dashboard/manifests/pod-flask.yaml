@@ -25,6 +25,11 @@ spec:
     env:
     - name: DB_BACKEND
       value: "snowflake"  # activates Snowflake engine in db.py; set to "mariadb" to revert
+    # genai (EPIC 10): turns the Chat tab on/off. Substituted from .env.deploy at deploy time (defaults to
+    # false). Only the flag lives here — the dashboard never holds the LLM key; it calls the genai-api pod
+    # over in-cluster HTTP using the GENAI_API_URL default in dashboard/config.py.
+    - name: GENAI_ENABLED
+      value: "${GENAI_ENABLED}"
     # Mount the Snowflake RSA private key file so db.py can authenticate via key-pair (no password)
     volumeMounts:
     - name: snowflake-rsa-key

@@ -1,0 +1,104 @@
+# Deployment: runs the genai-api HTTP service — the agent (genai.agent.answer) behind a small Flask
+# endpoint so the slim, public dashboard pod can ask questions over in-cluster HTTP without carrying the
+# heavy genai runtime itself.
+#
+# Why it reuses the Airflow image: the airflow-dbt image ALREADY bakes every genai dependency, the
+# embedding model weights (HF_HUB_OFFLINE=1), and the genai/ source at /opt/airflow/genai/. Building a
+# second image just to serve answer() would duplicate that ~1.5 GB bake and re-create the "if it's not
+# in the image it breaks" problem. So this pod runs the same locally-built image, only with a different
+# command (gunicorn serving the Flask app) — no new image to build.
+#
+# ${AIRFLOW_IMAGE_TAG} is substituted by scripts/deploy/genai_api.sh with the exact BUILD_TAG of the
+# image built earlier in the same deploy, so this pod always runs the freshly-built code.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: genai-api
+  namespace: airflow-my-namespace
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: genai-api
+  template:
+    metadata:
+      labels:
+        app: genai-api
+    spec:
+      # Don't inject Kubernetes' legacy per-Service env vars (e.g. GENAI_API_PORT=tcp://...). This pod
+      # finds pgvector/Snowflake via DNS + secrets, never via those vars — and one of them (GENAI_API_PORT,
+      # from this very Service) would otherwise collide with a genai.config name and crash the app on boot.
+      enableServiceLinks: false
+      containers:
+        - name: genai-api
+          image: airflow-dbt:${AIRFLOW_IMAGE_TAG}
+          imagePullPolicy: Never    # the image is built locally and imported into K3S containerd — never pull from a registry
+          # Run the Flask app under gunicorn from the ml-venv (which holds anthropic/openai, sentence-
+          # transformers, psycopg2, pgvector, sqlglot, flask + gunicorn). One worker keeps a SINGLE
+          # in-memory copy of the ~620 MB embedder (so the pod stays under its 1.5Gi cap); 4 threads give
+          # concurrency for the I/O-bound waits on the LLM API / Snowflake / pgvector. 120s timeout
+          # comfortably covers a multi-tool agent question.
+          command:
+            - /opt/ml-venv/bin/gunicorn
+            - --workers=1
+            - --threads=4
+            - --timeout=120
+            - --bind=0.0.0.0:8000
+            - genai.service.app:app
+          workingDir: /opt/airflow   # so `genai` resolves to the baked /opt/airflow/genai/ package
+          ports:
+            - containerPort: 8000
+          env:
+            # genai/agent/_snowflake.py authenticates with RSA key-pair auth and reads this path; point it
+            # at the mounted key file below. Set explicitly so it never depends on the secret carrying it.
+            - name: SNOWFLAKE_PRIVATE_KEY_PATH
+              value: /secrets/snowflake/rsa_key.p8
+            - name: PYTHONPATH
+              value: /opt/airflow
+          envFrom:
+            # The same three secrets the Airflow scheduler uses (see airflow/helm/values.yaml): Snowflake
+            # creds for the SQL/weather tools, pgvector creds for retrieval, and the LLM key + GENAI flag.
+            - secretRef:
+                name: snowflake-credentials
+            - secretRef:
+                name: pgvector-credentials
+            - secretRef:
+                name: genai-credentials
+          # Sized for the embedder peak (~620 MB streaming) plus headroom, while staying a good neighbour
+          # on the shared t4g.large. The limit is the hard ceiling before an OOMKill.
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+              ephemeral-storage: "100Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1536Mi"
+              ephemeral-storage: "500Mi"
+          # Both probes hit /health, which returns instantly without touching the LLM/embedder/DB — so the
+          # pod is marked Ready as soon as the web server is up, and a hung worker is restarted.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            # Mount the Snowflake RSA private key so key-pair auth works (same secret + path the scheduler uses)
+            - name: snowflake-rsa-key
+              mountPath: /secrets/snowflake
+              readOnly: true
+      volumes:
+        - name: snowflake-rsa-key
+          secret:
+            secretName: snowflake-rsa-key

@@ -75,7 +75,9 @@ RUN /opt/ml-venv/bin/pip install --no-cache-dir \
         pydantic \
         python-dotenv \
         "numpy<2" \
-    && /opt/ml-venv/bin/python -c "import anthropic, openai, sentence_transformers, psycopg2, pgvector, sqlglot, bs4, pydantic, dotenv; print('genai ml-venv imports OK')"
+        flask \
+        gunicorn \
+    && /opt/ml-venv/bin/python -c "import anthropic, openai, sentence_transformers, psycopg2, pgvector, sqlglot, bs4, pydantic, dotenv, flask, gunicorn; print('genai ml-venv imports OK')"
 
 # Bake the embedding model weights (all-MiniLM-L6-v2, ~90 MB) into the image. The model RUNS locally
 # either way, but its weight file is normally downloaded from HuggingFace on first use and cached on the
@@ -104,6 +106,7 @@ RUN pip install \
     python-dotenv \
     anthropic \
     openai \
+    flask \
     pytest
 
 # bake genai source in so offline unit tests can run inside the pod after each deploy

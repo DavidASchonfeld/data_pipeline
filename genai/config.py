@@ -176,3 +176,23 @@ LLM_PRICING: dict[str, dict[str, float]] = {
 # Conservative fallback when a model id matches nothing above — priced at the Sonnet tier so an
 # unknown model is never under-costed (the cap errs toward stopping early, not overspending).
 LLM_PRICING_DEFAULT: dict[str, float] = {"input": 3.00, "output": 15.00}
+
+# ── Chat service (EPIC 10) ──────────────────────────────────────────────────────
+# The agent runs behind a tiny HTTP service (genai/service/app.py) so the slim, public dashboard pod
+# can ask questions without carrying the heavy genai runtime (LLM SDK + embedder + pgvector client).
+# These two values configure that service.
+
+# Largest question (in characters) the chat endpoint will accept. A blank or over-long question is
+# refused with HTTP 400 before any LLM call — the simplest guard against unbounded-consumption abuse
+# (OWASP LLM10). ~2000 chars is roomy for a real analyst question while bounding worst-case input cost.
+GENAI_MAX_QUESTION_CHARS: int = int(os.environ.get("GENAI_MAX_QUESTION_CHARS", "2000"))
+
+# TCP port the chat service listens on inside its pod. The dashboard reaches it at
+# genai-api.airflow-my-namespace.svc.cluster.local:<this port> (see infra/genai/genai-api/).
+#
+# NB: this is deliberately NOT named GENAI_API_PORT. Kubernetes auto-injects legacy "service link" env
+# vars for every Service in a pod's namespace, named <SERVICE_NAME>_PORT etc. — so the `genai-api`
+# Service produces GENAI_API_PORT=tcp://10.43.x.x:8000 in every pod here. A config var called
+# GENAI_API_PORT would collide with that and int() the URL → crash on import. GENAI_SERVICE_PORT sits
+# outside the `GENAI_API_*` prefix, so it can never clash.
+GENAI_SERVICE_PORT: int = int(os.environ.get("GENAI_SERVICE_PORT", "8000"))

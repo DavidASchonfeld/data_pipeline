@@ -40,6 +40,16 @@ FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "")
 CACHE_TTL_FINANCIALS = 3600   # 1 hour — SEC filings change at most daily
 CACHE_TTL_WEATHER    = 900    # 15 min — matches Open-Meteo refresh cadence
 
+# ── GenAI chat tab (EPIC 10) ──────────────────────────────────────────────────
+# Master switch for the Chat tab. When false (the default), dashboard/app.py never registers the /chat/
+# route and the chat nav links are hidden — the dashboard runs exactly as it did before the GenAI layer.
+# Set GENAI_ENABLED=true in the Flask pod env (deploy.sh sets it when the layer is on) to turn it on.
+GENAI_ENABLED = os.environ.get("GENAI_ENABLED", "false").lower() == "true"
+
+# Where the chat callback sends questions. The agent runs in a separate pod (genai-api) because it needs
+# the heavy genai runtime; the dashboard reaches it over in-cluster DNS. Default points at that service.
+GENAI_API_URL = os.environ.get("GENAI_API_URL", "http://genai-api.airflow-my-namespace.svc.cluster.local:8000")
+
 # ── Security ──────────────────────────────────────────────────────────────────
 # ALLOWED_ORIGINS: empty string = no cross-origin access; set in K8s secret if needed
 ALLOWED_ORIGINS  = os.environ.get("ALLOWED_ORIGINS",  "")

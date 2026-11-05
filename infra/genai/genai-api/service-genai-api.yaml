@@ -1,0 +1,20 @@
+# Service: a stable in-cluster address for the genai-api pod so the dashboard can always reach it.
+#
+# The dashboard pod (in the 'default' namespace) calls this service by its fully-qualified DNS name,
+# which K3S resolves across namespaces:
+#   genai-api.airflow-my-namespace.svc.cluster.local:8000
+# That URL is the default for GENAI_API_URL in dashboard/config.py. ClusterIP keeps the agent endpoint
+# internal-only — it is never exposed to the public internet (the dashboard, behind CloudFront + its
+# flask-limiter, is the only front door).
+apiVersion: v1
+kind: Service
+metadata:
+  name: genai-api        # becomes the DNS hostname prefix for in-cluster access
+  namespace: airflow-my-namespace
+spec:
+  type: ClusterIP        # internal-only — not reachable from outside the cluster
+  selector:
+    app: genai-api       # routes to any pod labelled app=genai-api (matches deployment-genai-api.yaml)
+  ports:
+    - port: 8000         # clients connect here
+      targetPort: 8000   # forwards to the gunicorn port inside the container
