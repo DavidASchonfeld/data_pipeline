@@ -83,6 +83,7 @@ This file lists every third-party tool, library, container image, dataset, and e
 | pgvector/pgvector (image) | pg16 | PostgreSQL License | https://github.com/pgvector/pgvector |
 | PostgreSQL (inside the image) | 16 | PostgreSQL License | https://www.postgresql.org |
 | apache/airflow (image) | 3.1.8 | Apache-2.0 | https://airflow.apache.org |
+| Apache Airflow Helm chart (fetched by `scripts/deploy/airflow_pods.sh`, SHA-512 verified) | 1.20.0 | Apache-2.0 | https://archive.apache.org/dist/airflow/helm-chart/1.20.0/ |
 | busybox (init-container image) | — | **GPL-2.0** (unmodified upstream image) | https://busybox.net |
 | Apache Kafka | — | Apache-2.0 | https://kafka.apache.org |
 | K3s | — | Apache-2.0 | https://k3s.io |

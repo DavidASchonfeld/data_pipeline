@@ -37,3 +37,5 @@ AWSCLIV2.pkg
 **/.DS_Store
 # deploy status file — local timestamps, not for version control
 scripts/deploy_status.md
+# --run-script output — saved stdout of one-off scripts run in the scheduler pod; local only
+.run_script/

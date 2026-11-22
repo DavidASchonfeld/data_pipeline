@@ -5,7 +5,7 @@
 
 DEPLOY_STATUS_FILE="$PROJECT_ROOT/scripts/deploy_status.md"
 
-_DEPLOY_STATUS_MODES=("full" "--dags-only" "--provision" "--snowflake-setup" "--fix-ml-venv" "--bake-ami")
+_DEPLOY_STATUS_MODES=("full" "--dags-only" "--provision" "--snowflake-setup" "--fix-ml-venv" "--bake-ami" "--run-script")
 
 # Determine mode from flags set by deploy.sh argument parsing
 _deploy_status_mode() {
@@ -14,6 +14,7 @@ _deploy_status_mode() {
     elif [ "${SNOWFLAKE_SETUP:-false}" = true ]; then echo "--snowflake-setup"
     elif [ "${FIX_ML_VENV:-false}"    = true ]; then echo "--fix-ml-venv"
     elif [ "${BAKE_AMI:-false}"       = true ]; then echo "--bake-ami"
+    elif [ "${RUN_SCRIPT:-false}"     = true ]; then echo "--run-script"
     else echo "full"
     fi
 }
@@ -42,7 +43,12 @@ _deploy_status_set() {
 # CALL SITE 1 — called from deploy.sh after argument parsing
 _deploy_status_write_started() {
     [ -f "$DEPLOY_STATUS_FILE" ] || _deploy_status_init
-    _deploy_status_set "$(_deploy_status_mode)" "  Last Deploy Started" "$(date '+%Y-%m-%d %H:%M:%S')"
+    # Append a section for a mode added after the file was first created, so its timestamps aren't silently dropped
+    local _ds_mode
+    _ds_mode="$(_deploy_status_mode)"
+    grep -qxF "[$_ds_mode]" "$DEPLOY_STATUS_FILE" \
+        || printf "[%s]\n  Last Deploy Started:  (none yet)\n  Last Clean Finish:    (none yet)\n\n" "$_ds_mode" >> "$DEPLOY_STATUS_FILE"
+    _deploy_status_set "$_ds_mode" "  Last Deploy Started" "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 
 # CALL SITE 2 — called from _print_deploy_summary in common.sh (clean-exit branch only)

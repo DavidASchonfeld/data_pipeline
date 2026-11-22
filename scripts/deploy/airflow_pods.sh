@@ -177,13 +177,54 @@ _cleanup_stale_dag_log_pvcs() {
     done
 }
 
+# Pinned Airflow Helm chart, fetched as a file so the deploy doesn't depend on the chart index still listing it
+AIRFLOW_CHART_VERSION="1.20.0"
+AIRFLOW_CHART_FILE="$EC2_HELM_PATH/charts/airflow-${AIRFLOW_CHART_VERSION}.tgz"
+
+_ensure_airflow_chart() {
+    # Download the pinned chart onto EC2 once, verify its published SHA-512, and reuse it on later deploys.
+    # Why: Apache moves older chart releases from dist.apache.org to archive.apache.org when a newer one ships,
+    # but the airflow.apache.org repo index keeps pointing at the old URL — so `--version 1.20.0` started 404ing.
+    # Mirrors are tried in order; a bad or partial download is deleted, never used.
+    ssh "$EC2_HOST" "
+        set -e
+        CHART='$AIRFLOW_CHART_FILE'
+        NAME=\$(basename \"\$CHART\")
+        mkdir -p \"\$(dirname \"\$CHART\")\"
+        if [ -s \"\$CHART\" ] && helm show chart \"\$CHART\" >/dev/null 2>&1; then
+            echo \"Airflow chart $AIRFLOW_CHART_VERSION already cached at \$CHART\"
+            exit 0
+        fi
+        for BASE in \
+            https://dist.apache.org/repos/dist/release/airflow/helm-chart \
+            https://archive.apache.org/dist/airflow/helm-chart; do
+            URL=\"\$BASE/$AIRFLOW_CHART_VERSION/\$NAME\"
+            echo \"Fetching Airflow chart from \$URL ...\"
+            rm -f \"\$CHART\" \"\$CHART.sha512\"
+            if curl -fsSL --connect-timeout 15 --max-time 120 --retry 2 -o \"\$CHART\" \"\$URL\" \
+                && curl -fsSL --connect-timeout 15 --max-time 30 --retry 2 -o \"\$CHART.sha512\" \"\$URL.sha512\"; then
+                if (cd \"\$(dirname \"\$CHART\")\" && sha512sum -c \"\$NAME.sha512\" >/dev/null 2>&1); then
+                    echo \"Airflow chart verified (SHA-512) and cached at \$CHART\"
+                    exit 0
+                fi
+                echo \"WARNING: checksum mismatch for \$URL — discarding and trying the next mirror\"
+            else
+                echo \"WARNING: could not download \$URL — trying the next mirror\"
+            fi
+        done
+        rm -f \"\$CHART\" \"\$CHART.sha512\"
+        echo 'ERROR: Airflow Helm chart $AIRFLOW_CHART_VERSION is unavailable from every mirror (dist + archive.apache.org).'
+        exit 1
+    " || { echo "ERROR: could not obtain the pinned Airflow Helm chart $AIRFLOW_CHART_VERSION — aborting before helm upgrade."; return 1; }
+}
+
 step_helm_upgrade() {
     echo "=== Step 2d: Applying Helm values to live Airflow release ==="
     # Copying values.yaml to EC2 (step 2b) just puts the file there — it does NOT update the live Airflow deployment.
     # helm upgrade is what actually applies those changes (memory limits, worker count, probes) to the running pods.
     # Without this step, any values.yaml changes you make would be ignored until someone runs helm upgrade manually.
     #
-    # --version 1.20.0: locks the Helm chart to the Airflow 3.x version (we upgraded from 1.15.0 on 2026-04-06)
+    # AIRFLOW_CHART_FILE (chart 1.20.0): locks the Helm chart to the Airflow 3.x version (we upgraded from 1.15.0 on 2026-04-06)
     # No --reuse-values: we pass only values.yaml — using --reuse-values would pull in old 2.x Helm settings that break the 3.x schema
     # migrateDatabaseJob.useHelmHooks: false in values.yaml means helm upgrade returns right away —
     #   the database migration runs in the background, and pods wait for it using init containers
@@ -210,13 +251,14 @@ step_helm_upgrade() {
     # pod immediately after; if the image is missing the pod gets ErrImageNeverPull → 900s timeout.
     step_verify_airflow_image
 
+    _ensure_airflow_chart         # make sure the pinned chart file is on EC2 before any helm call below
+
     # Ensure the log hostPath is group-writable by GID 0 (airflow's primary group) before Helm applies fsGroup=0;
     # without this the dag-processor crashes on first start because it can't create /opt/airflow/logs/dag_processor/
     ssh "$EC2_HOST" "sudo chown ubuntu:root /opt/airflow/logs 2>/dev/null; sudo chmod 775 /opt/airflow/logs"
 
-    ssh "$EC2_HOST" "helm upgrade --install airflow apache-airflow/airflow \
+    ssh "$EC2_HOST" "helm upgrade --install airflow $AIRFLOW_CHART_FILE \
         -n airflow-my-namespace \
-        --version 1.20.0 \
         --timeout 10m \
         --force \
         --set images.airflow.tag=$BUILD_TAG \
@@ -452,9 +494,8 @@ step_helm_upgrade() {
         # exists in etcd while finalizers drain. Commits to etcd before returning, so callers
         # can immediately poll the job without hitting a stale-cache race.
         _create_mig_job() {
-            helm template airflow apache-airflow/airflow \
+            helm template airflow $AIRFLOW_CHART_FILE \
                 -n airflow-my-namespace \
-                --version 1.20.0 \
                 --set images.airflow.tag=$BUILD_TAG \
                 -f $EC2_HELM_PATH/values.yaml \
                 -s templates/jobs/migrate-database-job.yaml \

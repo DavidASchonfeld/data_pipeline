@@ -12,6 +12,10 @@
 #                                          Requires SNOWFLAKE_ADMIN_USER, SNOWFLAKE_ADMIN_PASSWORD in .env.deploy.
 #                                          Safe to re-run — all statements are CREATE IF NOT EXISTS.
 #   ./scripts/deploy.sh --bake-ami       — create a golden AMI snapshot from the running instance
+#   ./scripts/deploy.sh --run-script <file.py> [args...]
+#                                        — run one local Python script in the scheduler pod's ml-venv; stdout is saved
+#                                          under .run_script/. Must be the last flag: everything after the file is passed
+#                                          to the script. Manual one-off checks only — never part of a normal deploy.
 
 # Exit immediately if any command fails, unset variable is used, or pipe fails
 set -euo pipefail
@@ -52,6 +56,7 @@ source "$DEPLOY_DIR/pgvector.sh"    # step_deploy_pgvector (genai: only sourced;
 source "$DEPLOY_DIR/genai_api.sh"   # step_deploy_genai_api (genai: only sourced; call is gated by GENAI_ENABLED)
 source "$DEPLOY_DIR/flask.sh"        # step_deploy_flask, step_verify_flask
 source "$DEPLOY_DIR/airflow_pods.sh" # step_helm_upgrade, step_verify_airflow_image, step_restart_airflow_pods, step_setup_ml_venv
+source "$DEPLOY_DIR/run_script.sh"  # step_run_script (only used by --run-script)
 source "$DEPLOY_DIR/ami.sh" 2>/dev/null || true   # ami.sh may not exist yet on first deploy
 source "$DEPLOY_DIR/deploy_status.sh" 2>/dev/null || true  # optional; remove this + 2 call sites to disable
 
@@ -71,24 +76,36 @@ FIX_ML_VENV=false
 BAKE_AMI=false
 # --auto-retry-on-spot: if a spot interruption is detected, wait for replacement instance and re-run
 AUTO_RETRY_ON_SPOT=false
+# --run-script: run one local script in the scheduler pod's ml-venv, then exit (see scripts/deploy/run_script.sh)
+RUN_SCRIPT=false
+RUN_SCRIPT_ARGS=()
 # preserve original args so _maybe_spot_retry can re-exec with identical flags after a spot replacement
 DEPLOY_ORIG_ARGS=("$@")
-for _arg in "$@"; do
-    case "$_arg" in
+while [ $# -gt 0 ]; do
+    case "$1" in
         --dags-only)       DAGS_ONLY=true ;;
         --provision)       PROVISION=true ;;
         --snowflake-setup) SNOWFLAKE_SETUP=true ;;
         --fix-ml-venv)     FIX_ML_VENV=true ;;
         --bake-ami)            BAKE_AMI=true ;;
         --auto-retry-on-spot)  AUTO_RETRY_ON_SPOT=true ;;
-        *) echo "ERROR: Unknown argument: $_arg"; exit 1 ;;
+        --run-script)
+            # Everything after --run-script belongs to the script (file first, then its own arguments)
+            shift
+            [ $# -gt 0 ] || { echo "ERROR: --run-script needs a script path, e.g. --run-script check.py arg1"; exit 1; }
+            RUN_SCRIPT=true
+            RUN_SCRIPT_ARGS=("$@")
+            break ;;
+        *) echo "ERROR: Unknown argument: $1"; exit 1 ;;
     esac
+    shift
 done
 [ "$DAGS_ONLY" = true ]       && echo "--- Mode: --dags-only (skipping Docker build, Kafka, MLflow, Flask, Helm) ---"
 [ "$PROVISION" = true ]       && echo "--- Mode: --provision (running Terraform before deploy) ---"
 [ "$SNOWFLAKE_SETUP" = true ] && echo "--- Mode: --snowflake-setup (bootstrapping Snowflake objects before deploy) ---"
 [ "$FIX_ML_VENV" = true ]     && echo "--- Mode: --fix-ml-venv (repairing ml-venv in running scheduler pod only) ---"
 [ "$BAKE_AMI" = true ]           && echo "--- Mode: --bake-ami (creating golden AMI snapshot) ---"
+[ "$RUN_SCRIPT" = true ]         && echo "--- Mode: --run-script (running ${RUN_SCRIPT_ARGS[0]} in the scheduler pod only) ---"
 [ "$AUTO_RETRY_ON_SPOT" = true ] && echo "--- Mode: --auto-retry-on-spot (will wait for replacement instance and re-run on spot interrupt) ---"
 _deploy_status_write_started  # call site 1 — log deploy start timestamp by mode
 
@@ -97,6 +114,13 @@ _deploy_status_write_started  # call site 1 — log deploy start timestamp by mo
 if [ "$FIX_ML_VENV" = true ]; then
     _wait_scheduler_exec  # confirm the scheduler container is exec-ready before attempting pip install
     step_setup_ml_venv
+    exit 0
+fi
+
+# --run-script: skip the deploy entirely; confirm the scheduler is reachable, run the one script, report its result
+if [ "$RUN_SCRIPT" = true ]; then
+    _wait_scheduler_exec  # same readiness gate --fix-ml-venv uses before exec'ing into the scheduler
+    step_run_script "${RUN_SCRIPT_ARGS[@]}"
     exit 0
 fi
 
