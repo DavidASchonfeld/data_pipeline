@@ -88,6 +88,8 @@ This file lists every third-party tool, library, container image, dataset, and e
 | K3s | — | Apache-2.0 | https://k3s.io |
 | Docker Engine | — | Apache-2.0 | https://www.docker.com |
 | Terraform | — | **BUSL-1.1** (Business Source License) | https://www.terraform.io |
+| Amazon SSM Agent (pre-installed on the Ubuntu AMI) | — | Apache-2.0 | https://github.com/aws/amazon-ssm-agent |
+| AWS Session Manager plugin (operator's laptop, optional) | — | Apache-2.0 | https://github.com/aws/session-manager-plugin |
 
 ## External data sources & APIs (services, used under their terms)
 

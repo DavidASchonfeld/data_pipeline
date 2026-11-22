@@ -130,6 +130,13 @@ resource "aws_iam_role_policy_attachment" "ecr_power_user" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
 }
 
+# Lets me open a shell on the server through AWS Session Manager, using my AWS login instead of my IP.
+# This is a backup way in when my home IP changes; the SSM agent comes pre-installed on Ubuntu AMIs.
+resource "aws_iam_role_policy_attachment" "ssm_core" {
+  role       = aws_iam_role.ec2_ecr_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
 # Wraps the IAM role so it can be attached to the EC2 instance.
 resource "aws_iam_instance_profile" "ec2_ecr_profile" {
   name = "ec2-ecr-role"  # matches the console-auto-created profile name — imported rather than recreated

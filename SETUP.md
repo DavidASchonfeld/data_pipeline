@@ -38,6 +38,21 @@ You connect to EC2 via SSH — think of it like making a phone call to the serve
 ssh ec2-stock
 ```
 
+#### If `ssh ec2-stock` times out (my home IP changed)
+The server's firewall only accepts SSH from one IP address, so a new home IP gets blocked. Two ways back in, neither needs a deploy:
+
+1. **Swap the firewall rule to my new IP** (about 5 seconds; needs a working AWS CLI login):
+   ```bash
+   ./scripts/ssh_allow_my_ip.sh --dry-run   # preview the change
+   ./scripts/ssh_allow_my_ip.sh             # apply it, then test SSH
+   ```
+   The script finds the firewall by its tag and my IP at run time, so nothing account-specific is stored in the repo. The next `./scripts/deploy.sh --provision` re-sets the rule anyway.
+2. **AWS Session Manager** (works from any IP; uses my AWS login instead of the firewall). One-time setup: install the plugin with `brew install --cask session-manager-plugin`. Then:
+   ```bash
+   aws ssm start-session --target <INSTANCE_ID>
+   ```
+   The server's IAM role has the `AmazonSSMManagedInstanceCore` policy for this (in `terraform/main.tf`); it takes effect after the next `--provision`.
+
 ### Place 3: Inside the Pods (mounted from EC2)
 
 Kubernetes (K3S) creates pods — tiny isolated computers running inside EC2. Your DAG files are not copied again; Kubernetes uses a "mount" (like plugging in a USB drive) to make the EC2 folder visible inside the pod:
