@@ -9,7 +9,11 @@ import pandas as pd
 
 # ── Import with DB_BACKEND forced to non-snowflake so engine creation is skipped ──
 with patch.dict(os.environ, {"DB_BACKEND": "mariadb", "DB_HOST": ""}):
-    import db as db_module  # dashboard/db.py
+    # config.py may already be cached by an earlier test module (e.g. the chat tests) with CI's
+    # DB_BACKEND=snowflake, so I patch the cached value too — the env patch alone would be ignored.
+    import config as config_module  # dashboard/config.py
+    with patch.object(config_module, "DB_BACKEND", "mariadb"):
+        import db as db_module  # dashboard/db.py
 
 
 # ── _cached_query — guard path (non-Snowflake) ───────────────────────────────

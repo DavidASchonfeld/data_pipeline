@@ -156,3 +156,63 @@ class _WeatherCursor:
 class _WeatherConn:
     def cursor(self): return _WeatherCursor()
     def close(self): pass
+
+
+# ── Baseline-skewing bug fixes ───────────────────────────────────────────────────
+
+
+def test_retriever_failure_is_fed_back_not_fatal(install, monkeypatch):
+    # A pgvector/BM25 outage raises RetrieverError; the orchestrator records it and keeps going
+    # instead of crashing the whole question.
+    from genai.retrieval import RetrieverError
+
+    install([_tool_resp("retrieve_filing_context", {"question": "risks"}),
+             _final_resp("Search is unavailable right now.")])
+
+    def _boom(question, filters=None):
+        raise RetrieverError("pgvector down")
+
+    monkeypatch.setattr(tools, "retrieve", _boom)
+    result = orch.answer("What were Apple's biggest risks?")
+    failed = [s for s in result.trace if s.tool == "retrieve_filing_context"]
+    assert failed and "pgvector down" in failed[0].error
+    assert result.answer_text == "Search is unavailable right now."
+
+
+def test_turn_usage_is_recorded_once_when_several_tools_run(install, monkeypatch):
+    # One LLM turn asks for two tools; its tokens must be counted once, not once per tool.
+    monkeypatch.setattr(tools, "get_snowflake_conn", lambda: _WeatherConn())
+    two_tools = {
+        "content": "", "stop_reason": "tool_use", "model": "claude-sonnet-4-5",
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+        "tool_calls": [
+            {"name": "retrieve_filing_context", "input": {"question": "risks"}, "id": "a"},
+            {"name": "get_weather_summary", "input": {"city": "Cupertino"}, "id": "b"},
+        ],
+    }
+    install([two_tools, _final_resp("done")])
+    result = orch.answer("risks and weather")
+    turn1 = [s for s in result.trace if s.turn == 1]
+    assert len(turn1) == 2
+    assert sum(s.input_tokens for s in turn1) == 10
+    assert sum(s.output_tokens for s in turn1) == 5
+
+
+def test_unexpected_tool_arguments_are_fed_back(install):
+    # The model invents an argument the tool doesn't take; that becomes a recoverable error message.
+    provider = install([_tool_resp("retrieve_filing_context", {"question": "risks", "year": 2024}),
+                        _final_resp("ok")])
+    result = orch.answer("risks")
+    step = [s for s in result.trace if s.tool == "retrieve_filing_context"][0]
+    assert step.error and "bad arguments" in step.error
+    assert result.answer_text == "ok"
+    # The error text was threaded back to the model on the next call.
+    assert "bad arguments" in str(provider.calls[1]["messages"])
+
+
+def test_non_dict_tool_input_is_fed_back(install):
+    # A malformed tool input (not an object) is refused cleanly rather than raising TypeError.
+    install([_tool_resp("run_anomaly_check", ["AAPL"]), _final_resp("ok")])
+    result = orch.answer("anomalies")
+    step = [s for s in result.trace if s.tool == "run_anomaly_check"][0]
+    assert step.error and "must be an object" in step.error

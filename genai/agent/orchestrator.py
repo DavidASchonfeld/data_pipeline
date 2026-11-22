@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 
@@ -15,7 +16,7 @@ from genai.agent.errors import AgentError
 from genai.agent.tools import TOOL_DISPATCH, TOOL_SPECS
 from genai.agent.types import AgentResult, TraceStep
 from genai.config import GENAI_AGENT_MAX_TURNS, GENAI_MAX_COST_PER_QUERY, LLM_MODEL
-from genai.retrieval import Passage
+from genai.retrieval import Passage, RetrieverError
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,18 @@ def _estimate_input_tokens(messages: list[dict], system: str) -> int:
     # (which are re-sent every turn). Serialized to JSON so nested content blocks are counted too.
     blob = system + json.dumps(messages, default=str) + json.dumps(TOOL_SPECS)
     return estimate_tokens(blob)
+
+
+def _check_tool_args(fn, tool_input) -> str | None:
+    # Make sure the model's arguments actually fit the tool before calling it, so a hallucinated or
+    # missing argument comes back to the model as a fixable error instead of crashing the question.
+    if not isinstance(tool_input, dict):
+        return f"tool input must be an object, got {type(tool_input).__name__}"
+    try:
+        inspect.signature(fn).bind(**tool_input)
+    except TypeError as exc:
+        return f"bad arguments: {exc}"
+    return None
 
 
 def answer(question: str) -> AgentResult:
@@ -132,16 +145,26 @@ def answer(question: str) -> AgentResult:
         # step per call, and gather any retrieved passages as sources. A tool error is recorded and fed
         # back to the model (so it can recover) — never swallowed, never fatal to the whole question.
         tool_outputs: dict[str, str] = {}
-        for call in tool_calls:
+        for index, call in enumerate(tool_calls):
             name, call_id, tool_input = call["name"], call["id"], call.get("input", {})
             fn = TOOL_DISPATCH.get(name)
+            # One LLM call can request several tools, but its tokens were spent once — so I put the turn's
+            # usage on the first step only; otherwise summing the trace would double-count the bill.
+            first = index == 0
             step = TraceStep(
-                turn=turn, tool=name, tool_input=tool_input,
-                input_tokens=usage.get("input_tokens", 0), output_tokens=usage.get("output_tokens", 0),
+                turn=turn, tool=name, tool_input=tool_input if isinstance(tool_input, dict) else {},
+                input_tokens=usage.get("input_tokens", 0) if first else 0,
+                output_tokens=usage.get("output_tokens", 0) if first else 0,
             )
+            arg_problem = _check_tool_args(fn, tool_input) if fn is not None else None
             if fn is None:
                 step.error = f"unknown tool '{name}'"
                 tool_outputs[call_id] = f"Error: unknown tool '{name}'."
+            elif arg_problem:
+                # Fed back so the model can retry with the right arguments.
+                step.error = arg_problem
+                tool_outputs[call_id] = f"Error: {arg_problem}."
+                logger.info("tool %s called with bad arguments: %s", name, arg_problem)
             else:
                 try:
                     output = fn(**tool_input)
@@ -150,8 +173,9 @@ def answer(question: str) -> AgentResult:
                     # Keep passage sources so the answer can be cited; deduped after the loop.
                     if isinstance(output, list) and output and isinstance(output[0], Passage):
                         result.sources.extend(output)
-                except AgentError as exc:
-                    # Includes SqlSafetyError — e.g. a refused "drop the financials table".
+                except (AgentError, RetrieverError) as exc:
+                    # Includes SqlSafetyError — e.g. a refused "drop the financials table" — and a failed
+                    # filing search, so a pgvector/BM25 outage is reported to the model, not fatal.
                     step.error = str(exc)
                     tool_outputs[call_id] = f"Error: {exc}"
                     logger.info("tool %s refused/failed: %s", name, exc)
