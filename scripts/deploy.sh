@@ -112,6 +112,8 @@ _deploy_status_write_started  # call site 1 — log deploy start timestamp by mo
 # --fix-ml-venv: skip the full deploy and only rebuild the ml-venv in the running pod
 # Useful after a deploy where step_setup_ml_venv printed a WARNING — no pod restart or Docker build needed
 if [ "$FIX_ML_VENV" = true ]; then
+    _check_ssh_prereqs     # same fast-fail checks as a full deploy: SSH rule matches my IP...
+    _check_instance_state  # ...and the instance is up with its Elastic IP attached (re-attaches an orphaned EIP)
     _wait_scheduler_exec  # confirm the scheduler container is exec-ready before attempting pip install
     step_setup_ml_venv
     exit 0
@@ -119,6 +121,8 @@ fi
 
 # --run-script: skip the deploy entirely; confirm the scheduler is reachable, run the one script, report its result
 if [ "$RUN_SCRIPT" = true ]; then
+    _check_ssh_prereqs     # fast-fail on a drifted SSH rule instead of a 75s SSH timeout
+    _check_instance_state  # fast-fail on a missing instance; re-attaches an orphaned EIP
     _wait_scheduler_exec  # same readiness gate --fix-ml-venv uses before exec'ing into the scheduler
     step_run_script "${RUN_SCRIPT_ARGS[@]}"
     exit 0
@@ -158,6 +162,8 @@ step_run_core_tests  # Step 1b-ii
 if [ "$PROVISION" = true ]; then
     echo "=== Phase 0: Provisioning infrastructure via Terraform ==="
     "$SCRIPT_DIR/deploy/terraform.sh" apply  # updates SSH ingress rule to current IP
+    # Terraform doesn't manage which instance holds the EIP, so re-attach an orphaned one before waiting on SSH
+    _check_instance_state || echo "WARNING: instance/EIP check failed — continuing; a fresh instance may still be booting"
     echo "=== Waiting for SSH (security group updated) ==="
     _wait_ssh_ready 90  # fresh instance needs up to 15 min for user-data bootstrap (Docker, K3s, apt)
     _wait_k3s_ready

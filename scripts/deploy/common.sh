@@ -448,7 +448,7 @@ _check_ssh_prereqs() {
     local _profile="${AWS_PROFILE:-terraform-dev}"
     # Require aws CLI and a valid session — skip check if either is missing
     if ! command -v aws &>/dev/null; then return 0; fi
-    if ! aws sts get-caller-identity --profile "$_profile" &>/dev/null; then return 0; fi
+    _aws_session_ok "$_profile" || return 0  # warns loudly instead of skipping silently
 
     # Fetch the SSH ingress CIDR from the pipeline security group
     local _sg_cidr
@@ -481,36 +481,73 @@ _check_ssh_prereqs() {
 _check_instance_state() {
     local _profile="${AWS_PROFILE:-terraform-dev}"
     if ! command -v aws &>/dev/null; then return 0; fi
-    if ! aws sts get-caller-identity --profile "$_profile" &>/dev/null; then return 0; fi
+    # an expired SSO login used to skip this check silently, so an orphaned EIP looked like a plain SSH timeout
+    _aws_session_ok "$_profile" || return 0
 
-    # look for a running instance with the pipeline Name tag
-    local _instance_id
-    _instance_id=$(aws ec2 describe-instances \
+    # look for running instances with the pipeline Name tag (more than one = mid spot replacement)
+    local _instance_ids _count _instance_id
+    _instance_ids=$(aws ec2 describe-instances \
         --profile "$_profile" --region "$AWS_REGION" \
         --filters "Name=tag:Name,Values=data-pipeline-ec2" "Name=instance-state-name,Values=running" \
-        --query 'Reservations[0].Instances[0].InstanceId' \
+        --query 'Reservations[].Instances[].InstanceId' \
         --output text 2>/dev/null)
+    _count=$(echo "$_instance_ids" | wc -w | tr -d ' ')
+    _instance_id=$(echo "$_instance_ids" | awk '{print $1}')
 
-    if [ -z "$_instance_id" ] || [ "$_instance_id" = "None" ]; then
+    if [ "$_count" -eq 0 ]; then
         echo "✗ No running pipeline instance found (spot may have been reclaimed)"
         echo "  Run:  ./scripts/deploy.sh --provision"
         return 1
     fi
 
-    # confirm the EIP is attached to this instance — a failed Lambda re-association
-    # leaves the instance running but unreachable at the expected public IP
-    local _assoc_id
-    _assoc_id=$(aws ec2 describe-addresses \
+    # read the EIP's current attachment — a failed Lambda re-association leaves the instance
+    # running but unreachable at the expected public IP
+    local _eip_line _alloc_id _eip_instance
+    _eip_line=$(aws ec2 describe-addresses \
         --profile "$_profile" --region "$AWS_REGION" \
-        --query "Addresses[?InstanceId=='${_instance_id}'].AssociationId | [0]" \
+        --filters "Name=tag:Name,Values=pipeline-eip" \
+        --query 'Addresses[0].[AllocationId,InstanceId]' \
         --output text 2>/dev/null)
+    _alloc_id=$(echo "$_eip_line" | awk '{print $1}')
+    _eip_instance=$(echo "$_eip_line" | awk '{print $2}')
 
-    if [ -z "$_assoc_id" ] || [ "$_assoc_id" = "None" ]; then
-        echo "✗ Instance ${_instance_id} is running but the Elastic IP is not associated with it"
-        echo "  Check:  aws ec2 describe-addresses --profile $_profile --region $AWS_REGION"
-        echo "  Fix:    associate the EIP manually, then retry; or run ./scripts/deploy.sh --provision"
+    if [ -z "$_alloc_id" ] || [ "$_alloc_id" = "None" ]; then
+        echo "WARNING: could not find the pipeline-eip Elastic IP — skipping EIP check"
+        return 0
+    fi
+
+    # healthy: the EIP sits on one of the running pipeline instances
+    if [ -n "$_eip_instance" ] && [ "$_eip_instance" != "None" ] && echo "$_instance_ids" | grep -qw "$_eip_instance"; then
+        return 0
+    fi
+
+    # self-heal: EIP attached to nothing and exactly one running instance — the only correct target is obvious
+    if { [ -z "$_eip_instance" ] || [ "$_eip_instance" = "None" ]; } && [ "$_count" -eq 1 ]; then
+        echo "⚠ Elastic IP is orphaned (attached to nothing) — re-attaching it to ${_instance_id}"
+        if aws ec2 associate-address --profile "$_profile" --region "$AWS_REGION" \
+            --allocation-id "$_alloc_id" --instance-id "$_instance_id" --no-allow-reassociation >/dev/null; then
+            echo "✓ Elastic IP re-attached to ${_instance_id}"
+            return 0
+        fi
+        echo "✗ Could not re-attach the Elastic IP to ${_instance_id} (see AWS error above)"
         return 1
     fi
+
+    # anything else (2+ running instances, or EIP on a non-running instance) is ambiguous — don't guess
+    echo "✗ Elastic IP is on '${_eip_instance}', but running pipeline instance(s) are: ${_instance_ids}"
+    echo "  Check:  aws ec2 describe-addresses --profile $_profile --region $AWS_REGION"
+    echo "  Fix:    associate the EIP to the instance the ASG is keeping, then retry"
+    return 1
+}
+
+# Returns 0 when the AWS CLI login works; otherwise prints a loud, actionable warning and returns 1.
+# Used by the pre-flight checks so an expired SSO session is visible instead of silently skipping them.
+_aws_session_ok() {
+    local _profile="$1"
+    if aws sts get-caller-identity --profile "$_profile" &>/dev/null; then return 0; fi
+    echo "WARNING: AWS login for profile '$_profile' is missing or expired — skipping EC2/EIP pre-flight checks."
+    echo "         An SSH timeout below may really be an orphaned EIP or a spot event. Fix: aws sso login --profile $_profile"
+    return 1
 }
 # ─────────────────────────────────────────────────────────────────────────────
 

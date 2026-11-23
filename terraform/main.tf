@@ -304,9 +304,15 @@ resource "aws_iam_role_policy" "lambda_eip" {
         Resource = "*"
       },
       {
-        # ASG capacity reset — needed for edge case where old spot instance dies before the defer window
+        # ASG capacity reset — needed for edge case where old spot instance dies before the defer window;
+        # Describe + TerminateInstanceInAutoScalingGroup let it remove the extra instance by name (not ASG's pick)
         Effect   = "Allow"
-        Action   = ["autoscaling:UpdateAutoScalingGroup", "autoscaling:SetDesiredCapacity"]
+        Action   = [
+          "autoscaling:UpdateAutoScalingGroup",
+          "autoscaling:SetDesiredCapacity",
+          "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:TerminateInstanceInAutoScalingGroup",
+        ]
         Resource = "*"
       }
     ]
@@ -321,7 +327,7 @@ resource "aws_lambda_function" "eip_reassociate" {
   role             = aws_iam_role.lambda_eip.arn
   handler          = "eip_reassociate.handler"
   runtime          = "python3.12"
-  timeout          = 30  # EIP association is fast; 30s is generous
+  timeout          = 60  # EIP association is fast; extra room for the bounded ASG retries in the edge case
 
   environment {
     variables = {

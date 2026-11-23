@@ -1,8 +1,63 @@
 import boto3
 import json
 import os
+import time
 
 from botocore.exceptions import ClientError
+
+# ASG lifecycle states that mean "this instance is alive and counts toward capacity"
+_ACTIVE_STATES = {"Pending", "Pending:Wait", "Pending:Proceed", "InService"}
+# ASG errors that just mean "busy right now" — worth a short bounded retry
+_RETRYABLE_ASG_ERRORS = {"ScalingActivityInProgress", "ResourceContention"}
+
+
+def _describe_group(asg_client, asg_name):
+    """Returns the ASG description, failing loudly if the group is missing."""
+    groups = asg_client.describe_auto_scaling_groups(AutoScalingGroupNames=[asg_name]).get("AutoScalingGroups") or []
+    if not groups:
+        raise ValueError(f"ASG {asg_name} not found")
+    return groups[0]
+
+
+def _active_asg_instance_ids(asg_client, asg_name):
+    """Returns the IDs of ASG instances that are alive (launching or in service) — not terminating."""
+    group = _describe_group(asg_client, asg_name)
+    return {i["InstanceId"] for i in group.get("Instances", []) if i.get("LifecycleState") in _ACTIVE_STATES}
+
+
+def _keep_only(asg_client, asg_name, keep_id, attempts=3):
+    """Removes every other live ASG instance BY NAME, lowering desired capacity as it goes.
+
+    I don't use set_desired_capacity(1) here: that lets the ASG pick which instance to drop,
+    and on Nov 22 2026 it dropped the one holding the EIP. terminate_instance_in_auto_scaling_group
+    with ShouldDecrementDesiredCapacity=True removes exactly the named instance, so the EIP holder survives.
+    """
+    group = _describe_group(asg_client, asg_name)
+    live_ids = {i["InstanceId"] for i in group.get("Instances", []) if i.get("LifecycleState") in _ACTIVE_STATES}
+    extras = sorted(live_ids - {keep_id})
+
+    # Nothing extra is alive but desired is still >1 (e.g. old instance mid-termination): lower it so the
+    # ASG doesn't launch another. Safe here — the EIP holder is the only live instance, so it can't be picked.
+    if not extras and group.get("DesiredCapacity", 1) > 1:
+        asg_client.set_desired_capacity(AutoScalingGroupName=asg_name, DesiredCapacity=1)
+        print(f"ASG {asg_name} desired capacity set to 1 — {keep_id} is the only live instance")
+
+    for extra_id in extras:
+        # Bounded retry: the ASG may still be busy with the launch that triggered this Lambda
+        for attempt in range(1, attempts + 1):
+            try:
+                asg_client.terminate_instance_in_auto_scaling_group(
+                    InstanceId=extra_id, ShouldDecrementDesiredCapacity=True,
+                )
+                print(f"Removed extra instance {extra_id} (desired capacity lowered) so EIP holder {keep_id} survives")
+                break
+            except ClientError as e:
+                code = e.response.get("Error", {}).get("Code", "Unknown")
+                if code in _RETRYABLE_ASG_ERRORS and attempt < attempts:
+                    time.sleep(2 * attempt)  # 2s, then 4s — fits well inside the 60s Lambda timeout
+                    continue
+                raise
+    return extras
 
 
 def handler(event, context):
@@ -80,13 +135,26 @@ def handler(event, context):
         # so the correct survivor gets the static IP. Falling through to self would give the EIP to this
         # second instance, which ASG then terminates when it scales back to desired=1 — orphaning the EIP.
         ssm_new_id_name = os.environ.get("SSM_NEW_INSTANCE_ID", "/pipeline/spot-new-instance-id")
+        asg_name = os.environ.get("ASG_NAME")
         eip_target_id = instance_id  # default: attach to self if no prior deferral
+
+        # List the live ASG instances so a stored deferral pointing at a dying instance isn't trusted blindly
+        active_ids = None
+        if asg_name:
+            try:
+                active_ids = _active_asg_instance_ids(asg_client, asg_name)
+            except (ClientError, ValueError) as e:
+                print(f"Warning: could not list ASG instances ({type(e).__name__}) — trusting the SSM record as-is")
+
         try:
             stored = ssm.get_parameter(Name=ssm_new_id_name)["Parameter"]["Value"]
-            if stored not in ("none", instance_id):
+            if stored not in ("none", instance_id) and (active_ids is None or stored in active_ids):
                 # A previous launch already deferred — the EIP belongs on that instance, not self.
                 eip_target_id = stored
                 print(f"Edge case: EIP unattached and {stored} already deferred — attaching EIP there, not to self ({instance_id})")
+            elif stored not in ("none", instance_id):
+                # The deferred instance is already gone — attaching the EIP there would orphan it again
+                print(f"Edge case: deferred instance {stored} is no longer live — attaching EIP to self ({instance_id})")
             else:
                 print("Cleared spot-replacing SSM flags — old instance already gone before defer window")
         except Exception as e:
@@ -98,17 +166,12 @@ def handler(event, context):
         except Exception as e:
             print(f"Warning: could not clear SSM flags in edge case: {e}")
 
-        try:
-            asg_name = os.environ.get("ASG_NAME")
-            if asg_name:
-                asg_client.update_auto_scaling_group(AutoScalingGroupName=asg_name, MaxSize=2)
-                asg_client.set_desired_capacity(AutoScalingGroupName=asg_name, DesiredCapacity=1)
-                print(f"ASG {asg_name} reset to desired=1 — prevents second instance from launching")
-        except Exception as e:
-            print(f"Warning: could not reset ASG in edge case: {e}")
+        # Scale back to one instance only AFTER the EIP is attached and this hook is completed (see below)
+        trim_to_target = bool(asg_name)
 
     else:
         eip_target_id = instance_id
+        trim_to_target = False  # normal launch — nothing extra to remove
 
     print(f"Associating EIP to instance {eip_target_id}")
 
@@ -129,3 +192,14 @@ def handler(event, context):
     )
 
     print(f"EIP associated and lifecycle hook completed for {instance_id}")
+
+    # Edge case only: drop every other live instance by name so the ASG can't pick the EIP holder.
+    # A failure here is logged loudly, not raised — the spot_restored Lambda re-attaches an orphaned EIP as a safety net.
+    if trim_to_target:
+        try:
+            removed = _keep_only(asg_client, os.environ["ASG_NAME"], eip_target_id)
+            if not removed:
+                print(f"No extra instances to remove — {eip_target_id} is the only live instance")
+        except (ClientError, ValueError) as e:
+            print(f"ERROR: could not remove extra instances ({type(e).__name__}: {e}) — "
+                  f"ASG may still hold 2 instances; spot_restored will re-attach the EIP if it gets orphaned")

@@ -9,7 +9,9 @@ of a proactive spot replacement. If it is:
   3. Clears both SSM flags so future wakes behave normally.
 
 Graceful degradation:
-- If SSM flag is absent or "none": exits immediately — not a spot replacement, ignore.
+- If SSM flag is absent: exits immediately — spot_preempt.tf isn't deployed.
+- If SSM flag is "none": not a tracked replacement, but still re-attaches the EIP if it is orphaned and
+  exactly one ASG instance is InService (safety net added after the Nov 22 2026 double-replacement).
 - If ASG or EIP operations fail: logs the error, still clears SSM flags to avoid getting stuck.
 Removing terraform/spot_preempt.tf removes this Lambda and its EventBridge rule entirely.
 """
@@ -22,6 +24,42 @@ from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+
+def _reattach_orphaned_eip(eip_allocation_id, asg_name):
+    """If the EIP is attached to nothing and exactly one ASG instance is InService, attach it there.
+
+    Covers the gap where the launch-hook Lambda already cleared the SSM record, then the ASG terminated
+    the EIP holder — leaving the survivor unreachable with no further event to fix it.
+    Returns the instance ID it attached to, or None if it did nothing.
+    """
+    ec2 = boto3.client("ec2")
+    asg = boto3.client("autoscaling")
+    try:
+        addresses = ec2.describe_addresses(AllocationIds=[eip_allocation_id]).get("Addresses") or []
+        if not addresses:
+            logger.error("EIP %s not found — cannot check for orphaning", eip_allocation_id)
+            return None
+        if addresses[0].get("AssociationId"):
+            logger.info("EIP is attached to %s — nothing to fix", addresses[0].get("InstanceId"))
+            return None
+
+        groups = asg.describe_auto_scaling_groups(AutoScalingGroupNames=[asg_name]).get("AutoScalingGroups") or []
+        in_service = [i["InstanceId"] for i in (groups[0].get("Instances", []) if groups else [])
+                      if i.get("LifecycleState") == "InService"]
+        if len(in_service) != 1:
+            # 0 = nothing to attach to yet (the launch hook will handle it); 2+ = ambiguous, so don't guess
+            logger.warning("EIP is orphaned but ASG has %d InService instances — not guessing; launch hook or deploy will fix",
+                           len(in_service))
+            return None
+
+        ec2.associate_address(InstanceId=in_service[0], AllocationId=eip_allocation_id, AllowReassociation=False)
+        logger.info("EIP was orphaned — re-attached to the only InService instance %s", in_service[0])
+        return in_service[0]
+    except ClientError as e:
+        logger.error("Orphaned-EIP check failed [%s] — deploy.sh pre-flight will re-attach it on next run",
+                     e.response.get("Error", {}).get("Code", "Unknown"))
+        return None
 
 
 def handler(event, context):
@@ -48,7 +86,9 @@ def handler(event, context):
 
     if not new_instance_id or new_instance_id == "none":
         # Flag exists but no instance ID written — not a spot replacement termination (e.g. normal sleep)
-        logger.info("SSM spot-new-instance-id is '%s' — not a spot replacement, nothing to do", new_instance_id)
+        logger.info("SSM spot-new-instance-id is '%s' — not a spot replacement, checking EIP anyway", new_instance_id)
+        # Safety net: even outside a tracked replacement, never leave the EIP orphaned (Nov 22 2026 incident)
+        _reattach_orphaned_eip(eip_allocation_id, asg_name)
         return
 
     logger.info("Spot replacement in progress — moving EIP to replacement instance %s", new_instance_id)

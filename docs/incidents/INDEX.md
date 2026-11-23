@@ -167,6 +167,7 @@ For the failure mode catalog (what *can* go wrong, not what *did* go wrong), see
 | 2026-05-09 | Disk warnings at 87–90% post-prune: 6.9 GB of orphaned containerd blobs from prior image imports never GC'd; fix: `k3s ctr content gc` after every import + in `_ensure_disk_space` | [containerd-orphaned-blobs](infrastructure/2026-05-09-containerd-orphaned-blobs-disk-pressure.md) |
 | 2026-05-09 | `ctr: open /tmp/k3s-import-*.tar: no such file or directory`: `_ensure_disk_space` wildcard `rm -f` raced with a parallel in-flight import; fix: age-gate sweeps to `find ... -mmin +5 -delete` | [ctr-import-tar-race](infrastructure/2026-05-09-ctr-import-tar-race.md) |
 | 2026-05-09 | Deploy peaks at 87% but baseline is 62%: 10 orphaned local-path PV dirs (~700 MB) left behind by helm upgrades + secondary cleanup triggered too late; fix: orphan-PV-dir sweep + lower secondary-cleanup threshold 85→80 | [disk-baseline](infrastructure/2026-05-09-disk-baseline-orphaned-pv-dirs-and-snapshots.md) |
+| 2026-11-22 | Server unreachable ~13h: double spot replacement, ASG terminated the EIP holder; fix: remove extras by name, termination safety net, deploy pre-flight re-attaches orphaned EIP | [eip-orphaned-double-spot](infrastructure/2026-11-22-eip-orphaned-double-spot-replacement.md) |
 
 ---
 

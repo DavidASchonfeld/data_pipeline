@@ -94,9 +94,11 @@ step_run_script() {
     local _out="$RUN_SCRIPT_LOCAL_DIR/${_base%.py}-$(date -u +%Y%m%dT%H%M%SZ).out"
 
     # Run it; stdout goes to the local file, stderr streams here, and the exit code is kept for the caller.
+    # PYTHONPATH=/opt/airflow is needed because Python puts the SCRIPT's folder (not the working dir) on the
+    # import path, so `cd` alone never made project packages like genai/ importable.
     local _rc=0
     ssh "$EC2_HOST" "kubectl exec $RUN_SCRIPT_POD -n $RUN_SCRIPT_NS -c $RUN_SCRIPT_CONTAINER -- \
-        sh -c 'cd /opt/airflow && timeout $_timeout /opt/ml-venv/bin/python $RUN_SCRIPT_POD_DIR/$_base$_remote_args'" \
+        sh -c 'cd /opt/airflow && PYTHONPATH=/opt/airflow timeout $_timeout /opt/ml-venv/bin/python $RUN_SCRIPT_POD_DIR/$_base$_remote_args'" \
         > "$_out" || _rc=$?
 
     _run_script_cleanup
