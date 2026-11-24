@@ -76,6 +76,40 @@ This file lists every third-party tool, library, container image, dataset, and e
 |---|---|---|
 | sentence-transformers/all-MiniLM-L6-v2 | Apache-2.0 | https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2 |
 
+## Python — agent_data package (`pyproject.toml`)
+
+Versions are the ones I license-checked on 2026-11-23; `pyproject.toml` holds the allowed ranges. Extras install only when requested (e.g. `pip install -e ".[lake]"`).
+
+| Library | Version | License | Used by | Project |
+|---|---|---|---|---|
+| pydantic | 2.14.4 | MIT | core | https://github.com/pydantic/pydantic |
+| pydantic-settings | 2.15.0 | MIT | core | https://github.com/pydantic/pydantic-settings |
+| typing-inspection | 0.4.5 | MIT | core (via pydantic) | https://github.com/pydantic/typing-inspection |
+| typing_extensions | 4.16.0 | PSF-2.0 | core (via pydantic) | https://github.com/python/typing_extensions |
+| deltalake (delta-rs) | 1.6.6 | Apache-2.0 | `[lake]` | https://github.com/delta-io/delta-rs |
+| arro3-core | 0.8.3 | MIT OR Apache-2.0 | `[lake]` (via deltalake) | https://github.com/kylebarron/arro3 |
+| snowflake-connector-python | 4.8.0 | Apache-2.0 | `[snowflake]` | https://github.com/snowflakedb/snowflake-connector-python |
+| cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause | `[snowflake]`, `[dev]` | https://github.com/pyca/cryptography |
+| FastAPI | 0.162.5 | MIT | `[api]` | https://github.com/fastapi/fastapi |
+| Starlette | 1.7.0 | BSD-3-Clause | `[api]` (via FastAPI) | https://github.com/encode/starlette |
+| annotated-doc | 0.0.6 | MIT | `[api]` (via FastAPI) | https://github.com/fastapi/annotated-doc |
+| AnyIO | 4.16.0 | MIT | `[api]` (via Starlette) | https://github.com/agronholm/anyio |
+| Uvicorn | 0.54.0 | BSD-3-Clause | `[api]` | https://github.com/encode/uvicorn |
+| h11 | 0.16.0 | MIT | `[api]` (via Uvicorn) | https://github.com/python-hyper/h11 |
+| Click | 8.5.1 | BSD-3-Clause | `[api]` (via Uvicorn) | https://github.com/pallets/click |
+| pytest | 9.2.0 | MIT | `[dev]` | https://pytest.org |
+| import-linter | 2.15 | BSD-2-Clause | `[dev]` | https://github.com/seddonym/import-linter |
+| grimp | 3.18 | BSD-2-Clause | `[dev]` (via import-linter) | https://github.com/seddonym/grimp |
+| ruff | 0.17.6 | MIT | `[dev]` | https://github.com/astral-sh/ruff |
+| setuptools | ≥68 | MIT | build backend for `pip install -e .` | https://github.com/pypa/setuptools |
+| certifi | 2026.11.20 | **MPL-2.0** | transitive (via requests / snowflake-connector) | https://github.com/certifi/python-certifi |
+
+### Local development stack (`docker-compose.yml`)
+| Component | Version | License | Project |
+|---|---|---|---|
+| pgvector/pgvector (image) | pg16 | PostgreSQL License | https://github.com/pgvector/pgvector |
+| python (official Docker image, base of the local API image) | 3.12-slim | PSF-2.0 (Python); Debian packages under their own licenses (unmodified upstream image) | https://hub.docker.com/_/python |
+
 ## Container images & infrastructure
 
 | Component | Version | License | Project |
@@ -116,6 +150,7 @@ This file lists every third-party tool, library, container image, dataset, and e
 Most dependencies above are permissive (MIT / BSD / Apache-2.0) and only require retaining the copyright notice and license text (drop them in `licenses/`). A few warrant a closer look:
 
 - **chardet — LGPL-2.1** and **psycopg2 — LGPL-3.0.** LGPL is "weak copyleft." Using these as unmodified, separately-installed libraries (the normal pip case) is generally fine and does not impose copyleft on this project's own code. The obligations would only bite if these libraries were modified or statically bundled into a redistributed binary. Note: `psycopg2-binary` ships precompiled; an alternative is the equally-LGPL `psycopg2` source build — license is the same either way.
+- **certifi — MPL-2.0** (and two small MPL-2.0 Rust crates, `colored` and `option-ext`, compiled into the `deltalake` wheel). MPL is file-level weak copyleft: obligations apply only to modified MPL files that are distributed. I use these unmodified via pip and do not redistribute them, so nothing applies to this project's code.
 - **busybox — GPL-2.0.** Only used as an unmodified upstream init-container image to fix directory permissions. Running an unmodified image is permitted; do not modify and redistribute it. If GPL presence is undesirable even at the image level, swap it for an `alpine` or `postgres` image to run the same `chmod`/`chown`.
 - **Terraform — BUSL-1.1.** The Business Source License permits normal use (provisioning your own infrastructure) but forbids offering Terraform itself as a competing commercial service. If a fully open license is preferred, **OpenTofu** (MPL-2.0) is a drop-in fork.
 - **Open-Meteo — CC BY 4.0.** The data requires **attribution** and is free for **non-commercial** use; commercial use needs a paid plan. Make sure the dashboard credits Open-Meteo and that the usage tier matches the intended use.

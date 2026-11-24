@@ -10,6 +10,9 @@ All commands below are run from the **repo root** — the `data_pipeline/` folde
 |---|---|---|---|
 | `make test` | Local | Offline tests only — no network, no cost | No |
 | `make test-all` | Local | Installs provider SDKs + runs all offline tests | **No** |
+| `make test-agent-data` | Local | Fast loop for the `agent_data` package only: ruff lint + its offline tests | No |
+| `make lint-layers` | Local | Checks the `agent_data` layer rules (import-linter contracts in `pyproject.toml`) | No |
+| `make venv-reset` | Local | Deletes `.venv` and rebuilds it from scratch — only if the environment looks broken | No |
 | `pytest -m live` | Local | Single live API call — validates key + both call paths | **Yes** |
 | Automatic | During `./scripts/deploy.sh` | Offline tests on Mac then inside pod | No |
 | Manual | On server, no redeploy | Re-run pod tests to spot-check a live deploy | No |
@@ -24,11 +27,13 @@ The first time you run `make test` or `make test-all`, Make automatically create
 
 On subsequent runs Make skips this step because `.venv/bin/python3` already exists.
 
+The `agent_data` package is also installed into `.venv` in editable mode (`pip install -e ".[dev]"`), which brings in its test and lint tools. Make re-runs that install automatically whenever `pyproject.toml` changes (it compares the file's timestamp with a marker file, `.venv/.agent-data-installed`), so a new dependency never needs a manual reinstall.
+
 > You never need to activate the venv manually. The Makefile calls `.venv/bin/python3` and `.venv/bin/pip` directly.
 
-If the venv ever gets corrupted or you want to start fresh, delete it — Make recreates it on the next run:
+If the venv ever gets corrupted or you want to start fresh, rebuild it:
 ```bash
-rm -rf .venv && make test
+make venv-reset
 ```
 
 ---

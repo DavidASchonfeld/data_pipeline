@@ -16,9 +16,11 @@ A practical shortcut for Python dependencies: the installed package usually carr
 
 This folder is populated using that canonical-family approach:
 
-- **License-family bodies** — `MIT.txt`, `BSD-3-Clause.txt`, `Apache-2.0.txt`, `PostgreSQL.txt`, `LGPL-2.1.txt`, `LGPL-3.0.txt`, `GPL-2.0.txt`, `BUSL-1.1.txt`. One verbatim copy each; shared by every dependency under that license.
+- **License-family bodies** — `MIT.txt`, `BSD-2-Clause.txt`, `BSD-3-Clause.txt`, `Apache-2.0.txt`, `MPL-2.0.txt`, `PostgreSQL.txt`, `LGPL-2.1.txt`, `LGPL-3.0.txt`, `GPL-2.0.txt`, `BUSL-1.1.txt`. One verbatim copy each; shared by every dependency under that license.
 - **`COPYRIGHT-NOTICES.txt`** — the per-project copyright line for every component in `../THIRD_PARTY_NOTICES.md`, grouped by family. This is what makes the shared MIT/BSD bodies compliant (those licenses embed a per-project holder).
 - **`<project>-NOTICE.txt`** — verbatim `NOTICE` files for the Apache-2.0 projects that ship one (`airflow`, `kafka`, `requests`, `snowflake-connector-python`), retained per Apache-2.0 §4(d).
 - **`beautifulsoup4-LICENSE.txt`** — kept as a standalone file (it bundles extra html5lib/soupsieve notices).
+- **`ruff-LICENSE.txt`** — kept standalone (it carries the notices of the linters whose rules ruff re-implements).
+- **`typing_extensions-LICENSE.txt`** — the PSF-2.0 license, kept verbatim (its text is specific to the Python Software Foundation).
 
 When adding a dependency: if its license family is already here, just add its copyright line to `COPYRIGHT-NOTICES.txt` (and its `NOTICE` file if any). If it introduces a new family, add that family's verbatim text as `<SPDX-id>.txt`.

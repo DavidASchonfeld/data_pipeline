@@ -1,0 +1,68 @@
+# Package definition for agent_data, the one central list of what it needs, and its tool settings.
+# Only the agent_data/ folder is packaged; genai/, dashboard/, airflow/ etc. keep their own requirements files.
+# Private project: it is installed locally with `pip install -e .` and never published to a package index.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-data"
+version = "0.1.0"
+description = "Governed, agent-ready data product: lake, parsing, chunking, search, services and agents."
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+# PyPI refuses any upload carrying this classifier, which guards against an accidental publish.
+classifiers = ["Private :: Do Not Upload"]
+# Core dependencies: always installed. Kept tiny so any project can import the engine cheaply.
+dependencies = [
+    "pydantic>=2.7,<3",
+    "pydantic-settings>=2.4,<3",
+]
+
+# Optional add-on groups ("extras"), installed only when asked for, e.g. pip install -e ".[lake,api]".
+# Each one is added in the stage that first needs it, after its license check (see THIRD_PARTY_NOTICES.md).
+[project.optional-dependencies]
+# Delta tables on a local folder, s3:// or abfss:// via delta-rs (no Spark needed).
+lake = ["deltalake>=1.0,<2"]
+# The one Snowflake connection helper (RSA key-pair login).
+snowflake = ["snowflake-connector-python>=3.10,<5", "cryptography>=42"]
+# The HTTP API and the server that runs it.
+api = ["fastapi>=0.115", "uvicorn>=0.30"]
+# Everything needed to test and lint this package locally and in CI.
+dev = [
+    "agent-data[api]",
+    "cryptography>=42",
+    "pytest>=8",
+    "import-linter>=2.1",
+    "ruff>=0.6",
+]
+
+[tool.setuptools.packages.find]
+include = ["agent_data*"]
+
+# ── Layer rules, checked by `make lint-layers` (import-linter) ───────────────────────────────────────────────
+[tool.importlinter]
+root_packages = ["agent_data"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "The reusable engine never imports domains or this project's wiring (config, platform)"
+type = "forbidden"
+source_modules = ["agent_data.engine"]
+forbidden_modules = ["agent_data.domains", "agent_data.config", "agent_data.platform"]
+
+[[tool.importlinter.contracts]]
+name = "agent_data stays independent of the older genai package and of app frameworks"
+type = "forbidden"
+source_modules = ["agent_data"]
+forbidden_modules = ["genai", "airflow", "dash", "flask"]
+
+# ── Linting (ruff), scoped to agent_data so older code isn't affected ───────────────────────────────────────
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+include = ["agent_data/**/*.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]

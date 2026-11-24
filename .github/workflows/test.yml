@@ -6,6 +6,8 @@ on:
       - 'dashboard/**'
       - 'tests/**'
       - 'genai/**'
+      - 'agent_data/**'
+      - 'pyproject.toml'
       - 'pytest.ini'
       - '.github/workflows/test.yml'
 jobs:
@@ -21,8 +23,16 @@ jobs:
         # beautifulsoup4 lets the genai/extraction HTML-parse tests run instead of skip;
         # pydantic backs the genai/extraction schemas the extraction tests import
         run: pip install plotly pandas scikit-learn flask dash python-dotenv pytest beautifulsoup4 pydantic
+      - name: Install agent_data
+        # editable install of the new package plus its dev extra (test + lint tools), all listed in pyproject.toml
+        run: pip install -e ".[dev]"
+      - name: Lint agent_data
+        # ruff style/bug checks, then the layer rules (engine never imports domains/config; no genai or frameworks)
+        run: |
+          ruff check agent_data
+          lint-imports
       - name: Run tests
-        # pytest.ini's testpaths covers both tests/ and genai/; -m "not live" runs every
+        # pytest.ini's testpaths covers tests/, genai/ and agent_data/; -m "not live" runs every
         # offline test and skips the real-API live tests (which need credentials, never in CI).
         # genai provider tests mock the anthropic/openai SDKs, so no extra installs are needed.
         run: pytest -m "not live" -v

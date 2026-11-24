@@ -69,6 +69,29 @@ setuptools
     with no year/holder line — there is no formal copyright-holder line to
     retain, so the project author above is the correct attribution.)
 
+pydantic-settings
+    Copyright (c) 2022 Samuel Colvin and other contributors
+
+typing-inspection
+    Copyright (c) Pydantic Services Inc. 2025 to present
+
+FastAPI
+    Copyright (c) 2018 Sebastián Ramírez
+
+annotated-doc
+    Copyright (c) 2025 Sebastián Ramírez
+
+AnyIO
+    Copyright (c) 2018 Alex Grönholm
+
+h11
+    Copyright (c) 2016 Nathaniel J. Smith <njs@pobox.com> and other contributors
+
+ruff
+    Copyright (c) 2022 Charles Marsh
+    (full text retained separately in ruff-LICENSE.txt, which also carries the
+    notices of the linters whose rules ruff re-implements)
+
 ================================================================================
 BSD 3-Clause  —  full text in BSD-3-Clause.txt
 ================================================================================
@@ -106,6 +129,15 @@ PyTorch (torch)
     Brain, Cruise LLC, Tri Dao, Arm Limited, and the respective contributors —
     as enumerated in PyTorch's upstream LICENSE.)
 
+Starlette
+    Copyright © 2018, Encode OSS Ltd (https://www.encode.io/).
+
+Uvicorn
+    Copyright © 2017-present, Encode OSS Ltd (https://www.encode.io/).
+
+Click
+    Copyright 2014 Pallets
+
 ================================================================================
 Apache License 2.0  —  full text in Apache-2.0.txt
 ================================================================================
@@ -132,6 +164,43 @@ Components under Apache-2.0:
     K3s
     Docker Engine
     sentence-transformers/all-MiniLM-L6-v2 (embedding model weights)
+    deltalake (delta-rs)         Copyright (2020) QP Hou and a number of other contributors.
+                                 The compiled Rust core bundles ~650 Rust crates, listed with
+                                 their licenses in the wheel's SBOM (deltalake-python.cyclonedx.json);
+                                 all permissive except two MPL-2.0 crates (see MPL-2.0 below).
+    arro3-core                   (dual MIT OR Apache-2.0; used under Apache-2.0)
+    cryptography                 (dual Apache-2.0 OR BSD-3-Clause; used under Apache-2.0)
+
+================================================================================
+BSD 2-Clause  —  full text in BSD-2-Clause.txt
+================================================================================
+
+import-linter
+    Copyright (c) 2019, David Seddon
+
+grimp
+    Copyright (c) 2018, David Seddon
+
+================================================================================
+PSF-2.0 (Python Software Foundation License)  —  full text in typing_extensions-LICENSE.txt
+================================================================================
+
+typing_extensions
+    Copyright (c) 2001, 2002, ... 2023 Python Software Foundation; All Rights
+    Reserved. (year list abbreviated here; verbatim in the full text.)
+
+================================================================================
+MPL-2.0 (Mozilla Public License 2.0)  —  full text in MPL-2.0.txt
+================================================================================
+
+certifi (Mozilla CA bundle; pulled in by requests)
+    Author: Kenneth Reitz (per package metadata; the upstream LICENSE has no
+    copyright line). CA data from Mozilla's certdata.txt. File-level weak
+    copyleft, used unmodified.
+
+colored, option-ext (Rust crates compiled into the deltalake wheel)
+    Upstream crate authors (best-effort; listed in deltalake's SBOM). Used
+    unmodified as part of the upstream binary wheel — not redistributed.
 
 ================================================================================
 PostgreSQL License  —  full text in PostgreSQL.txt

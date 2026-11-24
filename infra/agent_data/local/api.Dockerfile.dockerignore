@@ -1,0 +1,8 @@
+# Build-context filter for api.Dockerfile only: send nothing except the package definition and its code,
+# so secrets (.env, .env.deploy, keys), virtualenvs and logs can never end up in the image.
+*
+!pyproject.toml
+!agent_data/
+**/__pycache__
+**/__tests__
+**/conftest.py

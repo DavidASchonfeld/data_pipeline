@@ -39,3 +39,8 @@ AWSCLIV2.pkg
 scripts/deploy_status.md
 # --run-script output — saved stdout of one-off scripts run in the scheduler pod; local only
 .run_script/
+# agent_data local profile: Delta lake tables written on the laptop (data, not code)
+.lake/
+# packaging metadata created by `pip install -e .`
+*.egg-info/
+build/
