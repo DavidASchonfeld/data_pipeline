@@ -183,6 +183,7 @@ else
 fi
 
 _capture_instance_metadata  # grab instance ID now for spot interruption diagnosis if the deploy fails mid-run
+_ensure_imds_hop_limit      # self-heal: pods reach the instance role's S3 credentials only with hop limit 2
 
 # Print disk/image usage so chronic disk pressure is visible from the very first line of the log.
 # Informational only — does not gate or slow the deploy. Compare across logs to track drift.

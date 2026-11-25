@@ -74,6 +74,9 @@ extraEnvFrom: |
   - secretRef:
       name: genai-credentials      # genai: injects LLM_API_KEY/LLM_PROVIDER/LLM_MODEL so the extraction runner can call the LLM
       optional: true               # optional: when GENAI_ENABLED=false this secret is never applied — don't block pod startup
+  - configMapRef:
+      name: agent-data-config      # agent_data: PLATFORM_PROFILE / LAKE_URI (S3 lake from Terraform) / AWS_REGION
+      optional: true               # only applied when GENAI_ENABLED=true — never blocks pod startup
 
 dags:
   gitSync:

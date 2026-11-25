@@ -540,6 +540,27 @@ _check_instance_state() {
     return 1
 }
 
+# Self-heal: pods need an instance-metadata hop limit of 2 to reach the instance role's credentials (the S3 lake).
+# The launch template sets it for new instances; this fixes an instance launched from an older template version.
+# Best-effort: skips quietly without the aws CLI or an instance ID, warns loudly if the fix itself fails.
+_ensure_imds_hop_limit() {
+    local _profile="${AWS_PROFILE:-terraform-dev}" _hops
+    if ! command -v aws &>/dev/null || [ -z "${_EC2_INSTANCE_ID:-}" ]; then return 0; fi
+    _aws_session_ok "$_profile" || return 0
+    _hops=$(aws ec2 describe-instances --profile "$_profile" --region "$AWS_REGION" \
+        --instance-ids "$_EC2_INSTANCE_ID" \
+        --query 'Reservations[0].Instances[0].MetadataOptions.HttpPutResponseHopLimit' --output text 2>/dev/null)
+    if [[ "$_hops" =~ ^[0-9]+$ ]] && [ "$_hops" -ge 2 ]; then return 0; fi
+    echo "⚠ Instance metadata hop limit is '${_hops:-unknown}' on ${_EC2_INSTANCE_ID} — pods can't reach S3 credentials; setting it to 2"
+    if aws ec2 modify-instance-metadata-options --profile "$_profile" --region "$AWS_REGION" \
+        --instance-id "$_EC2_INSTANCE_ID" --http-put-response-hop-limit 2 --http-endpoint enabled >/dev/null; then
+        echo "✓ Metadata hop limit set to 2"
+    else
+        echo "WARNING: could not set the metadata hop limit (see AWS error above); the edgar_documents DAG will fail"
+        echo "  until it is fixed. Check the terraform-dev profile has ec2:ModifyInstanceMetadataOptions."
+    fi
+}
+
 # Returns 0 when the AWS CLI login works; otherwise prints a loud, actionable warning and returns 1.
 # Used by the pre-flight checks so an expired SSO session is visible instead of silently skipping them.
 _aws_session_ok() {

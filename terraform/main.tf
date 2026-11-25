@@ -158,6 +158,17 @@ resource "aws_launch_template" "pipeline" {
     name = aws_iam_instance_profile.ec2_ecr_profile.name
   }
 
+  # Instance metadata: token-based IMDSv2 only (blocks the older, spoofable v1), and a hop limit of 2 so code in
+  # K3s pods (one network hop further than the host) can still fetch the instance role's credentials for S3.
+  # A "hop" is one router/network boundary a packet passes through; the hop limit is how many it may cross before
+  # being dropped. Pods sit behind the host's virtual network, so their replies need 2; 1 would block them.
+  # Full plain-English explanation: docs/agent_data/EDGAR_DOCUMENTS_DAG.md ("What is a network hop?").
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
+  }
+
   # Boot script that starts K3s and refreshes credentials when the instance wakes up from a baked AMI
   user_data = base64encode(templatefile("${path.module}/user-data.sh.tpl", {
     aws_region   = var.aws_region

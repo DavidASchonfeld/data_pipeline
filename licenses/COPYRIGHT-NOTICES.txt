@@ -39,6 +39,17 @@ plotly
 SQLAlchemy
     Copyright 2005-2026 SQLAlchemy authors and contributors <see AUTHORS file>.
 
+obstore
+    Copyright (c) 2024 Development Seed
+    (the compiled Rust core bundles ~240 Rust crates, listed with their licenses
+    in the wheel's SBOM (obstore.cyclonedx.json); all permissive)
+
+urllib3
+    Copyright (c) 2008-2020 Andrey Petrov and contributors.
+
+charset-normalizer
+    Copyright (c) 2025 TAHRI Ahmed R.
+
 PyMySQL
     Copyright (c) 2010, 2013 PyMySQL contributors
 
@@ -98,6 +109,9 @@ BSD 3-Clause  —  full text in BSD-3-Clause.txt
 
 Flask
     Copyright 2010 Pallets
+
+idna
+    Copyright (c) 2013-2026, Kim Davies and contributors.
 
 python-dotenv
     Copyright (c) 2014, Saurabh Kumar (python-dotenv), 2013, Ted Tieken
@@ -170,6 +184,9 @@ Components under Apache-2.0:
                                  all permissive except two MPL-2.0 crates (see MPL-2.0 below).
     arro3-core                   (dual MIT OR Apache-2.0; used under Apache-2.0)
     cryptography                 (dual Apache-2.0 OR BSD-3-Clause; used under Apache-2.0)
+    pyarrow (Apache Arrow)       (LICENSE + NOTICE retained in full: pyarrow-LICENSE.txt,
+                                 pyarrow-NOTICE.txt — they carry the notices of the libraries
+                                 bundled into the Arrow C++ core)
 
 ================================================================================
 BSD 2-Clause  —  full text in BSD-2-Clause.txt

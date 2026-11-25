@@ -21,6 +21,7 @@ Navigate all project documentation from here. Each link goes to the single sourc
 |----------|---------------|
 | [Data Source Guide](DATA_SOURCE_GUIDE.md) | How to add, edit, remove, or replace a data source (API → Kafka → Snowflake → dbt → Dashboard) |
 | [GenAI Overview](GENAI_OVERVIEW.md) | Plain-English explanation of the AI layer: what it will do and what's built so far |
+| [EDGAR Documents DAG](agent_data/EDGAR_DOCUMENTS_DAG.md) | Diagrams of the Bronze ingest: how new SEC 10-K filings are found, stored with SHA-256 sidecars, logged, and verified |
 
 ---
 

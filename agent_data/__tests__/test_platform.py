@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from agent_data import platform
@@ -17,8 +19,9 @@ def _settings():
 
 @pytest.mark.parametrize("profile", sorted(PROFILE_DEFAULTS))
 @pytest.mark.parametrize("component", sorted(platform.FACTORIES))
-def test_every_factory_resolves_on_every_profile(clean_env, profile, component):
+def test_every_factory_resolves_on_every_profile(clean_env, profile, component, tmp_path):
     clean_env.setenv("PLATFORM_PROFILE", profile)
+    clean_env.setenv("LAKE_URI", str(tmp_path / "lake"))   # aws/azure have no default lake without the deploy
     backend = platform.FACTORIES[component](_settings())
     assert backend is not None
     assert backend.component == component
@@ -53,7 +56,26 @@ def test_backend_receives_its_settings_group(clean_env):
     clean_env.setenv("LAKE_URI", "/tmp/lake")
     s = _settings()
     assert platform.get_search_index(s).settings.host == "db.local"
-    assert platform.get_lake(s).settings == "/tmp/lake"
+    assert platform.get_lake(s).uri == str(Path("/tmp/lake").resolve())   # macOS resolves /tmp to /private/tmp
+
+
+def test_local_profile_gets_the_real_delta_lake_at_its_default_folder(clean_env):
+    lake = platform.get_lake(_settings())
+    assert lake.is_stub is False
+    assert lake.uri == PROFILE_DEFAULTS["local"].lake_uri
+
+
+@pytest.mark.parametrize("profile", ["aws", "azure"])
+def test_cloud_profile_without_lake_uri_is_a_clear_config_error(clean_env, profile):
+    clean_env.setenv("PLATFORM_PROFILE", profile)
+    with pytest.raises(ConfigError, match="LAKE_URI"):
+        platform.get_lake(_settings())
+
+
+def test_aws_profile_uses_the_s3_lake_uri_from_the_deploy(clean_env):
+    clean_env.setenv("PLATFORM_PROFILE", "aws")
+    clean_env.setenv("LAKE_URI", "s3://data-pipeline-lake-abc/lake")
+    assert platform.get_lake(_settings()).kind == "s3"
 
 
 def test_placeholder_backend_fails_loudly_when_used():

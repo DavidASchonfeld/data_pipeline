@@ -29,3 +29,13 @@ output "dashboard_url" {
   description = "CloudFront URL — share this with visitors instead of the raw EIP"
   value       = "https://${aws_cloudfront_distribution.dashboard.domain_name}"
 }
+
+output "lake_bucket_name" {
+  description = "S3 bucket holding the agent_data lake (Delta tables + raw filings)"
+  value       = aws_s3_bucket.lake.bucket
+}
+
+output "lake_uri" {
+  description = "LAKE_URI for the aws profile — the deploy copies it into the agent-data-config ConfigMap"
+  value       = "s3://${aws_s3_bucket.lake.bucket}/lake"
+}

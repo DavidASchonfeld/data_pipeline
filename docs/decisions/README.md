@@ -30,6 +30,7 @@ Each ADR has a number (0001, 0002, …) and a title. Open any one of them — th
 | [0008](0008-platform-profiles-and-engine-domain-split.md) | Deployment profiles + engine/domain split | How the same code runs on AWS, Azure or a laptop, and how parts are reused in other projects |
 | [0009](0009-delta-lake-via-delta-rs.md) | Delta Lake via delta-rs | Where the raw → cleaned → search-ready filing layers are stored, and why without Spark |
 | [0010](0010-optional-langgraph-agent-runner.md) | Optional LangGraph agent runner | Why the agent loop sits behind an interface with a native and a LangGraph version |
+| [0011](0011-lake-in-object-storage-not-snowflake.md) | Lake in object storage, not Snowflake | Where raw filings and lake tables live (S3 now, Azure ADLS next, a folder locally) and why not Snowflake |
 
 ## How to add a new ADR
 

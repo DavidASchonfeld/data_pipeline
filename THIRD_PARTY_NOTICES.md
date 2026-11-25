@@ -78,7 +78,7 @@ This file lists every third-party tool, library, container image, dataset, and e
 
 ## Python — agent_data package (`pyproject.toml`)
 
-Versions are the ones I license-checked on 2026-11-23; `pyproject.toml` holds the allowed ranges. Extras install only when requested (e.g. `pip install -e ".[lake]"`).
+Versions are the ones I license-checked on 2026-11-23 (the `[lake]` additions and `[edgar]` were checked the same day, including the Rust crates compiled into the obstore wheel: 242 crates, all permissive — MIT / Apache-2.0 / BSD / ISC / Zlib / Unicode-3.0 / CC0 / BSL-1.0 (the Boost license, not the Business Source License); no copyleft); `pyproject.toml` holds the allowed ranges. Extras install only when requested (e.g. `pip install -e ".[lake]"`).
 
 | Library | Version | License | Used by | Project |
 |---|---|---|---|---|
@@ -88,6 +88,12 @@ Versions are the ones I license-checked on 2026-11-23; `pyproject.toml` holds th
 | typing_extensions | 4.16.0 | PSF-2.0 | core (via pydantic) | https://github.com/python/typing_extensions |
 | deltalake (delta-rs) | 1.6.6 | Apache-2.0 | `[lake]` | https://github.com/delta-io/delta-rs |
 | arro3-core | 0.8.3 | MIT OR Apache-2.0 | `[lake]` (via deltalake) | https://github.com/kylebarron/arro3 |
+| obstore | 0.11.1 | MIT | `[lake]` (raw lake objects on local / S3 / Azure / GCS) | https://github.com/developmentseed/obstore |
+| pyarrow (Apache Arrow) | 25.0.1 | Apache-2.0 | `[lake]` (Delta table rows) | https://github.com/apache/arrow |
+| requests | 2.34.0 | Apache-2.0 | `[edgar]` (SEC EDGAR client) | https://github.com/psf/requests |
+| urllib3 | 2.7.0 | MIT | `[edgar]` (via requests; retry adapter) | https://github.com/urllib3/urllib3 |
+| idna | 3.14 | BSD-3-Clause | `[edgar]` (via requests) | https://github.com/kjd/idna |
+| charset-normalizer | 3.4.7 | MIT | `[edgar]` (via requests) | https://github.com/jawah/charset_normalizer |
 | snowflake-connector-python | 4.8.0 | Apache-2.0 | `[snowflake]` | https://github.com/snowflakedb/snowflake-connector-python |
 | cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause | `[snowflake]`, `[dev]` | https://github.com/pyca/cryptography |
 | FastAPI | 0.162.5 | MIT | `[api]` | https://github.com/fastapi/fastapi |
@@ -101,7 +107,7 @@ Versions are the ones I license-checked on 2026-11-23; `pyproject.toml` holds th
 | import-linter | 2.15 | BSD-2-Clause | `[dev]` | https://github.com/seddonym/import-linter |
 | grimp | 3.18 | BSD-2-Clause | `[dev]` (via import-linter) | https://github.com/seddonym/grimp |
 | ruff | 0.17.6 | MIT | `[dev]` | https://github.com/astral-sh/ruff |
-| setuptools | ≥68 | MIT | build backend for `pip install -e .` | https://github.com/pypa/setuptools |
+| setuptools | ≥77 | MIT | build backend for `pip install -e .` | https://github.com/pypa/setuptools |
 | certifi | 2026.11.20 | **MPL-2.0** | transitive (via requests / snowflake-connector) | https://github.com/certifi/python-certifi |
 
 ### Local development stack (`docker-compose.yml`)
@@ -135,6 +141,7 @@ Versions are the ones I license-checked on 2026-11-23; `pyproject.toml` holds th
 | Anthropic API | Commercial API under Anthropic's Commercial Terms of Service | https://www.anthropic.com/legal/commercial-terms |
 | OpenAI API | Commercial API under OpenAI's Terms of Use | https://openai.com/policies/terms-of-use |
 | Slack (incoming webhooks) | Used under Slack API Terms of Service | https://slack.com/terms-of-service/api |
+| Amazon S3 (agent_data lake bucket, `terraform/lake.tf`) | Commercial cloud service under the AWS Customer Agreement | https://aws.amazon.com/agreement/ |
 
 ## Planned / not yet added (see ADR 0005)
 

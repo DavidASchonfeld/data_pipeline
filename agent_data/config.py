@@ -49,6 +49,15 @@ class PgvectorEnv(BaseSettings):
     db: str = "pgvector"
     connect_timeout_seconds: int = Field(default=10, gt=0)
 
+    @field_validator("port", mode="before")
+    @classmethod
+    def _accept_k8s_service_link(cls, value: Any) -> Any:
+        # Kubernetes injects PGVECTOR_PORT=tcp://<ip>:<port> into every pod in the namespace of a Service named
+        # "pgvector" (a "service link"); keep just the port number so that injected value can't break startup.
+        if isinstance(value, str) and value.startswith("tcp://") and value.rsplit(":", 1)[-1].isdigit():
+            return int(value.rsplit(":", 1)[-1])
+        return value
+
 
 class LLMEnv(BaseSettings):
     """Hosted language-model settings from LLM_* env vars (the provider choice itself is LLM_PROVIDER)."""
@@ -69,6 +78,30 @@ class EmbeddingEnv(BaseSettings):
     model: str = "all-MiniLM-L6-v2"
 
 
+class EdgarEnv(BaseSettings):
+    """SEC EDGAR client settings from EDGAR_* env vars (same names the older genai/ package reads)."""
+
+    model_config = SettingsConfigDict(**_ENV_CONFIG, env_prefix="EDGAR_")
+
+    # The SEC requires a contact email in every request's User-Agent; set a real one in .env / the K8s secret.
+    contact_email: str = "contact@stocklivedata.dev"
+    timeout_seconds: float = Field(default=30.0, gt=0)
+    max_retries: int = Field(default=3, ge=0, le=10)
+    # SEC fair-access limit is 10 requests/second; I stay below it, and the setting can never exceed it.
+    requests_per_second: float = Field(default=8.0, gt=0, le=10)
+    # A safety cap on one downloaded document, so a bad response can't exhaust the pod's memory.
+    max_document_mb: int = Field(default=100, gt=0, le=500)
+
+    @field_validator("contact_email")
+    @classmethod
+    def _looks_like_email(cls, value: str) -> str:
+        # The SEC blocks anonymous callers, so an empty or malformed contact is rejected at startup.
+        value = value.strip()
+        if "@" not in value or " " in value:
+            raise ValueError("must be a contact email address, e.g. name@example.com")
+        return value
+
+
 class AgentDataSettings(BaseSettings):
     """The profile, the optional per-component overrides, and each component's own settings group."""
 
@@ -85,6 +118,7 @@ class AgentDataSettings(BaseSettings):
     pgvector: PgvectorEnv = Field(default_factory=PgvectorEnv)
     llm: LLMEnv = Field(default_factory=LLMEnv)
     embedding: EmbeddingEnv = Field(default_factory=EmbeddingEnv)
+    edgar: EdgarEnv = Field(default_factory=EdgarEnv)
 
     @field_validator("platform_profile", "search_backend", "embedder", "llm_provider", "agent_runner",
                      mode="before")
@@ -118,8 +152,8 @@ class ProfileDefaults(BaseModel):
     agent_runner: AgentRunnerName
 
 
-# What each profile means. The aws/azure lake URIs stay unset until their storage exists in Terraform;
-# until then LAKE_URI must be set explicitly to use a lake on those profiles.
+# What each profile means. The aws lake lives in an S3 bucket whose name Terraform generates, so the deploy
+# passes it in as LAKE_URI (agent-data-config ConfigMap); azure gets its ADLS default when that storage exists.
 PROFILE_DEFAULTS: dict[str, ProfileDefaults] = {
     "local": ProfileDefaults(lake_uri=LOCAL_LAKE_URI, search_backend="pgvector", embedder="local",
                              llm_provider="anthropic", agent_runner="native"),
@@ -176,6 +210,7 @@ _GROUPS: dict[str, type[BaseSettings]] = {
     "pgvector": PgvectorEnv,
     "llm": LLMEnv,
     "embedding": EmbeddingEnv,
+    "edgar": EdgarEnv,
 }
 
 

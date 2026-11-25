@@ -140,3 +140,15 @@ def test_real_env_var_beats_env_file(clean_env, tmp_path):
     env_file.write_text("PLATFORM_PROFILE=aws\n")
     clean_env.setenv("PLATFORM_PROFILE", "azure")
     assert load_settings(env_file=env_file).platform_profile == "azure"
+
+
+def test_kubernetes_service_link_port_is_accepted(clean_env):
+    # K8s sets PGVECTOR_PORT=tcp://<ip>:<port> in pods next to a "pgvector" Service; found on the live box.
+    clean_env.setenv("PGVECTOR_PORT", "tcp://10.43.32.52:5432")
+    assert _settings().pgvector.port == 5432
+
+
+def test_a_genuinely_bad_port_is_still_rejected(clean_env):
+    clean_env.setenv("PGVECTOR_PORT", "tcp://10.43.32.52:http")
+    with pytest.raises(ConfigError, match="PGVECTOR_PORT"):
+        _settings()

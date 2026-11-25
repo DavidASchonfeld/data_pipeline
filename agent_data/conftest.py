@@ -7,7 +7,7 @@ import pytest
 
 # Every env var name agent_data reads, directly or by prefix.
 _EXACT = ("PLATFORM_PROFILE", "LAKE_URI", "SEARCH_BACKEND", "EMBEDDER", "LLM_PROVIDER", "AGENT_RUNNER")
-_PREFIXES = ("SNOWFLAKE_", "PGVECTOR_", "LLM_", "EMBEDDING_")
+_PREFIXES = ("SNOWFLAKE_", "PGVECTOR_", "LLM_", "EMBEDDING_", "EDGAR_")
 
 
 @pytest.fixture(autouse=True)

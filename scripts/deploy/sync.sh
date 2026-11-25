@@ -17,7 +17,8 @@ step_sync_dags() {
     # already-synced copy; flip GENAI_ENABLED off + full purge per the roadmap removal steps to drop it.)
     GENAI_DAG_EXCLUDE=""
     if [ "${GENAI_ENABLED:-false}" != "true" ]; then
-        GENAI_DAG_EXCLUDE="--exclude=genai_dags/"
+        # agent_data_dags/ (the genai rewrite) shares the same off-switch
+        GENAI_DAG_EXCLUDE="--exclude=genai_dags/ --exclude=agent_data_dags/"
     fi
     # Trailing "/" on source means "sync contents of folder", not the folder itself
     rsync $RSYNC_FLAGS $GENAI_DAG_EXCLUDE "$PROJECT_ROOT/airflow/dags/" "$EC2_HOST:$EC2_DAG_PATH/"
@@ -36,6 +37,32 @@ step_sync_helm_dockerfile() {
     rsync $RSYNC_FLAGS --delete "$PROJECT_ROOT/genai/" "$EC2_HOST:$EC2_HOME/airflow/docker/genai/"
     # pytest.ini must be in the build context so the Dockerfile can COPY it into the image
     rsync $RSYNC_FLAGS "$PROJECT_ROOT/pytest.ini" "$EC2_HOST:$EC2_HOME/airflow/docker/pytest.ini"
+
+    echo "=== Step 2b1c: Syncing agent_data package into Docker build context on EC2 ==="
+    # the image pip-installs agent_data (+ its lake/edgar extras) into ml-venv from pyproject.toml, the one dependency list
+    ssh "$EC2_HOST" "mkdir -p $EC2_HOME/airflow/docker/agent_data_src"
+    rsync $RSYNC_FLAGS --delete --exclude='__pycache__/' \
+        "$PROJECT_ROOT/agent_data/" "$EC2_HOST:$EC2_HOME/airflow/docker/agent_data_src/agent_data/"
+    rsync $RSYNC_FLAGS "$PROJECT_ROOT/pyproject.toml" "$EC2_HOST:$EC2_HOME/airflow/docker/agent_data_src/pyproject.toml"
+}
+
+# Point the scheduler at the S3 lake: read the bucket from Terraform's output and (re)write the agent-data-config
+# ConfigMap (PLATFORM_PROFILE, LAKE_URI, AWS_REGION). Rebuilt on every deploy, so it can never drift from Terraform.
+_apply_agent_data_config() {
+    local _lake_uri
+    _lake_uri=$(terraform -chdir="$PROJECT_ROOT/terraform" output -raw lake_uri 2>/dev/null || true)
+    if [[ "$_lake_uri" != s3://* ]]; then
+        echo "WARNING: Terraform has no lake_uri output yet — the edgar_documents DAG can't reach its S3 lake."
+        echo "  Fix:   ./scripts/deploy/terraform.sh apply   (creates the lake bucket), then redeploy."
+        return 0
+    fi
+    ssh "$EC2_HOST" "kubectl create configmap agent-data-config -n airflow-my-namespace \
+        --from-literal=PLATFORM_PROFILE=aws \
+        --from-literal=LAKE_URI='$_lake_uri' \
+        --from-literal=AWS_REGION='$AWS_REGION' \
+        --from-literal=AWS_DEFAULT_REGION='$AWS_REGION' \
+        --dry-run=client -o yaml | kubectl apply -f -" \
+        && echo "agent-data-config applied (LAKE_URI=$_lake_uri)."
 }
 
 step_sync_manifests_secrets() {
@@ -174,6 +201,9 @@ step_sync_manifests_secrets() {
             echo "Note: infra/genai/secrets/pgvector-secret.yaml not found — skipping."
             echo "      Create it from the template at infra/genai/secrets/pgvector-secret.yaml.template."
         fi
+
+        echo "=== Step 2c2e: Applying agent_data lake config (ConfigMap from Terraform output) ==="
+        _apply_agent_data_config
     fi
 
     echo "=== Step 2c3: Deleting stale Airflow migration Job ==="

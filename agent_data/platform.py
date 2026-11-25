@@ -22,10 +22,23 @@ def _stub(component: str, backend: str, pick_settings: Callable[[AgentDataSettin
     return lambda settings: StubBackend(component=component, backend=backend, settings=pick_settings(settings))
 
 
+def _delta_lake(settings: AgentDataSettings) -> Any:
+    # Build the real Delta lake at the resolved URI; a profile with no lake URI is a clear config error.
+    uri = resolve_components(settings).lake_uri
+    if not uri:
+        raise ConfigError(
+            f"No lake location for PLATFORM_PROFILE={settings.platform_profile!r}: set LAKE_URI "
+            "(on aws the deploy sets it from the Terraform lake bucket via the agent-data-config ConfigMap)"
+        )
+    from agent_data.engine.lake.delta_store import DeltaLakeStore  # lazy: the lake extra is only needed here
+
+    return DeltaLakeStore(uri)
+
+
 # One registry per component: backend name -> loader. The lake has one backend (Delta tables) whose
 # storage location (folder, s3://, abfss://) is chosen by the URI, not by a separate backend name.
 LAKE_BACKENDS: dict[str, Loader] = {
-    "delta": _stub("lake", "delta", lambda s: resolve_components(s).lake_uri),
+    "delta": _delta_lake,
 }
 EMBEDDER_BACKENDS: dict[str, Loader] = {
     "local": _stub("embedder", "local", lambda s: s.embedding),

@@ -3,7 +3,7 @@
 # Private project: it is installed locally with `pip install -e .` and never published to a package index.
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -11,7 +11,8 @@ name = "agent-data"
 version = "0.1.0"
 description = "Governed, agent-ready data product: lake, parsing, chunking, search, services and agents."
 requires-python = ">=3.10"
-license = { text = "Proprietary" }
+# SPDX form (PEP 639); "LicenseRef-" marks a license that isn't a public open-source one.
+license = "LicenseRef-Proprietary"
 # PyPI refuses any upload carrying this classifier, which guards against an accidental publish.
 classifiers = ["Private :: Do Not Upload"]
 # Core dependencies: always installed. Kept tiny so any project can import the engine cheaply.
@@ -23,15 +24,18 @@ dependencies = [
 # Optional add-on groups ("extras"), installed only when asked for, e.g. pip install -e ".[lake,api]".
 # Each one is added in the stage that first needs it, after its license check (see THIRD_PARTY_NOTICES.md).
 [project.optional-dependencies]
-# Delta tables on a local folder, s3:// or abfss:// via delta-rs (no Spark needed).
-lake = ["deltalake>=1.0,<2"]
+# Delta tables on a local folder, s3:// or abfss:// via delta-rs (no Spark needed); obstore saves the raw
+# files next to them through the same Rust storage layer (local, S3, Azure, GCS); pyarrow builds the table rows.
+lake = ["deltalake>=1.0,<2", "obstore>=0.11,<1", "pyarrow>=16"]
+# The SEC EDGAR HTTP client (requests + its built-in retry adapter).
+edgar = ["requests>=2.32,<3"]
 # The one Snowflake connection helper (RSA key-pair login).
 snowflake = ["snowflake-connector-python>=3.10,<5", "cryptography>=42"]
 # The HTTP API and the server that runs it.
 api = ["fastapi>=0.115", "uvicorn>=0.30"]
 # Everything needed to test and lint this package locally and in CI.
 dev = [
-    "agent-data[api]",
+    "agent-data[api,lake,edgar]",
     "cryptography>=42",
     "pytest>=8",
     "import-linter>=2.1",
@@ -57,6 +61,22 @@ name = "agent_data stays independent of the older genai package and of app frame
 type = "forbidden"
 source_modules = ["agent_data"]
 forbidden_modules = ["genai", "airflow", "dash", "flask"]
+
+[[tool.importlinter.contracts]]
+name = "Interfaces stay library-free: the lake interface never imports an adapter or a storage library"
+type = "forbidden"
+source_modules = ["agent_data.engine.lake.base"]
+forbidden_modules = ["agent_data.engine.lake.delta_store", "deltalake", "obstore", "pyarrow"]
+
+[[tool.importlinter.contracts]]
+name = "Domain code reaches backends through interfaces and platform factories, never a concrete adapter"
+type = "forbidden"
+source_modules = ["agent_data.domains"]
+forbidden_modules = ["agent_data.engine.lake.delta_store"]
+# Going through agent_data.platform (which picks the adapter from config) is the intended path, so allow that.
+allow_indirect_imports = true
+# Tests may build a real adapter on a temp folder to exercise the domain end to end.
+ignore_imports = ["agent_data.domains.**.__tests__.** -> agent_data.engine.lake.delta_store"]
 
 # ── Linting (ruff), scoped to agent_data so older code isn't affected ───────────────────────────────────────
 [tool.ruff]

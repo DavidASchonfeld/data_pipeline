@@ -109,6 +109,12 @@ RUN pip install \
     flask \
     pytest
 
+# agent_data (the genai rewrite) installed into ml-venv with only the extras its runners need, straight from
+# pyproject.toml so there is one dependency list; pyarrow is already present there via mlflow.
+COPY --chown=airflow:root agent_data_src/ /opt/agent_data_src/
+RUN /opt/ml-venv/bin/pip install --no-cache-dir "/opt/agent_data_src[lake,edgar]" \
+    && /opt/ml-venv/bin/python -c "import agent_data.domains.edgar.run_bronze, deltalake, obstore, pyarrow; print('agent_data ml-venv imports OK')"
+
 # bake genai source in so offline unit tests can run inside the pod after each deploy
 COPY --chown=airflow:root genai/ /opt/airflow/genai/
 # pytest.ini registers the offline/live marks — without it, --strict-markers rejects them

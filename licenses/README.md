@@ -21,6 +21,7 @@ This folder is populated using that canonical-family approach:
 - **`<project>-NOTICE.txt`** — verbatim `NOTICE` files for the Apache-2.0 projects that ship one (`airflow`, `kafka`, `requests`, `snowflake-connector-python`), retained per Apache-2.0 §4(d).
 - **`beautifulsoup4-LICENSE.txt`** — kept as a standalone file (it bundles extra html5lib/soupsieve notices).
 - **`ruff-LICENSE.txt`** — kept standalone (it carries the notices of the linters whose rules ruff re-implements).
+- **`pyarrow-LICENSE.txt` / `pyarrow-NOTICE.txt`** — kept standalone (Apache-2.0 plus the notices of the many libraries bundled into the Arrow C++ core).
 - **`typing_extensions-LICENSE.txt`** — the PSF-2.0 license, kept verbatim (its text is specific to the Python Software Foundation).
 
 When adding a dependency: if its license family is already here, just add its copyright line to `COPYRIGHT-NOTICES.txt` (and its `NOTICE` file if any). If it introduces a new family, add that family's verbatim text as `<SPDX-id>.txt`.

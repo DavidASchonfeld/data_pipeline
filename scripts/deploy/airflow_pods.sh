@@ -1093,6 +1093,18 @@ step_setup_ml_venv() {
                 echo 'numpy<2 installed.'
             fi
 
+            # agent_data (Bronze ingest runner): reinstall from the source baked into the image at /opt/agent_data_src,
+            # so this self-heals without PyPI access to the private package
+            if kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                /opt/ml-venv/bin/pip show agent-data deltalake obstore > /dev/null 2>&1; then
+                echo 'agent_data already installed — skipping'
+            else
+                echo 'Installing agent_data[lake,edgar] into ml-venv...' &&
+                kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
+                    /opt/ml-venv/bin/pip install --no-cache-dir \"/opt/agent_data_src[lake,edgar]\" &&
+                echo 'agent_data installed.'
+            fi
+
             # pydantic: validates the LLM's structured output in the EPIC 4 extraction runner.
             # anthropic pulls it transitively, but a first-class schema layer declares it explicitly.
             if kubectl exec airflow-scheduler-0 -n airflow-my-namespace -- \
@@ -1169,13 +1181,18 @@ step_run_offline_tests() {
 step_run_core_tests() {
     # run all offline tests locally before touching any pods — equivalent to `make test`, catches both dashboard/DAG and genai errors early
     echo "=== Running core offline tests locally ==="
-    # the EPIC 9 SQL safety layer imports sqlglot; make sure this local python3 has it (the ml-venv
-    # gets it separately during pod setup). A quick no-op if it's already installed.
-    python3 -m pip install --quiet sqlglot 2>/dev/null || true
-    python3 -m pytest "$PROJECT_ROOT/tests/" "$PROJECT_ROOT/genai/" -m "not live" --no-header 2>&1 || {
+    # `make test` is the one "is the repo healthy?" command: it builds/refreshes .venv (incl. agent_data and its
+    # extras) and runs tests/, genai/ and agent_data/ offline — so the deploy checks exactly what I check locally.
+    make -C "$PROJECT_ROOT" test 2>&1 || {
         echo ""
         echo "ERROR: core offline tests failed — fix the logic error before deploying."
         echo "Run manually: make test"
+        exit 1
+    }
+    # agent_data's layer rules (engine never imports domains, interfaces never import adapters, ...)
+    make -C "$PROJECT_ROOT" lint-layers 2>&1 || {
+        echo ""
+        echo "ERROR: agent_data layer contracts are broken — run: make lint-layers"
         exit 1
     }
     echo "Core offline tests passed."
