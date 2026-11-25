@@ -233,3 +233,42 @@ def test_safety_net_does_not_guess_between_two_instances(env, monkeypatch):
     mod.handler(_terminated_event("i-old"), None)
 
     assert fake.calls == []
+
+
+# ── spot_restored (planned spot replacement finishing) ───────────────────────
+
+def _replacement_in_progress(asg_instances):
+    # SSM says a proactive replacement (i-B) was launched before the old spot instance died.
+    return FakeAWS(
+        eip_instance=None,
+        ssm={"/pipeline/spot-replacing": "true", "/pipeline/spot-new-instance-id": "i-B"},
+        asg_instances=asg_instances,
+    )
+
+
+def test_nov24_replay_removes_extra_by_name_without_a_second_scale_in(env, monkeypatch):
+    # Nov 24 2026: replacement i-B plus an extra i-C launched by the ASG. The old code did an EC2 terminate of i-C
+    # and then set desired=1, so the ASG scaled in again and killed i-B (the EIP holder) too.
+    mod = _load("spot_restored")
+    fake = _replacement_in_progress([("i-B", "InService"), ("i-C", "Pending:Proceed")])
+    _wire(monkeypatch, mod, fake)
+
+    mod.handler(_terminated_event("i-A"), None)
+
+    assert ("associate_address", "i-B") in fake.calls
+    assert ("terminate_in_asg", "i-C", True) in fake.calls          # by name, desired lowered atomically
+    assert not any(c[0] == "set_desired_capacity" for c in fake.calls)
+    assert not any(c[0] == "terminate_instances" for c in fake.calls)
+    assert fake.ssm["/pipeline/spot-replacing"] == "false"
+
+
+def test_replacement_alone_still_resets_desired_to_one(env, monkeypatch):
+    # No extra instance: nothing to remove, so desired must be set back to 1 explicitly.
+    mod = _load("spot_restored")
+    fake = _replacement_in_progress([("i-B", "InService")])
+    _wire(monkeypatch, mod, fake)
+
+    mod.handler(_terminated_event("i-A"), None)
+
+    assert ("set_desired_capacity", 1) in fake.calls
+    assert not any(c[0] == "terminate_in_asg" for c in fake.calls)

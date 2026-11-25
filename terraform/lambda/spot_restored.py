@@ -107,9 +107,10 @@ def handler(event, context):
     except ClientError:
         logger.exception("EIP reassociation failed — instance may still be in pending state; Wake Lambda will recover on next visit")
 
-    # Explicitly terminate the non-EIP instance before scaling down so the scale-down is deterministic.
-    # Without this, ASG's default "oldest instance first" termination policy will pick new_instance_id
-    # (it launched first) and keep the other instance, which has no EIP — orphaning it.
+    # Remove the non-EIP instance BY NAME and lower desired capacity in the same ASG call. A plain EC2 terminate
+    # followed by set_desired_capacity(1) is a race: the ASG still counts both instances as in service, so it
+    # scales in a second time and its "oldest first" rule kills the EIP holder (Nov 24 2026: both died).
+    removed_extra = False
     try:
         asg_instances = asg.describe_auto_scaling_groups(
             AutoScalingGroupNames=[asg_name]
@@ -120,16 +121,21 @@ def handler(event, context):
         _ACTIVE_STATES = {"Pending", "Pending:Wait", "Pending:Proceed", "InService"}
         for inst in asg_instances:
             if inst["InstanceId"] != new_instance_id and inst["LifecycleState"] in _ACTIVE_STATES:
-                ec2.terminate_instances(InstanceIds=[inst["InstanceId"]])
-                logger.info("Terminated non-EIP instance %s so EIP holder survives scale-down", inst["InstanceId"])
+                asg.terminate_instance_in_auto_scaling_group(
+                    InstanceId=inst["InstanceId"], ShouldDecrementDesiredCapacity=True)
+                removed_extra = True
+                logger.info("Removed non-EIP instance %s and lowered desired capacity in one ASG call",
+                            inst["InstanceId"])
                 break
     except ClientError as e:
-        logger.warning("Could not terminate non-EIP instance [%s] — scale-down may orphan EIP", e.response["Error"]["Code"])
+        logger.warning("Could not remove non-EIP instance [%s] — scale-down may orphan EIP", e.response["Error"]["Code"])
 
-    # Reset ASG capacity back to normal now the old spot instance is gone
+    # Reset ASG capacity back to normal now the old spot instance is gone. Only set desired=1 when no extra
+    # instance was removed above (that call already lowered it); setting it again would trigger another scale-in.
     try:
         asg.update_auto_scaling_group(AutoScalingGroupName=asg_name, MaxSize=2)  # matches always-on Terraform max_size=2
-        asg.set_desired_capacity(AutoScalingGroupName=asg_name, DesiredCapacity=1)
+        if not removed_extra:
+            asg.set_desired_capacity(AutoScalingGroupName=asg_name, DesiredCapacity=1)
         logger.info("ASG %s reset to max=2 desired=1 — normal always-on operation restored", asg_name)
     except ClientError as e:
         logger.warning("ASG reset failed [%s] — manual check may be needed", e.response["Error"]["Code"])
